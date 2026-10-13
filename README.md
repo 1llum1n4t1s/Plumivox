@@ -43,7 +43,7 @@ GitHubを追跡する登録・更新方法は[Codexのプラグイン資料](htt
 | `get_my_posts` | 自分のプロフィール投稿。返信の有無とページングを指定可能 |
 | `get_tweets` | 公開投稿をIDで取得。最大20件 |
 | `get_following_feed` | フォロー先の公開投稿を取得し、日時の降順に並べる |
-| `post_tweet` | 加重文字数280以内の投稿。PNG/JPEG最大4枚、各5 MiB以下 |
+| `post_tweet` | 加重文字数280以内の投稿。PNG/JPEG最大4枚、各5 MiB以下。画像は絶対パスで指定 |
 
 複数アカウントがある場合は `account` に `release_posting` や `blog_posting` などの設定名を指定します。省略時に別アカウントへ投稿しないよう、既定アカウントが未設定で複数ある場合は指定を要求します。
 
@@ -69,4 +69,4 @@ vavaのX告知は `release_posting`、blblのX告知は `blog_posting` を指定
 
 ## 開発・検証
 
-[開発者向けのビルド・検証手順](docs/verification.md)。E2Eは偽のAPIと設定を利用し、実際のXには投稿しません。
+[開発者向けのビルド・検証手順](docs/verification.md)、[作業規約](AGENTS.md)、[システム設計](DESIGN.md)を参照してください。
