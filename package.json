@@ -1,0 +1,25 @@
+{
+  "name": "plumivox",
+  "version": "0.1.0",
+  "private": true,
+  "description": "TwitterAPI.ioを使うX投稿・フォロー先フィードのローカルMCPサーバー",
+  "type": "module",
+  "license": "MIT",
+  "engines": { "node": ">=22" },
+  "packageManager": "pnpm@11.4.0",
+  "bin": { "plumivox": "./dist/plumivox.mjs" },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "start": "node dist/plumivox.mjs",
+    "check": "node scripts/check.mjs",
+    "test:e2e": "node tests/e2e.mjs"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.32.1",
+    "twitter-text": "3.1.0",
+    "zod": "4.6.6"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.2"
+  }
+}
