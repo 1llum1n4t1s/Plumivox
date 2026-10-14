@@ -13,6 +13,7 @@ PlumivoxはTwitterAPI.ioを経由してXへの投稿・認証更新・公開投�
 | `src/config.mjs` | 呼出し時の設定再読込み、アカウント・資格情報の検証、Cookieの選択、秘密を除いた準備状態の公開 |
 | `src/session.mjs` | PowerShell子プロセスによるWindows DPAPI、保存先検証・ACL、セッション照合、名前付きMutex、暗号化保存 |
 | `src/proxy-egress.mjs` | loopback限定のCONNECT出口、X宛先制限、DNS全候補検証、接続数・容量・時間制限 |
+| `src/proxy-shared.mjs` | PC内の共有daemon、設定に結び付けた相互HMAC認証IPC、複数チャットとidle終了の制御 |
 | `src/proxy-manager.mjs` | SSHホスト鍵照合、逆転送の起動確認、単一の再接続処理、取消と停止時の清掃 |
 | `src/client.mjs` | HTTP通信、応答検証・正規化、画像検証・アップロード、投稿、フィード再構成、検索条件と継続cursorの検証 |
 | `scripts/build.mjs` / `dist/plumivox.mjs` | esbuildによるNode.js 22向けESMバンドルと、依存ライブラリを同梱する正式な実行物 |
@@ -44,6 +45,6 @@ PlumivoxはTwitterAPI.ioを経由してXへの投稿・認証更新・公開投�
 
 `proxy_mode` が `managed` のアカウントだけ、本文・画像の事前検証後または認証ロック取得後に中継を準備する。公開proxy URLは変更せず、Cookie bindingを維持する。設定の取得は資格情報ストア経由に限定し、API引数・MCP応答にSSH鍵や接続先を含めない。読取りと設定一覧は中継を起動しない。
 
-SSHの再接続は通信経路だけを復旧し、投稿・ログインは再送しない。停止・MCP終了では所有するsocket、timer、逆転送、ローカル出口を閉じる。ポート競合では別所有者を終了させず固定コードで拒否する。1台・1中継ポートを管理するMCPプロセスは一つに限定する。
+SSHの再接続は通信経路だけを復旧し、投稿・ログインは再送しない。停止では最後に利用した設定の共有daemonのsocket、timer、逆転送、ローカル出口を閉じる。MCP終了ではそのクライアントだけを離脱し、他チャットの中継を維持する。全クライアントが離脱して5分後にdaemonを終了する。ポート競合では別設定の所有者を終了させず固定コードで拒否する。
 
 公開口は引き続き中継サーバーが担当し、無料Cloudflare Tunnel/WorkersをHTTP CONNECT公開プロキシの代替として実装していない。外部経路の初回準備と管理設定は [中継手順](docs/managed-proxy.md) を参照する。

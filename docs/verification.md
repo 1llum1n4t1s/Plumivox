@@ -63,6 +63,19 @@ E2Eでは外部サービスの代わりにlocalhostのHTTPサーバーを使い�
 
 出力先は `PLUMIVOX_PROXY_E2E_OUTPUT_DIR`、未指定時はユーザーの一時ディレクトリ配下 `Codex/Plumivox/<UUID>` です。`summary.json` と `http-trace.json` に秘密を含まない結果を残します。生成した偽秘密設定とSSH鍵の清掃は呼び出し側が担当します。
 
+## 共有プロキシdaemonの失敗条件
+
+| 失敗条件 | 期待する結果 |
+| --- | --- |
+| 同じ設定で二つのMCPプロセスが同時に起動 | 一つのdaemonだけがSSHと固定ポートを所有し、両MCPからreadyを確認できる |
+| 一方のMCP終了・起動待機の取消・external投稿 | 他方の中継とCONNECT通信を維持し、API投稿を再送しない |
+| 一方から明示的にstop_proxy | 全利用者の中継を停止し、daemonの自動再接続で復活しない |
+| 利用中のMCPが存在、または全利用者が離脱 | 利用中はidle終了せず、全離脱後に指定の待機時間でSSH・IPC・出口を閉じる |
+| IPCの認証不一致、認証前コマンド、巨大frame | 認証済み状態を変更せず接続を拒否し、共有秘密・SSH鍵・設定を標準出力や証拠へ出さない |
+| 過去challenge・resultの再利用、署名後のstatus改変、同じ秘密鍵を使う別設定scopeのMAC | client/server双方のnonce・channel・requestId・全応答内容・設定contextを照合して拒否。正規の署名済み応答は受理 |
+
+`node tests/proxy-shared-e2e.mjs` は二つの別プロセスMCP、別プロセスdaemon、ループバックの偽SSH・echo・APIで共有ライフサイクルを確認します。検証fixture内でdaemonのmanagerFactoryへ出口のDNS・接続を注入します。出力先は `PLUMIVOX_PROXY_SHARED_E2E_OUTPUT_DIR` またはユーザーの一時ディレクトリ配下 `Codex/Plumivox/<UUID>`。`summary.json` と `http-trace.json` は秘密なしの証拠として残し、偽鍵・設定の清掃は呼び出し側が担当します。
+
 ## ビルドと実行
 
 開発時だけリポジトリをクローンします。プラグインのインストール元にはこの作業ディレクトリを登録せず、[GitHubの最新mainを参照する手順](../README.md#インストール)を使います。

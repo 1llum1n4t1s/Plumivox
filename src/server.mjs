@@ -5,6 +5,7 @@ import { ConfigurationError } from './config.mjs';
 import { SessionStorageError } from './session.mjs';
 import { createManagedProxyManager, ManagedProxyError } from './proxy-manager.mjs';
 import { ProxyEgressError } from './proxy-egress.mjs';
+import { SharedProxyError } from './proxy-shared.mjs';
 
 const account = z.string().min(1).optional().describe('list_accountsが返したアカウント設定名。複数設定時は明示する。');
 const cursor = z.string().min(1).max(100_000).optional();
@@ -20,7 +21,7 @@ export function createServer({ accounts, apiBaseUrl, timeoutMs, proxyManager = c
       return { content: [{ type: 'text', text: JSON.stringify(result) }], structuredContent: result };
     } catch (error) {
       const known = error instanceof ConfigurationError || error instanceof PlumivoxError || error instanceof SessionStorageError
-        || error instanceof ManagedProxyError || error instanceof ProxyEgressError;
+        || error instanceof ManagedProxyError || error instanceof ProxyEgressError || error instanceof SharedProxyError;
       const result = { error: {
         code: known ? error.code : 'INTERNAL_ERROR',
         message: known ? error.message : '処理に失敗しました。設定とAPIの状態を確認してください。',
@@ -36,7 +37,7 @@ export function createServer({ accounts, apiBaseUrl, timeoutMs, proxyManager = c
   }, handle(async () => ({ accounts: await accounts.listAccounts() })));
   server.registerTool('get_proxy_status', {
     title: 'Plumivoxの中継状態',
-    description: 'このMCPプロセスが管理する中継の状態を取得する。通信や起動は行わず、接続先・資格情報は返さない。',
+    description: 'このMCPプロセスが利用している共有中継の状態を取得する。中継を起動せず、接続先・資格情報は返さない。',
     inputSchema: {}, annotations: { ...readOnly, openWorldHint: false },
   }, handle(async () => proxyManager.getStatus()));
   server.registerTool('start_proxy', {
@@ -50,7 +51,7 @@ export function createServer({ accounts, apiBaseUrl, timeoutMs, proxyManager = c
   }));
   server.registerTool('stop_proxy', {
     title: 'Plumivoxの中継を停止',
-    description: 'このMCPプロセスが所有する中継と住宅回線出口を停止する。次の投稿・認証要求では設定に従って再起動する。他のプロセスは終了させない。',
+    description: '最後に利用した設定の共有中継と住宅回線出口を停止する。同じ中継を使う他のチャットにも影響する。次の投稿・認証要求では再起動する。別の設定の中継や他のアプリは終了させない。',
     inputSchema: {}, annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
   }, handle(async () => { await proxyManager.stop(); return proxyManager.getStatus(); }));
   const ensureProxy = async (selected, signal) => {
