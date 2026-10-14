@@ -8,7 +8,7 @@
 ## 文書と構造
 
 - 利用者向けの導入・操作・取得範囲は [README.md](README.md)、現在の構造と設計判断は [DESIGN.md](DESIGN.md) を参照する。
-- 設定と保存形式は [docs/configuration.md](docs/configuration.md)、管理プロキシの設定・運用は [docs/managed-proxy.md](docs/managed-proxy.md)、失敗条件とE2Eの検証方針は [docs/verification.md](docs/verification.md) を参照し、変更した挙動に対応する説明を更新する。
+- 初期設定は [docs/setup.md](docs/setup.md)、設定と保存形式は [docs/configuration.md](docs/configuration.md)、管理プロキシの設定・運用は [docs/managed-proxy.md](docs/managed-proxy.md)、失敗条件とE2Eの検証方針は [docs/verification.md](docs/verification.md) を参照し、変更した挙動に対応する説明を更新する。
 - 実装は `src/`、ビルド・構文確認は `scripts/`、MCP経由の検証は `tests/`。`dist/plumivox.mjs` は追跡する配布用バンドルである。
 
 ## 必須コマンドと検証
@@ -30,6 +30,8 @@ pnpm test:e2e
 ## 実装の制約
 
 - 標準出力はMCP通信専用。資格情報、復号Cookie、設定ファイルの内容、提供元の生エラーを応答や診断へ出さない。資格情報は設定ストア経由で取得し、MCP引数に追加しない。
+- 設定ファイルの選択順と起動時の固定を維持し、選択後の読込み失敗で別ファイルへ切り替えない。WindowsセットアップとMCPの既定保存先を一致させる。セットアップでは既存鍵・同名アカウント・共有中継設定の上書きを拒否し、保存先・ACL・排他・保存直前の設定再確認を維持する。
+- `setup/vps/` は `.gitattributes` に従いLFで保存する。VPSインストーラーの事前確認と管理対象の照合、専用SSHユーザーの制限、認証付きX宛先限定CONNECT、住宅回線出口不在時の直接接続禁止を維持する。初期構築の境界は [設計](DESIGN.md#初期設定と公開中継の構築) を参照する。
 - 読取りと投稿の準備条件、Cookieの優先順位・照合、認証更新の排他と設定再確認を維持する。Mutex所有喪失後の保存を防ぎ、置換指示後の結果不明を未変更と断定しない。保存・通信・キャンセル失敗の検証も含める。
 - 投稿・ログインを自動再試行しない。投稿IDが確認できない結果を成功にしない。認証更新から投稿を再送しない。同じ文面の明示呼出しは各回送信する。
 - 管理プロキシは事前検証・認証ロックと準備後の設定再確認を維持し、external呼出しや一つのMCPの終了・待機取消で他クライアントの中継を停止しない。共有IPCの相互認証・設定照合、SSHホスト鍵検証、CONNECT宛先・DNS全候補の検証と資源上限を維持する。DNS・接続の検証用差し替えはtestsのfixtureに限定し、本番設定へ迂回経路を設けない。境界と停止の意味は [設計](DESIGN.md#管理するプロキシの境界) に従う。

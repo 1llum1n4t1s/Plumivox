@@ -18,7 +18,7 @@ codex plugin marketplace add https://github.com/1llum1n4t1s/Plumivox.git --ref m
 codex plugin add plumivox@plumivox-local
 ```
 
-`plumivox-local` はマーケットプレイスの識別子です。取得元は上記のGitHub URLです。Codexが取得したスナップショットから、自己完結した `dist/plumivox.mjs` を起動します。`node_modules` は不要で、MCP設定は `${PLUGIN_ROOT}` を使います。
+`plumivox-local` はマーケットプレイスの識別子です。取得元は上記のGitHub URLです。依存ライブラリは同梱されているため、利用者による依存インストールやMCP設定の手動追加は不要です。
 
 更新するときは `main` の最新状態を取得してインストールし、Codexを再起動して読み込みます。
 
@@ -34,6 +34,8 @@ GitHubを追跡する登録・更新方法は[Codexのプラグイン資料](htt
 初めて使う場合は[セットアップ手順](docs/setup.md)に進んでください。VPSインストーラーとWindowsの設定ウィザードを同梱しています。Codexへ「Plumivoxをセットアップして」と依頼すると、同梱の`setup-plumivox`スキルでも案内できます。
 
 設定ファイルはリポジトリ外へ置きます。新規利用者は `%LOCALAPPDATA%\Kagayoi\Plumivox\settings.json`、既存の `~/dev/Secret/secrets.json` がある利用者はそのファイルの `twitterapi_io` を読みます。vava／blblの `release_posting` と `blog_posting` も維持します。別の場所を使う場合は `PLUMIVOX_SECRETS_FILE` を指定します。秘密値を会話やMCPの引数へ渡す必要はありません。
+
+選択された設定ファイルを読み込めない場合は、別の設定へ切り替えずエラーになります。保存先を変更した場合はCodexを再起動してください。初回セットアップは既存の鍵・同名アカウント・共有中継設定を上書きしません。既存設定の変更方法は[セットアップ手順](docs/setup.md)を参照してください。
 
 [初めてのセットアップ](docs/setup.md) · [アカウントとCookieの設定](docs/configuration.md) · [Plumivoxでプロキシを管理する](docs/managed-proxy.md)
 
