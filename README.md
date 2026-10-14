@@ -24,8 +24,10 @@ codex plugin add plumivox@plumivox-local
 
 ```powershell
 codex plugin marketplace upgrade plumivox-local
-codex plugin add plumivox@plumivox-local
+codex plugin list --marketplace plumivox-local --json
 ```
+
+一覧の`installed`に表示される版番号を確認します。導入済みのプラグインは更新後に再度`add`せず、Codexを再起動して新しいMCPとスキルを読み込みます。
 
 GitHubを追跡する登録・更新方法は[Codexのプラグイン資料](https://developers.openai.com/plugins/build/plugins#add-a-marketplace-from-the-cli)を参照してください。
 
