@@ -1,11 +1,19 @@
 import { open } from 'node:fs/promises';
 import path from 'node:path';
+import { createHmac, timingSafeEqual } from 'node:crypto';
 import twitterText from 'twitter-text';
+import emojiRegex from 'emoji-regex';
 
 const ID = /^\d{1,30}$/;
 const USER = /^[A-Za-z0-9_]{1,15}$/;
 const MAX_IMAGE = 5 * 1024 * 1024;
+const MAX_RESPONSE_BYTES = 10 * 1024 * 1024;
 const BATCH_SIZE = 20;
+const FEED_CURSOR_PREFIX = 'plumivox-feed.';
+const MAX_FEED_CURSOR = 100_000;
+const MAX_PROVIDER_CURSOR = 10_000;
+const SEARCH_CURSOR_PREFIX = 'plumivox-search.';
+const MAX_SEARCH_CURSOR = 200_000;
 
 export class PlumivoxError extends Error {
   constructor(code, message, details = {}) {
@@ -18,6 +26,44 @@ export class PlumivoxError extends Error {
 const fail = (code, message, details) => { throw new PlumivoxError(code, message, details); };
 const object = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
 const numericId = (value) => typeof value === 'string' && ID.test(value);
+
+async function responseText(response) {
+  if (!response.body) return '';
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  const parts = [];
+  let length = 0;
+  try {
+    for (;;) {
+      const { value, done } = await reader.read();
+      length += value?.byteLength ?? 0;
+      // 受信バイト数を制限し、上限超過分を文字列へ変換・蓄積しない。
+      if (length > MAX_RESPONSE_BYTES) {
+        await reader.cancel().catch(() => {});
+        fail('INVALID_RESPONSE', 'API応答のサイズが上限を超えました。');
+      }
+      const part = decoder.decode(value, { stream: !done });
+      parts.push(part);
+      if (done) return parts.join('');
+    }
+  } finally {
+    reader.releaseLock();
+  }
+}
+
+function parseTweetText(text) {
+  const normalized = text.normalize('NFC');
+  const urls = twitterText.extractUrlsWithIndices(normalized);
+  // 本文とURL境界を変えずに評価し、文字数超過と無効文字を別々に判定する。
+  const parsed = twitterText.parseTweet(normalized, { ...twitterText.configs.defaults, maxWeightedTweetLength: Number.MAX_SAFE_INTEGER });
+  let weightedLength = parsed.weightedLength;
+  for (const { 0: emoji, index } of normalized.matchAll(emojiRegex())) {
+    if ([...emoji].length === 1 || urls.some(({ indices }) => index < indices[1] && index + emoji.length > indices[0])) continue;
+    // Unicode 17の既知の複合絵文字だけを重み2へ補正する。
+    weightedLength -= twitterText.parseTweet(emoji).weightedLength - 2;
+  }
+  return { weightedLength, valid: parsed.valid && weightedLength <= twitterText.configs.defaults.maxWeightedTweetLength };
+}
 
 function normalizeTweet(value) {
   if (!object(value) || !numericId(value.id)) fail('INVALID_RESPONSE', '投稿データの形式が不正です。');
@@ -37,12 +83,14 @@ function normalizeTweet(value) {
   };
 }
 
-function tweetPage(response) {
+function tweetPage(response, maxCursorLength = MAX_FEED_CURSOR) {
   if (!Array.isArray(response.tweets)) fail('INVALID_RESPONSE', '投稿一覧を確認できません。');
   const hasNextPage = response.has_next_page === true;
   const nextCursor = typeof response.next_cursor === 'string' && response.next_cursor ? response.next_cursor : null;
   if (hasNextPage && !nextCursor) fail('INVALID_RESPONSE', '続きの取得情報が不足しています。');
-  return { tweets: response.tweets.map(normalizeTweet), hasNextPage, nextCursor: hasNextPage ? nextCursor : null };
+  const cursorTooLong = hasNextPage && nextCursor.length > maxCursorLength;
+  return { tweets: response.tweets.map(normalizeTweet), hasNextPage, nextCursor: hasNextPage && !cursorTooLong ? nextCursor : null,
+    ...(cursorTooLong ? { coverage: { tweetContinuationAvailable: false, tweetContinuationUnavailableReason: 'cursor_too_long' } } : {}) };
 }
 
 async function imageFile(filePath) {
@@ -66,21 +114,37 @@ async function imageFile(filePath) {
   }
 }
 
+function encodeFeedCursor(batches, coverage, account) {
+  const payload = Buffer.from(JSON.stringify({
+    version: 2, account: account.account, userName: account.userName.toLowerCase(), batches, coverage,
+  })).toString('base64url');
+  const signature = createHmac('sha256', account.apiKey).update(payload).digest('base64url');
+  const cursor = `${FEED_CURSOR_PREFIX}${payload}.${signature}`;
+  return cursor.length <= MAX_FEED_CURSOR ? cursor : null;
+}
+
 function decodeFeedCursor(cursor, account) {
   try {
-    if (cursor.length > 100_000 || !/^[A-Za-z0-9_-]+$/.test(cursor)) throw new Error();
-    const data = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8'));
-    if (data.version !== 1 || data.account !== account.account || data.userName !== account.userName.toLowerCase()
+    if (typeof cursor !== 'string' || cursor.length > MAX_FEED_CURSOR || !cursor.startsWith(FEED_CURSOR_PREFIX)) throw new Error();
+    const [payload, signature, extra] = cursor.slice(FEED_CURSOR_PREFIX.length).split('.');
+    if (extra !== undefined || !/^[A-Za-z0-9_-]+$/.test(payload ?? '') || !/^[A-Za-z0-9_-]{43}$/.test(signature ?? '')) throw new Error();
+    const expected = createHmac('sha256', account.apiKey).update(payload).digest();
+    const received = Buffer.from(signature, 'base64url');
+    if (received.length !== expected.length || received.toString('base64url') !== signature || !timingSafeEqual(received, expected)) throw new Error();
+    const data = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'));
+    if (data.version !== 2 || data.account !== account.account || data.userName !== account.userName.toLowerCase()
       || !Array.isArray(data.batches) || data.batches.length < 1 || data.batches.length > 10
       || !object(data.coverage) || !Number.isInteger(data.coverage.accounts)
       || data.coverage.accounts < 0 || data.coverage.accounts > 200
       || typeof data.coverage.followingHasNextPage !== 'boolean'
       || !Number.isInteger(data.coverage.protectedAccountsExcluded) || data.coverage.protectedAccountsExcluded < 0
-      || data.coverage.protectedAccountsExcluded > 200) throw new Error();
+      || data.coverage.protectedAccountsExcluded > 200
+      || !Number.isInteger(data.coverage.protectionStatusUnknownAccounts) || data.coverage.protectionStatusUnknownAccounts < 0
+      || data.coverage.protectionStatusUnknownAccounts > data.coverage.accounts) throw new Error();
     const batches = data.batches.map((batch) => {
       if (!object(batch) || !Array.isArray(batch.users) || batch.users.length < 1 || batch.users.length > BATCH_SIZE
         || !batch.users.every((name) => typeof name === 'string' && USER.test(name))
-        || typeof batch.cursor !== 'string' || batch.cursor.length > 10_000 || !batch.cursor) throw new Error();
+        || typeof batch.cursor !== 'string' || batch.cursor.length > MAX_PROVIDER_CURSOR || !batch.cursor) throw new Error();
       return { users: batch.users, cursor: batch.cursor };
     });
     return { batches, coverage: {
@@ -88,9 +152,85 @@ function decodeFeedCursor(cursor, account) {
       followingHasNextPage: data.coverage.followingHasNextPage,
       followingNextCursor: typeof data.coverage.followingNextCursor === 'string' ? data.coverage.followingNextCursor : null,
       protectedAccountsExcluded: data.coverage.protectedAccountsExcluded,
+      protectionStatusUnknownAccounts: data.coverage.protectionStatusUnknownAccounts,
       followingPage: data.coverage.followingPage === 'continuation' ? 'continuation' : 'first',
+      followingContinuationAvailable: data.coverage.followingContinuationAvailable === true,
+      followingContinuationUnavailableReason: data.coverage.followingContinuationUnavailableReason === 'cursor_too_long' ? 'cursor_too_long' : null,
     } };
   } catch { fail('INVALID_CURSOR', 'フィードのcursorが不正、または別アカウントのものです。'); }
+}
+
+function searchTime(value) {
+  if (value === undefined) return null;
+  const match = typeof value === 'string' && /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(Z|([+-])(\d{2}):(\d{2}))$/.exec(value);
+  if (!match) fail('INVALID_SEARCH', '日時はタイムゾーン付きISO 8601の秒精度で指定してください。');
+  const [, year, month, day, hour, minute, second, zone, sign, offsetHour, offsetMinute] = match;
+  const parts = [year, month, day, hour, minute, second].map(Number);
+  const date = new Date(0);
+  date.setUTCFullYear(parts[0], parts[1] - 1, parts[2]);
+  date.setUTCHours(parts[3], parts[4], parts[5], 0);
+  if (date.getUTCFullYear() !== parts[0] || date.getUTCMonth() + 1 !== parts[1] || date.getUTCDate() !== parts[2]
+    || date.getUTCHours() !== parts[3] || date.getUTCMinutes() !== parts[4] || date.getUTCSeconds() !== parts[5]
+    || (zone !== 'Z' && (Number(offsetHour) > 23 || Number(offsetMinute) > 59))) {
+    fail('INVALID_SEARCH', '検索日時が不正です。存在する日付と時刻を指定してください。');
+  }
+  const offset = zone === 'Z' ? 0 : (Number(offsetHour) * 60 + Number(offsetMinute)) * (sign === '+' ? 1 : -1);
+  const epoch = date.getTime() / 1000 - offset * 60;
+  return { epoch, normalized: new Date(epoch * 1000).toISOString().replace('.000Z', 'Z') };
+}
+
+function searchConditions(account, { scope = 'all', keyword, startTime, endTime, maxAccounts, cursor, followingCursor }) {
+  if (typeof keyword !== 'string' || !keyword.trim() || keyword.trim().length > 512
+    || /["\\\p{Cc}\u2028\u2029]/u.test(keyword)) {
+    fail('INVALID_SEARCH', 'キーワードは空でない512文字以内の語句にしてください。引用符・バックスラッシュ・制御文字は使用できません。');
+  }
+  if (!['all', 'following'].includes(scope)) fail('INVALID_SEARCH', '検索対象はallまたはfollowingを指定してください。');
+  if (cursor !== undefined && followingCursor !== undefined) fail('INVALID_CURSOR', 'cursorとfollowingCursorは同時に指定できません。');
+  if (scope === 'all' && (maxAccounts !== undefined || followingCursor !== undefined)) {
+    fail('INVALID_SEARCH', '全体検索ではmaxAccountsとfollowingCursorを指定できません。');
+  }
+  if (maxAccounts !== undefined && (!Number.isInteger(maxAccounts) || maxAccounts < 20 || maxAccounts > 200)) {
+    fail('INVALID_SEARCH', 'maxAccountsは20から200までの整数にしてください。');
+  }
+  const start = searchTime(startTime);
+  const end = searchTime(endTime);
+  if (start && end && start.epoch >= end.epoch) fail('INVALID_SEARCH', '開始日時は終了日時より前にしてください。');
+  const conditions = {
+    account: account.account, userName: account.userName.toLowerCase(), scope, keyword: keyword.trim(),
+    startEpoch: start?.epoch ?? null, endEpoch: end?.epoch ?? null,
+    maxAccounts: scope === 'following' ? maxAccounts ?? 100 : null,
+  };
+  const query = [`"${conditions.keyword}"`, ...(start ? [`since_time:${start.epoch}`] : []), ...(end ? [`until_time:${end.epoch}`] : [])].join(' ');
+  return { conditions, query, startTime: start?.normalized ?? null, endTime: end?.normalized ?? null };
+}
+
+function searchCursorLimit(conditions, kind) {
+  return kind === 'tweets' && conditions.scope === 'following' ? MAX_FEED_CURSOR : MAX_PROVIDER_CURSOR;
+}
+
+function encodeSearchCursor(inner, account, conditions, kind) {
+  if (typeof inner !== 'string' || !inner || inner.length > searchCursorLimit(conditions, kind)) {
+    return null;
+  }
+  const payload = Buffer.from(JSON.stringify({ version: 1, kind, conditions, inner })).toString('base64url');
+  const signature = createHmac('sha256', account.apiKey).update(payload).digest('base64url');
+  const cursor = `${SEARCH_CURSOR_PREFIX}${payload}.${signature}`;
+  return cursor.length <= MAX_SEARCH_CURSOR ? cursor : null;
+}
+
+function decodeSearchCursor(cursor, account, conditions, kind) {
+  try {
+    if (typeof cursor !== 'string' || cursor.length > MAX_SEARCH_CURSOR || !cursor.startsWith(SEARCH_CURSOR_PREFIX)) throw new Error();
+    const [payload, signature, extra] = cursor.slice(SEARCH_CURSOR_PREFIX.length).split('.');
+    if (extra !== undefined || !/^[A-Za-z0-9_-]+$/.test(payload ?? '') || !/^[A-Za-z0-9_-]{43}$/.test(signature ?? '')) throw new Error();
+    const expected = createHmac('sha256', account.apiKey).update(payload).digest();
+    const received = Buffer.from(signature, 'base64url');
+    if (received.length !== expected.length || received.toString('base64url') !== signature || !timingSafeEqual(received, expected)) throw new Error();
+    const data = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'));
+    if (data.version !== 1 || data.kind !== kind || JSON.stringify(data.conditions) !== JSON.stringify(conditions)
+      || typeof data.inner !== 'string' || !data.inner || data.inner.length > searchCursorLimit(conditions, kind)) throw new Error();
+    return data.inner;
+  } catch { fail('INVALID_CURSOR', '検索のcursorが不正、または検索条件・アカウントが一致しません。'); }
 }
 
 export class TwitterApiClient {
@@ -116,8 +256,7 @@ export class TwitterApiClient {
         signal: AbortSignal.any([AbortSignal.timeout(this.timeoutMs), ...(signal ? [signal] : [])]),
       });
       if (!response.ok) fail('API_HTTP_ERROR', 'APIが要求を受け付けませんでした。', { httpStatus: response.status });
-      const raw = await response.text();
-      if (raw.length > 10 * 1024 * 1024) fail('INVALID_RESPONSE', 'API応答のサイズが上限を超えました。');
+      const raw = await responseText(response);
       let result;
       try { result = JSON.parse(raw); } catch { fail('INVALID_RESPONSE', 'APIからJSON応答を確認できません。'); }
       if (!object(result)) fail('INVALID_RESPONSE', 'API応答の形式が不正です。');
@@ -171,8 +310,9 @@ export class TwitterApiClient {
     return { account: account.account, tweets: result.tweets.map(normalizeTweet) };
   }
 
-  async getFollowingFeed(account, { maxAccounts = 100, cursor, followingCursor, signal } = {}) {
+  async getFollowingFeed(account, { maxAccounts = 100, cursor, followingCursor, signal, searchQuery } = {}) {
     if (cursor && followingCursor) fail('INVALID_CURSOR', 'cursorとfollowingCursorは同時に指定できません。');
+    if (followingCursor?.startsWith(SEARCH_CURSOR_PREFIX)) fail('INVALID_CURSOR', '検索用のfollowingCursorはsearch_tweetsへ渡してください。');
     let batches;
     let coverage;
     let apiRequests = 0;
@@ -185,48 +325,102 @@ export class TwitterApiClient {
       const users = [...new Set(result.followings
         .filter((user) => user.isProtected !== true && user.protected !== true && USER.test(user.userName ?? ''))
         .map((user) => user.userName.toLowerCase()))].slice(0, maxAccounts);
+      const knownPublicUsers = new Set(result.followings
+        .filter((user) => user.isProtected !== true && user.protected !== true
+          && (user.isProtected === false || user.protected === false) && USER.test(user.userName ?? ''))
+        .map((user) => user.userName.toLowerCase()));
+      // 未知数の母数は、重複除去と上限適用後に実際に検索するアカウント。
+      const protectionStatusUnknownAccounts = users.filter((name) => !knownPublicUsers.has(name)).length;
+      const followingHasNextPage = result.has_next_page === true || result.followings.length > maxAccounts;
+      const rawFollowingCursor = typeof result.next_cursor === 'string' && result.next_cursor ? result.next_cursor : null;
+      const followingCursorTooLong = rawFollowingCursor !== null && rawFollowingCursor.length > MAX_PROVIDER_CURSOR;
+      const followingNextCursor = followingCursorTooLong ? null : rawFollowingCursor;
       coverage = {
         accounts: users.length,
-        followingHasNextPage: result.has_next_page === true || result.followings.length > maxAccounts,
-        followingNextCursor: typeof result.next_cursor === 'string' && result.next_cursor ? result.next_cursor : null,
+        followingHasNextPage, followingNextCursor,
         protectedAccountsExcluded,
+        protectionStatusUnknownAccounts,
         followingPage: followingCursor ? 'continuation' : 'first',
+        followingContinuationAvailable: followingHasNextPage && followingNextCursor !== null,
+        followingContinuationUnavailableReason: followingCursorTooLong ? 'cursor_too_long' : null,
       };
       batches = [];
       for (let offset = 0; offset < users.length; offset += BATCH_SIZE) batches.push({ users: users.slice(offset, offset + BATCH_SIZE), cursor: null });
     }
     const pending = [];
     const uniqueTweets = new Map();
+    let tweetHasNextPage = false;
+    let tweetCursorTooLong = false;
     // 各バッチを順番に読み、1回のツール呼び出しで最大11回のAPI要求に制限する。
     for (const batch of batches) {
-      const query = `(${batch.users.map((name) => `from:${name}`).join(' OR ')}) include:nativeretweets`;
-      const page = tweetPage(await this.request(account, 'tweet/advanced_search', { query: { query, queryType: 'Latest', cursor: batch.cursor }, signal }));
+      const query = `(${batch.users.map((name) => `from:${name}`).join(' OR ')}) include:nativeretweets${searchQuery ? ` ${searchQuery}` : ''}`;
+      const page = tweetPage(await this.request(account, 'tweet/advanced_search', { query: { query, queryType: 'Latest', cursor: batch.cursor }, signal }), MAX_PROVIDER_CURSOR);
       apiRequests++;
       for (const tweet of page.tweets) uniqueTweets.set(tweet.id, tweet);
-      if (page.hasNextPage) pending.push({ users: batch.users, cursor: page.nextCursor });
+      tweetHasNextPage ||= page.hasNextPage;
+      tweetCursorTooLong ||= page.coverage?.tweetContinuationUnavailableReason === 'cursor_too_long';
+      if (page.hasNextPage && page.nextCursor) pending.push({ users: batch.users, cursor: page.nextCursor });
     }
     const tweets = [...uniqueTweets.values()].sort((a, b) => {
       const time = (Date.parse(b.createdAt ?? '') || 0) - (Date.parse(a.createdAt ?? '') || 0);
       return time || (BigInt(a.id) < BigInt(b.id) ? 1 : -1);
     });
-    const nextCursor = pending.length ? Buffer.from(JSON.stringify({
-      version: 1, account: account.account, userName: account.userName.toLowerCase(), batches: pending, coverage,
-    })).toString('base64url') : null;
+    // 1バッチでも安全に続けられない場合は、欠けた継続を全体の継続として返さない。
+    const nextCursor = pending.length && !tweetCursorTooLong ? encodeFeedCursor(pending, coverage, account) : null;
+    if (pending.length && !nextCursor) tweetCursorTooLong = true;
     return {
       account: account.account,
       mode: 'reconstructed_following_feed',
       officialHomeEquivalent: false,
       tweets,
-      hasNextPage: pending.length > 0,
+      hasNextPage: tweetHasNextPage,
       nextCursor,
       coverage: { ...coverage, protectedTweetsAvailable: false, completeFollowingList: !coverage.followingHasNextPage && coverage.followingPage !== 'continuation',
-        globalTimelineOrderGuaranteed: false },
+        globalTimelineOrderGuaranteed: false, tweetContinuationAvailable: nextCursor !== null,
+        tweetContinuationUnavailableReason: tweetCursorTooLong ? 'cursor_too_long' : null },
       apiRequests,
     };
   }
 
+  async searchTweets(account, input = {}) {
+    const { conditions, query, startTime, endTime } = searchConditions(account, input);
+    const { scope, keyword, maxAccounts } = conditions;
+    const cursor = input.cursor === undefined ? undefined : decodeSearchCursor(input.cursor, account, conditions, 'tweets');
+    const followingCursor = input.followingCursor === undefined ? undefined : decodeSearchCursor(input.followingCursor, account, conditions, 'following');
+    let result;
+    if (scope === 'all') {
+      const page = tweetPage(await this.request(account, 'tweet/advanced_search', { query: { query, queryType: 'Latest', cursor }, signal: input.signal }), MAX_PROVIDER_CURSOR);
+      result = { ...page, apiRequests: 1, coverage: {
+        publicSearch: true, protectedTweetsAvailable: false, completeSearch: false, globalTimelineOrderGuaranteed: false,
+        tweetContinuationAvailable: page.nextCursor !== null,
+        tweetContinuationUnavailableReason: page.coverage?.tweetContinuationUnavailableReason ?? null,
+      } };
+    } else {
+      result = await this.getFollowingFeed(account, { maxAccounts, cursor, followingCursor, searchQuery: query, signal: input.signal });
+      const nextFollowing = result.coverage.followingNextCursor;
+      if (result.coverage.followingHasNextPage && !nextFollowing && !result.coverage.followingContinuationUnavailableReason) {
+        fail('INVALID_RESPONSE', 'フォロー一覧の続き情報が不足しています。');
+      }
+      const nextFollowingCursor = nextFollowing ? encodeSearchCursor(nextFollowing, account, conditions, 'following') : null;
+      result.coverage = { ...result.coverage, followingNextCursor: nextFollowingCursor,
+        followingContinuationAvailable: result.coverage.followingHasNextPage && nextFollowingCursor !== null,
+        followingContinuationUnavailableReason: result.coverage.followingContinuationUnavailableReason
+          ?? (nextFollowing && !nextFollowingCursor ? 'cursor_too_long' : null) };
+    }
+    const nextCursor = result.nextCursor ? encodeSearchCursor(result.nextCursor, account, conditions, 'tweets') : null;
+    const coverage = { ...result.coverage, tweetContinuationAvailable: nextCursor !== null,
+      tweetContinuationUnavailableReason: result.coverage.tweetContinuationUnavailableReason
+        ?? (result.nextCursor && !nextCursor ? 'cursor_too_long' : null) };
+    return {
+      account: account.account, scope, keyword, startTime, endTime,
+      tweets: result.tweets, hasNextPage: result.hasNextPage,
+      nextCursor,
+      apiRequests: result.apiRequests, coverage,
+    };
+  }
+
   async postTweet(account, { text, images = [], signal }) {
-    const parsed = twitterText.parseTweet(text);
+    const parsed = parseTweetText(text);
     if (!text.trim() || !parsed.valid) fail('INVALID_TEXT', '投稿文は空でなく、Xの加重文字数280以内にしてください。');
     // 全ファイルの事前確認を終えてからアップロードを開始する。
     const files = await Promise.all(images.map(imageFile));

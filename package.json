@@ -16,6 +16,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.32.1",
+    "emoji-regex": "10.6.0",
     "twitter-text": "3.1.0",
     "zod": "4.6.6"
   },

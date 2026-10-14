@@ -154,7 +154,7 @@ export function createAccountStore({ secretsPath, profile, sessionPaths = {}, st
       const credentials = await getLoginCredentials(account);
       await sessions.prepare(credentials);
     },
-    async saveSession(account, loginCookie, { expectedAccount } = {}) {
+    async saveSession(account, loginCookie, { expectedAccount, lease, signal } = {}) {
       let credentials;
       try { credentials = await getLoginCredentials(account); }
       catch (error) {
@@ -164,7 +164,7 @@ export function createAccountStore({ secretsPath, profile, sessionPaths = {}, st
       if (expectedAccount && ['account', 'userName', 'apiKey', 'proxy'].some((key) => credentials[key] !== expectedAccount[key])) {
         throw new ConfigurationError('AUTH_CONFIG_CHANGED', 'ログイン中にアカウント設定が変更されました。設定を確認して再実行してください。');
       }
-      return sessions.save(credentials, loginCookie);
+      return sessions.save(credentials, loginCookie, { lease, signal });
     },
   };
 }

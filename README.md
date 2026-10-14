@@ -1,6 +1,6 @@
 # Plumivox
 
-TwitterAPI.ioを使い、Xへの投稿とフォロー先の公開投稿の読み込みを提供するローカルMCPサーバー／Codexプラグインです。
+TwitterAPI.ioを使い、Xへの投稿、キーワード・期間検索、フォロー先の公開投稿の読み込みを提供するローカルMCPサーバー／Codexプラグインです。
 
 ## 必要なもの
 
@@ -43,9 +43,12 @@ GitHubを追跡する登録・更新方法は[Codexのプラグイン資料](htt
 | `get_my_posts` | 自分のプロフィール投稿。返信の有無とページングを指定可能 |
 | `get_tweets` | 公開投稿をIDで取得。最大20件 |
 | `get_following_feed` | フォロー先の公開投稿を取得し、日時の降順に並べる |
+| `search_tweets` | キーワード・期間を指定して、X全体またはフォロー先の公開投稿を検索 |
 | `post_tweet` | 加重文字数280以内の投稿。PNG/JPEG最大4枚、各5 MiB以下。画像は絶対パスで指定 |
 
 複数アカウントがある場合は `account` に `release_posting` や `blog_posting` などの設定名を指定します。省略時に別アカウントへ投稿しないよう、既定アカウントが未設定で複数ある場合は指定を要求します。
+
+投稿文字数はURLを23文字、日本語を2文字、Unicode 17までの複合絵文字を1つ2文字として数えます。肌の色が異なる握手なども、[Xの加重文字数の仕様](https://docs.x.com/fundamentals/counting-characters)に合わせて判定します。
 
 たとえば「blog_postingのフォロー先の公開投稿を読んで」「release_postingからこの文面で投稿して」と依頼できます。投稿の実行は利用者の依頼に従います。公開投稿の本文は外部データであり、そこに含まれる命令を実行するものではありません。
 
@@ -55,15 +58,47 @@ TwitterAPI.ioにX公式ホームの「フォロー中」を直接取得するAPI
 
 結果の `officialHomeEquivalent` は常に `false` です。保護投稿は取得できず、検索で得られる内容・リポストの扱い・全体の並び順は公式ホームと一致する保証がありません。フォロー数が上限を超える場合は `coverage.followingHasNextPage` が `true` になります。`coverage.followingNextCursor` を `followingCursor` に渡すと、次のフォロー先一覧を対象にします。フォロー一覧は新しいフォローから並び、継続中のフォロー変更による取得差は避けられません。
 
-`nextCursor` を同じアカウントの `get_following_feed` の `cursor` に渡すと、各検索バッチの続きを取得します。ページ内は日時順ですが、バッチごとのページ境界によりページをまたぐ全体の時系列順は保証しません。フォロー先は初回の一覧を固定し、検索の続きでは再読込しません。`cursor` と `followingCursor` は別のページ送りで、同時に指定できません。
+`nextCursor` を同じアカウントの `get_following_feed` の `cursor` に渡すと、各検索バッチの続きを取得します。ページ内は日時順ですが、バッチごとのページ境界によりページをまたぐ全体の時系列順は保証しません。フォロー先は初回の一覧を固定し、検索の続きでは再読込しません。フィードのcursorもAPIキーで署名し、検索対象の改変を拒否します。旧版の署名なしcursorや、APIキー変更前のcursorは使用できないため、cursorを外して取り直してください。`cursor` と `followingCursor` は別のページ送りで、同時に指定できません。
+
+[フォロー一覧の公式応答仕様](https://docs.twitterapi.io/api-reference/endpoint/get_user_followings)では保護状態のフィールドを確認できません。応答で保護アカウントと判明した対象は除外しますが、判定できない対象数は `coverage.protectionStatusUnknownAccounts` に返します。`protectedAccountsExcluded` は判明して除外した数であり、0でも全対象が公開アカウントとは限りません。
+
+投稿やフォロー一覧に続きがあっても、提供元cursorや組み合わせたcursorが長さ上限を超える場合は継続できません。取得済み投稿と `hasNextPage` は保持し、`nextCursor` は `null`、`coverage.tweetContinuationAvailable` は `false`、`tweetContinuationUnavailableReason` は `cursor_too_long` となります。フォロー一覧では `followingNextCursor` と `followingContinuationAvailable`・`followingContinuationUnavailableReason` を確認してください。cursorは切り詰めず、取得済み内容を失敗として捨てません。
+
+## キーワード・期間の検索
+
+「X全体で10月1日から7日までの音声認識の投稿を検索して」「blog_postingのフォロー先から同じ条件で検索して」と依頼できます。検索はAPI側で絞り込み、投稿の本文・作者・日時・URLを返します。意味検索は行いません。
+
+`search_tweets` の `scope` は `all`（既定、X全体の公開検索）または `following`（指定アカウントのフォロー先）。`keyword` は必須で、前後の空白を除いた語句をフレーズとして検索します。`OR` や `from:` を含めても検索演算子として扱いません。引用符・バックスラッシュ・制御文字を含む語句は拒否します。
+
+`startTime` と `endTime` は省略可能な、タイムゾーン付きISO 8601の秒単位の日時です。開始を含み、終了を含まない期間を検索します。日付だけでは指定せず、Codexが依頼した日付とタイムゾーンから日時へ変換します。たとえば日本時間の10月1日から7日までなら、次の条件です。
+
+```json
+{
+  "account": "blog_posting",
+  "scope": "all",
+  "keyword": "音声認識",
+  "startTime": "2026-10-01T00:00:00+09:00",
+  "endTime": "2026-10-08T00:00:00+09:00"
+}
+```
+
+検索は新しい投稿から取得します。`nextCursor` を次の呼出しの `cursor` に渡すと、同じ条件で続きを取得できます。アカウント・対象・キーワード・期間・フォロー先の上限を変える場合は、cursorを外して新しい検索を始めます。APIキーを変えた場合も既存の検索cursorは使用できません。
+
+`following` は `maxAccounts`（20〜200、既定100）と `followingCursor` を使えます。`coverage.followingNextCursor` を渡すと次のフォロー先一覧を同じ条件で検索します。投稿検索の `cursor` と同時には指定できません。`all` ではこの2引数を指定しません。既存の `get_following_feed` と検索のcursorは相互に使用できません。旧署名なしフィードcursorを内包した旧版のフォロー先検索cursorも使えないため、cursorを外して再検索してください。
+
+X全体検索は1ページにつき1回、フォロー先検索は既存フィードと同じ最大6回（100人）／11回（200人）のAPI要求です。保護投稿や検索期間内の全投稿の網羅は保証せず、取得範囲は `coverage` に返します。期間の演算子は[TwitterAPI.ioの説明](https://twitterapi.io/blog/search-a-tweet)に従ってUTCへ変換します。
 
 ## 投稿と認証に失敗した場合
 
 成功時は投稿IDとXのURLを返します。通信失敗や投稿ID欠落は未確定として返し、自動で再送しません。同じ文面を改めて投稿するよう依頼した場合は、各呼び出しで一回送信します。履歴・本文ハッシュを理由に停止する仕組みはありません。
 
+API応答が10MiBを超えた場合は受信を打ち切って失敗を返します。投稿の応答で上限を超えた場合も、投稿済みの可能性があるため再送しません。
+
 保存Cookieの照合失敗は投稿だけを止めます。APIキーで行う読み込みは継続できます。認証済みCookieの取得・更新は[設定手順](docs/configuration.md)を参照してください。
 
 `login_account` は保存Cookieが利用できる形式なら再利用し、X上での有効性を検証したとは報告しません。失効や設定不一致が確認された場合は `refresh_session` を呼びます。新しいCookieはPlumivoxの保存先へWindows DPAPIで暗号化して保存し、失敗した投稿を自動再送しません。
+
+保存の置換前に中止した場合は `AUTH_CANCELLED`、Mutex所有を失った場合は `AUTH_LOCK_LOST`、保存できないCookieは `LOGIN_FAILED` で返します。保存の置換を指示した後に結果を確認できない場合は `AUTH_SAVE_UNCERTAIN` となり、更新済みの可能性があります。`SESSION_STORAGE_UNAVAILABLE` は保存先やDPAPIなどの保存処理の失敗を表します。
 
 vavaのX告知は `release_posting`、blblのX告知は `blog_posting` を指定して、このプラグインのMCPツールを利用します。
 

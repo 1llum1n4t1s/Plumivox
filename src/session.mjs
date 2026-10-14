@@ -1,5 +1,4 @@
-import { constants } from 'node:fs';
-import { copyFile, lstat, mkdir, readFile, realpath, rename, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, readFile, realpath, writeFile } from 'node:fs/promises';
 import { createHash, randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import path from 'node:path';
@@ -13,8 +12,15 @@ const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '
 /** 子プロセスの詳細や秘密値を含まない永続化エラー。 */
 export class SessionStorageError extends Error {
   constructor(code = 'SESSION_STORAGE_UNAVAILABLE') {
-    super(code === 'AUTH_BUSY' ? 'このアカウントは別のプロセスでログイン処理中です。完了後に再実行してください。'
-      : 'Windowsのセッション保存先とPowerShellを確認してください。');
+    const messages = {
+      AUTH_BUSY: 'このアカウントは別のプロセスでログイン処理中です。完了後に再実行してください。',
+      AUTH_CANCELLED: 'ログインは中止されました。この処理では保存セッションを変更していません。',
+      AUTH_LOCK_LOST: '認証更新の排他を維持できませんでした。この処理では保存セッションを変更していません。',
+      LOGIN_FAILED: 'ログインCookieを確認できません。この処理では保存セッションを変更していません。',
+      AUTH_SAVE_UNCERTAIN: '認証更新の完了を確認できません。保存セッションが更新されている可能性があります。list_accountsで状態を確認してください。自動再送していません。',
+      SESSION_STORAGE_UNAVAILABLE: 'Windowsのセッション保存先とPowerShellを確認してください。',
+    };
+    super(messages[code] || messages.SESSION_STORAGE_UNAVAILABLE);
     this.name = 'SessionStorageError';
     this.code = code;
   }
@@ -53,6 +59,7 @@ try {
 `;
 
 // 親の標準入力がEOFになるまで同じPowerShellスレッドで所有権を保持する。
+// 最終置換も所有スレッドで行い、所有子プロセス消失後の古い保存を防ぐ。
 // 親プロセス終了時にもパイプが閉じるため、ロックファイルの回収は不要。
 const SESSION_MUTEX = `
 $ErrorActionPreference = 'Stop'
@@ -71,7 +78,24 @@ try {
   if (-not $owned) { [Console]::Out.WriteLine('busy'); [Console]::Out.Flush(); exit 3 }
   [Console]::Out.WriteLine('acquired')
   [Console]::Out.Flush()
-  [void][Console]::In.ReadToEnd()
+  while ($null -ne ($line = [Console]::In.ReadLine())) {
+    $commit = $line | ConvertFrom-Json
+    if ($commit.operation -ne 'commit') { exit 2 }
+    try {
+      $destination = [IO.FileInfo]::new($commit.destination)
+      if ($destination.Exists) {
+        if (($destination.Attributes -band ([IO.FileAttributes]::ReparsePoint -bor [IO.FileAttributes]::Directory)) -ne 0 -or $destination.Length -gt 2097152) { throw 'storage' }
+        [IO.File]::Copy($commit.destination, $commit.backup, $false)
+      }
+      [IO.File]::Move($commit.staging, $commit.destination, $true)
+    } catch {
+      [Console]::Out.WriteLine('storage_error')
+      [Console]::Out.Flush()
+      exit 2
+    }
+    [Console]::Out.WriteLine('saved')
+    [Console]::Out.Flush()
+  }
 } catch { exit 2 }
 finally {
   if ($owned) { $mutex.ReleaseMutex() }
@@ -86,10 +110,26 @@ function acquireSessionMutex(name) {
     let settled = false;
     let acquired = false;
     let requestedRelease = false;
+    let commitPending;
+    let commitRequested = false;
+    const ownership = new AbortController();
     const child = spawn('pwsh', ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand',
       Buffer.from(SESSION_MUTEX, 'utf16le').toString('base64')], { windowsHide: true, stdio: ['pipe', 'pipe', 'ignore'] });
     let finishClosed;
     const closed = new Promise((resolveClosed) => { finishClosed = resolveClosed; });
+    // 保存命令送信後は、子の終了だけでは本体の置換前後を判別できない。
+    const ownershipError = () => new SessionStorageError(commitRequested ? 'AUTH_SAVE_UNCERTAIN' : 'AUTH_LOCK_LOST');
+    const loseOwnership = () => {
+      if (!acquired || requestedRelease || ownership.signal.aborted) return;
+      const error = ownershipError();
+      ownership.abort(error);
+      commitPending?.reject(error);
+    };
+    const assertOwned = () => {
+      if (ownership.signal.aborted || requestedRelease || child.exitCode !== null || child.signalCode !== null) {
+        throw ownership.signal.reason || ownershipError();
+      }
+    };
     const fail = (code) => {
       if (settled) return;
       settled = true;
@@ -98,32 +138,65 @@ function acquireSessionMutex(name) {
       reject(new SessionStorageError(code));
     };
     const timer = setTimeout(() => { child.kill(); fail(); }, 10_000);
-    child.on('error', () => { finishClosed(null); fail(); });
-    child.stdin.on('error', () => fail());
+    child.on('error', () => { finishClosed(null); loseOwnership(); fail(); });
+    child.stdin.on('error', () => { loseOwnership(); fail(); });
+    child.on('exit', loseOwnership);
     child.on('close', (code) => {
       finishClosed(code);
+      loseOwnership();
       if (!acquired) fail();
     });
     child.stdout.setEncoding('utf8');
     child.stdout.on('data', (chunk) => {
       output += chunk;
       if (output.length > 128) { child.kill(); fail(); return; }
-      if (settled || !output.includes('\n')) return;
+      if (!output.includes('\n')) return;
       const response = output.trim();
+      output = '';
+      if (acquired) {
+        if (requestedRelease && !commitPending && ['saved', 'storage_error'].includes(response)) return;
+        if (response === 'saved' && commitPending) commitPending.resolve();
+        else if (response === 'storage_error' && commitPending) commitPending.reject(new SessionStorageError());
+        else { loseOwnership(); child.kill(); }
+        return;
+      }
+      if (settled) return;
       if (response === 'busy') { fail('AUTH_BUSY'); return; }
       if (response !== 'acquired') { child.kill(); fail(); return; }
       acquired = true;
       settled = true;
       clearTimeout(timer);
-      resolve(async () => {
+      const release = async () => {
         if (requestedRelease) return;
         requestedRelease = true;
         child.stdin.end();
         const releaseTimer = setTimeout(() => child.kill(), 5_000);
         try {
           const code = await closed;
-          if (code !== 0) throw new SessionStorageError();
+          if (code !== 0) throw ownershipError();
         } finally { clearTimeout(releaseTimer); }
+      };
+      resolve({ signal: ownership.signal, assertOwned, release,
+        async commit(paths, signal) {
+          assertOwned();
+          if (signal?.aborted) throw new SessionStorageError('AUTH_CANCELLED');
+          if (commitPending) throw new SessionStorageError();
+          let commitTimer;
+          const cancelCommit = () => commitPending?.reject(new SessionStorageError('AUTH_SAVE_UNCERTAIN'));
+          try {
+            await new Promise((resolveCommit, rejectCommit) => {
+              commitPending = { resolve: resolveCommit, reject: rejectCommit };
+              signal?.addEventListener('abort', cancelCommit, { once: true });
+              commitTimer = setTimeout(() => { loseOwnership(); child.kill(); }, 10_000);
+              commitRequested = true;
+              child.stdin.write(`${JSON.stringify({ operation: 'commit', ...paths })}\n`);
+            });
+          } finally {
+            clearTimeout(commitTimer);
+            signal?.removeEventListener('abort', cancelCommit);
+            commitPending = undefined;
+          }
+        },
       });
     });
     // ハッシュ化済みの名前だけを送り、資格情報やユーザー名は子へ渡さない。
@@ -241,9 +314,15 @@ export function createSessionStorage({ stateDirectory } = {}) {
     async withLock(account, callback) {
       const directory = await validateDirectory(directoryFor(account), true);
       const name = `Global\\Kagayoi.Plumivox.Auth.${hash(directory.toLowerCase())}`;
-      const release = await acquireSessionMutex(name);
-      try { return await callback(account); }
-      finally { await release(); }
+      const lease = await acquireSessionMutex(name);
+      let callbackFailed = false;
+      try { return await callback(account, lease); }
+      catch (error) { callbackFailed = true; throw error; }
+      finally {
+        // 本来の中止・Cookie・保存エラーを、後続の解放失敗で上書きしない。
+        if (callbackFailed) { try { await lease.release(); } catch {} }
+        else await lease.release();
+      }
     },
     async read(account) {
       if (!root) return { status: 'missing' };
@@ -255,12 +334,18 @@ export function createSessionStorage({ stateDirectory } = {}) {
         return { status: error.code === 'ENOENT' ? 'missing' : 'invalid' };
       }
     },
-    async save(account, cookie) {
+    async save(account, cookie, { lease, signal } = {}) {
       const key = directoryFor(account);
       const previous = saves.get(key) || Promise.resolve();
       const pending = previous.catch(() => {}).then(async () => {
         try {
-          if (!nonempty(cookie) || Buffer.byteLength(cookie) > MAX_BYTES / 2 || /[\u0000\r\n]/u.test(cookie)) throw new SessionStorageError();
+          const assertActive = () => {
+            if (!lease) throw new SessionStorageError();
+            lease.assertOwned();
+            if (signal?.aborted) throw new SessionStorageError('AUTH_CANCELLED');
+          };
+          assertActive();
+          if (!nonempty(cookie) || Buffer.byteLength(cookie) > MAX_BYTES / 2 || /[\u0000\r\n]/u.test(cookie)) throw new SessionStorageError('LOGIN_FAILED');
           await prepare(account);
           const acquiredAt = new Date().toISOString();
           const encrypted = await protectedOperation('encrypt', { value: JSON.stringify({ schema_version: 2,
@@ -269,16 +354,16 @@ export function createSessionStorage({ stateDirectory } = {}) {
           const destination = path.join(directory, 'session.dpapi');
           const id = randomUUID();
           const staging = path.join(directory, `session-${id}.pending`);
-          // 保存前の暗号化キャッシュを復元用に保持する。失敗しても旧本体を消さない。
-          try {
-            const existing = await lstat(destination);
-            if (!existing.isFile() || existing.isSymbolicLink() || existing.size > MAX_BYTES) throw new SessionStorageError();
-            await copyFile(destination, path.join(directory, `session-${id}.backup.dpapi`), constants.COPYFILE_EXCL);
-          } catch (error) { if (error.code !== 'ENOENT') throw error; }
+          assertActive();
           await writeFile(staging, encrypted, { encoding: 'utf8', flag: 'wx', mode: 0o600 });
-          await rename(staging, destination);
+          assertActive();
+          // 保存前の暗号化キャッシュと本体の置換はMutex所有子プロセスだけが行う。
+          await lease.commit({ staging, destination, backup: path.join(directory, `session-${id}.backup.dpapi`) }, signal);
           return { account: account.account, userName: account.userName, sessionSource: 'plumivox_dpapi', acquiredAt };
-        } catch { throw new SessionStorageError(); }
+        } catch (error) {
+          if (error instanceof SessionStorageError) throw error;
+          throw new SessionStorageError();
+        }
       });
       saves.set(key, pending);
       try { return await pending; }
