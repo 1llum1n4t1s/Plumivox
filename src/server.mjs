@@ -13,7 +13,7 @@ const readOnly = { readOnlyHint: true, destructiveHint: false, idempotentHint: t
 
 export function createServer({ accounts, apiBaseUrl, timeoutMs, proxyManager = createManagedProxyManager() } = {}) {
   const api = new TwitterApiClient({ apiBaseUrl, timeoutMs });
-  const server = new McpServer({ name: 'plumivox', version: '1.0.0' });
+  const server = new McpServer({ name: 'plumivox', version: '1.0.1' });
   const authenticating = new Set();
   const handle = (action) => async (input, extra) => {
     try {

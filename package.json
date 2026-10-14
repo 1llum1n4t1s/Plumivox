@@ -1,6 +1,6 @@
 {
   "name": "plumivox",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "private": true,
   "description": "TwitterAPI.ioを使うX投稿・フォロー先フィードのローカルMCPサーバー",
   "type": "module",
@@ -16,9 +16,10 @@
     "build": "node scripts/build.mjs",
     "start": "node dist/plumivox.mjs",
     "check": "node scripts/check.mjs",
-    "test:e2e": "node tests/e2e.mjs && node tests/proxy-e2e.mjs && node tests/proxy-shared-e2e.mjs",
+    "test:e2e": "node tests/e2e.mjs && node tests/proxy-e2e.mjs && node tests/proxy-shared-e2e.mjs && node tests/setup-e2e.mjs && node tests/setup-vps-e2e.mjs",
     "test:proxy-e2e": "node tests/proxy-e2e.mjs",
-    "test:proxy-shared-e2e": "node tests/proxy-shared-e2e.mjs"
+    "test:proxy-shared-e2e": "node tests/proxy-shared-e2e.mjs",
+    "test:setup-e2e": "node tests/setup-e2e.mjs && node tests/setup-vps-e2e.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.32.1",
