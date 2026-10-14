@@ -1,8 +1,8 @@
 # アカウント設定
 
-Plumivox は既存の `secrets.json` の `twitterapi_io` 以下にある各プロファイルを読みます。環境変数へ秘密値を設定する必要はありません。読み込みには `api_key` と `user_name`、投稿には加えて `proxy` とログインCookieを使います。ログイン・セッション更新では `email`、`password`、必要に応じて `totp_secret` をサーバー内部で読みます。
+Plumivox は設定ファイルの `twitterapi_io` 以下にある各プロファイルを読みます。新規利用者は[設定ウィザード](setup.md)を利用できます。環境変数へ秘密値を設定する必要はありません。読み込みには `api_key` と `user_name`、投稿には加えて `proxy` とログインCookieを使います。ログイン・セッション更新では `email`、`password`、必要に応じて `totp_secret` をサーバー内部で読みます。
 
-アカウント引数には `list_accounts` が返す設定名をそのまま指定できます。設定名に64文字の上限は設けません。設定ファイル全体の上限は1MiBです。
+アカウント引数には `list_accounts` が返す設定名をそのまま指定できます。設定名に64文字の上限は設けません。設定ファイル全体の上限は2MiBです。
 
 ```json
 {
@@ -23,9 +23,11 @@ Plumivox は既存の `secrets.json` の `twitterapi_io` 以下にある各プ�
 
 | 設定 | 解決方法 |
 | --- | --- |
-| 設定ファイル | `PLUMIVOX_SECRETS_FILE` → `createAccountStore({secretsPath})` → `C:\Users\IMT\dev\Secret\secrets.json` |
+| 設定ファイル | `PLUMIVOX_SECRETS_FILE` → `createAccountStore({secretsPath})` → 存在する `~/dev/Secret/secrets.json` → `%LOCALAPPDATA%\Kagayoi\Plumivox\settings.json` |
 | アカウント | `getAccount(account)` の引数 → `PLUMIVOX_DEFAULT_ACCOUNT` → `createAccountStore({profile})` → 唯一のプロファイル |
-| 複数アカウント | `release_posting`、`blog_posting` など、プロファイル名を明示して選択 |
+| 複数アカウント | `main`、`release_posting`、`blog_posting` など、プロファイル名を明示して選択 |
+
+設定ファイルの選択は起動時に固定し、各呼出しではそのファイルを読み直します。選択済みファイルが不正・削除された場合はエラーにし、別のファイルへ黙って切り替えません。`~`は現在の利用者のホームです。`LOCALAPPDATA`がない場合は`~/AppData/Local/Kagayoi/Plumivox/settings.json`を使います。Windows以外ではログインとセッション更新を利用できません。
 
 ユーザー名は英数字と `_` の1～15文字です。読取りは APIキーとユーザー名だけで利用できます。投稿には加えて HTTP/HTTPS の有効なプロキシと v2 Cookie が必要です。`getAccount(account, {requirePosting:true})` は投稿設定が不足している場合に拒否します。Cookieの期限やAPIによる受入れはローカルの設定確認だけでは判定できません。
 

@@ -1,0 +1,2 @@
+# Windowsで取得したプラグインからVPSへそのまま転送できる改行にする。
+setup/vps/* text eol=lf

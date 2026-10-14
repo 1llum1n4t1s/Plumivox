@@ -1,0 +1,43 @@
+# 公開IPv4口。TLSは復号しない。
+http_port 0.0.0.0:@PUBLIC_PORT@
+visible_hostname plumivox-proxy
+workers 1
+pid_filename /run/plumivox-proxy/squid.pid
+auth_param basic program /usr/lib/squid/basic_ncsa_auth /run/credentials/plumivox-proxy.service/passwd
+auth_param basic children 2 startup=1 idle=1
+auth_param basic realm Plumivox
+auth_param basic credentialsttl 5 minutes
+acl authenticated proxy_auth REQUIRED
+acl connect_method method CONNECT
+acl tls_port port 443
+acl x_domains dstdomain -n .x.com .twitter.com .twimg.com
+acl private_dst dst 0.0.0.0/8 10.0.0.0/8 100.64.0.0/10 127.0.0.0/8 169.254.0.0/16 172.16.0.0/12 192.168.0.0/16 224.0.0.0/4 240.0.0.0/4
+acl private_dst dst ::/128 ::1/128 fc00::/7 fe80::/10 ff00::/8
+acl too_many_connections maxconn 16
+# PCの逆トンネルが停止した場合もVPSから直接接続しない。
+cache_peer 127.0.0.1 parent @REMOTE_PORT@ 0 no-query default name=home_egress
+cache_peer_access home_egress allow x_domains
+cache_peer_access home_egress deny all
+never_direct allow all
+http_access deny !connect_method
+http_access deny !tls_port
+http_access deny !x_domains
+http_access deny too_many_connections
+http_access deny !authenticated
+http_access deny private_dst
+http_access allow authenticated x_domains
+http_access deny all
+cache deny all
+cache_mem 8 MB
+maximum_object_size 0 KB
+access_log none
+cache_store_log none
+cache_log /dev/null
+logfile_rotate 0
+forwarded_for delete
+request_timeout 15 seconds
+connect_timeout 15 seconds
+read_timeout 2 minutes
+client_lifetime 5 minutes
+shutdown_lifetime 3 seconds
+max_filedescriptors 256

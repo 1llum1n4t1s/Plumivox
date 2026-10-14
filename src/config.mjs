@@ -1,10 +1,20 @@
 import { readFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
+import os from 'node:os';
+import { existsSync } from 'node:fs';
 import { createSessionStorage, readLegacyProtectedCookie } from './session.mjs';
 
 const USER_NAME = /^[A-Za-z0-9_]{1,15}$/;
-const DEFAULT_SECRETS = 'C:\\Users\\IMT\\dev\\Secret\\secrets.json';
+/** 既存の正本を優先し、選択後の読込み失敗で別ファイルへ切り替えない。 */
+export function resolveSecretsPath(secretsPath) {
+  if (process.env.PLUMIVOX_SECRETS_FILE) return process.env.PLUMIVOX_SECRETS_FILE;
+  if (secretsPath) return secretsPath;
+  const existing = path.join(os.homedir(), 'dev', 'Secret', 'secrets.json');
+  if (existsSync(existing)) return existing;
+  return path.join(process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local'),
+    'Kagayoi', 'Plumivox', 'settings.json');
+}
 const MAX_BYTES = 2 * 1024 * 1024;
 
 /** 秘密値やファイルパスを含まない設定エラー。 */
@@ -37,7 +47,7 @@ function validProxy(value) {
  * sessionPaths はプロファイル名から既存の状態ディレクトリへの対応。
  */
 export function createAccountStore({ secretsPath, profile, sessionPaths = {}, stateDirectory } = {}) {
-  const source = process.env.PLUMIVOX_SECRETS_FILE || secretsPath || DEFAULT_SECRETS;
+  const source = resolveSecretsPath(secretsPath);
   const sessions = createSessionStorage({ stateDirectory });
 
   async function document() {

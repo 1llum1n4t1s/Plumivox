@@ -11,6 +11,8 @@ PlumivoxはTwitterAPI.ioを経由してXへの投稿・認証更新・公開投�
 | `src/cli.mjs` | 引数なし／`--stdio` で設定ストア・共有プロキシ管理・MCPサーバーを接続する。内部の `--proxy-daemon` 起動では標準入力からbootstrapを受け取りdaemonを実行する |
 | `src/server.mjs` | 11ツールのZod入力スキーマ、MCP注釈、アカウント選択、認証処理、定型エラー応答 |
 | `src/config.mjs` | 呼出し時の設定再読込み、アカウント・資格情報の検証、Cookieの選択、秘密を除いた準備状態の公開 |
+| `setup/Setup-Plumivox.ps1` / `setup/vps/` | 利用者専用の鍵・設定の作成と、VPSの認証付き公開プロキシの初回構築。通常の投稿処理から独立する |
+| `skills/setup-plumivox/SKILL.md` | 同梱資材を使う初期設定の案内。通常の投稿前条件を増やさない |
 | `src/session.mjs` | PowerShell子プロセスによるWindows DPAPI、保存先検証・ACL、セッション照合、名前付きMutex、暗号化保存 |
 | `src/proxy-egress.mjs` | loopback限定のCONNECT出口、X宛先制限、DNS全候補検証、接続数・容量・時間制限 |
 | `src/proxy-shared.mjs` | PC内の共有daemon、設定に結び付けた相互HMAC認証IPC、複数チャットとidle終了の制御 |
@@ -19,6 +21,7 @@ PlumivoxはTwitterAPI.ioを経由してXへの投稿・認証更新・公開投�
 | `scripts/build.mjs` / `dist/plumivox.mjs` | esbuildによるNode.js 22向けESMバンドルと、依存ライブラリを同梱する正式な実行物 |
 | `tests/e2e.mjs` / `tests/fixture-server.mjs` | localhostの偽APIと別プロセスのMCPを使い、通信内容・回数・失敗時の状態を検証する |
 | `tests/proxy-e2e.mjs` / `tests/proxy-shared-e2e.mjs` と起動fixture | 偽SSH・API・echoを使い、CONNECT経路と複数MCP間の共有・認証・停止を検証する |
+| `tests/setup-e2e.mjs` / `tests/setup-vps-e2e.mjs` | 個別保存先、設定ウィザード、鍵の保護、VPS CLIの検証と拒否条件。実VPSへの導入は別途確認が必要 |
 
 `mcp.json` はプラグイン取得先を `${PLUGIN_ROOT}` としてバンドルを起動する。マーケットプレイスは `.agents/plugins/marketplace.json`、プラグイン情報は `plugin.json` に置く。
 

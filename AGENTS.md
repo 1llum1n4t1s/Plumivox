@@ -1,5 +1,10 @@
 # Plumivox の作業規約
 
+## リリース
+
+- Plumivoxは今後のリリースでもXへのリリース告知を行わない。`vava`の告知工程は非該当とし、告知用の画像生成・ログイン・投稿も行わない。
+- 配布はGitHubの最新`main`を参照する既存プラグイン経路を使う。
+
 ## 文書と構造
 
 - 利用者向けの導入・操作・取得範囲は [README.md](README.md)、現在の構造と設計判断は [DESIGN.md](DESIGN.md) を参照する。
@@ -8,7 +13,7 @@
 
 ## 必須コマンドと検証
 
-Node.js 22以降と `package.json` の `packageManager` に指定された pnpm を使う。DPAPI・認証更新の検証には Windows と PowerShell 7 (`pwsh`) が必要。
+Node.js 22以降と `package.json` の `packageManager` に指定された pnpm を使う。DPAPI・認証更新とPCセットアップの検証には Windows と PowerShell 7 (`pwsh`)、VPSセットアップの構文・CLI確認には Bash（WindowsではGit for Windows）が必要。
 
 ```powershell
 pnpm install --frozen-lockfile --ignore-scripts
@@ -17,9 +22,9 @@ pnpm check
 pnpm test:e2e
 ```
 
-- 実装・依存関係・ビルド設定を変更した場合は上記で検証し、ソースと再生成したバンドルを一緒に更新する。`pnpm check` は `src/`・`scripts/`・`tests/` の構文と4つのJSON設定を確認する。
-- `pnpm test:e2e` はAPI・認証、管理プロキシ、共有daemonの3系統を順に実行する。ローカルの偽API・偽SSHと別プロセスのMCP・daemonを使い、実際のXへ投稿せず、実際のSSHホストへ接続しない。失敗条件を先に確認し、挙動の検証は対応する既存E2Eへ追加する。
-- 出力先を指定する場合は `PLUMIVOX_E2E_OUTPUT_DIR`、`PLUMIVOX_PROXY_E2E_OUTPUT_DIR`、`PLUMIVOX_PROXY_SHARED_E2E_OUTPUT_DIR` をそれぞれ別の、リポジトリとCodexユーザーディレクトリの外のフォルダーにする。未指定時は各系統がユーザーの一時ディレクトリ配下の `Codex/Plumivox/<UUID>` を使う。各出力先の `summary.json` の失敗数と各結果、`http-trace.json` を読み、偽設定・画像・暗号化セッション・SSH鍵の清掃は呼び出し側で行う。
+- 実装・依存関係・ビルド設定を変更した場合は上記で検証し、ソースと再生成したバンドルを一緒に更新する。`pnpm check` は `src/`・`scripts/`・`tests/`、同梱PowerShell・Bashの構文と4つのJSON設定を確認する。
+- `pnpm test:e2e` はAPI・認証、管理プロキシ、共有daemon、PCセットアップ、VPSセットアップCLIの5系統を順に実行する。ローカルの偽API・偽SSHと別プロセスのMCP・daemonを使い、実際のXへ投稿せず、実際のSSHホストへ接続しない。VPS CLIの確認だけで実Linuxへの導入成功を扱わない。失敗条件を先に確認し、挙動の検証は対応する既存E2Eへ追加する。
+- 出力先を指定する場合は `PLUMIVOX_E2E_OUTPUT_DIR`、`PLUMIVOX_PROXY_E2E_OUTPUT_DIR`、`PLUMIVOX_PROXY_SHARED_E2E_OUTPUT_DIR`、`PLUMIVOX_SETUP_E2E_OUTPUT_DIR`、`PLUMIVOX_SETUP_VPS_E2E_OUTPUT_DIR` をそれぞれ別の、リポジトリとCodexユーザーディレクトリの外のフォルダーにする。未指定時は各系統がユーザーの一時ディレクトリ配下の `Codex/Plumivox/<UUID>` を使う。各出力先の `summary.json` の失敗数と各結果、API系の`http-trace.json`、VPS CLIの`mutation-trace.json`を読み、偽設定・画像・暗号化セッション・SSH鍵の清掃は呼び出し側で行う。
 - 文書だけの変更では、リンク・コマンド・設定名・記載した挙動を対応する実装へ照合する。
 
 ## 実装の制約

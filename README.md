@@ -29,9 +29,11 @@ codex plugin add plumivox@plumivox-local
 
 GitHubを追跡する登録・更新方法は[Codexのプラグイン資料](https://developers.openai.com/plugins/build/plugins#add-a-marketplace-from-the-cli)を参照してください。
 
-設定ファイルはリポジトリ外へ置きます。既定では `C:\Users\IMT\dev\Secret\secrets.json` の `twitterapi_io` を読み、vava／blblの `release_posting` と `blog_posting` をそのまま利用できます。別の場所を使う場合は `PLUMIVOX_SECRETS_FILE` を指定します。秘密値を会話やMCPの引数へ渡す必要はありません。
+初めて使う場合は[セットアップ手順](docs/setup.md)に進んでください。VPSインストーラーとWindowsの設定ウィザードを同梱しています。Codexへ「Plumivoxをセットアップして」と依頼すると、同梱の`setup-plumivox`スキルでも案内できます。
 
-[アカウントとCookieの設定](docs/configuration.md) · [Plumivoxでプロキシを管理する](docs/managed-proxy.md)
+設定ファイルはリポジトリ外へ置きます。新規利用者は `%LOCALAPPDATA%\Kagayoi\Plumivox\settings.json`、既存の `~/dev/Secret/secrets.json` がある利用者はそのファイルの `twitterapi_io` を読みます。vava／blblの `release_posting` と `blog_posting` も維持します。別の場所を使う場合は `PLUMIVOX_SECRETS_FILE` を指定します。秘密値を会話やMCPの引数へ渡す必要はありません。
+
+[初めてのセットアップ](docs/setup.md) · [アカウントとCookieの設定](docs/configuration.md) · [Plumivoxでプロキシを管理する](docs/managed-proxy.md)
 
 ## 使えるツール
 
