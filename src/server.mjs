@@ -3,12 +3,14 @@ import { z } from 'zod';
 import { TwitterApiClient, PlumivoxError } from './client.mjs';
 import { ConfigurationError } from './config.mjs';
 import { SessionStorageError } from './session.mjs';
+import { createManagedProxyManager, ManagedProxyError } from './proxy-manager.mjs';
+import { ProxyEgressError } from './proxy-egress.mjs';
 
 const account = z.string().min(1).optional().describe('list_accountsが返したアカウント設定名。複数設定時は明示する。');
 const cursor = z.string().min(1).max(100_000).optional();
 const readOnly = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true };
 
-export function createServer({ accounts, apiBaseUrl, timeoutMs } = {}) {
+export function createServer({ accounts, apiBaseUrl, timeoutMs, proxyManager = createManagedProxyManager() } = {}) {
   const api = new TwitterApiClient({ apiBaseUrl, timeoutMs });
   const server = new McpServer({ name: 'plumivox', version: '1.0.0' });
   const authenticating = new Set();
@@ -17,7 +19,8 @@ export function createServer({ accounts, apiBaseUrl, timeoutMs } = {}) {
       const result = await action(input, extra?.signal);
       return { content: [{ type: 'text', text: JSON.stringify(result) }], structuredContent: result };
     } catch (error) {
-      const known = error instanceof ConfigurationError || error instanceof PlumivoxError || error instanceof SessionStorageError;
+      const known = error instanceof ConfigurationError || error instanceof PlumivoxError || error instanceof SessionStorageError
+        || error instanceof ManagedProxyError || error instanceof ProxyEgressError;
       const result = { error: {
         code: known ? error.code : 'INTERNAL_ERROR',
         message: known ? error.message : '処理に失敗しました。設定とAPIの状態を確認してください。',
@@ -31,6 +34,33 @@ export function createServer({ accounts, apiBaseUrl, timeoutMs } = {}) {
     description: '設定されたXアカウントと読取・投稿の準備状態を確認する。秘密値は返さず、外部APIを呼び出さない。準備状態はX上での認証成功を保証しない。',
     inputSchema: {}, annotations: readOnly,
   }, handle(async () => ({ accounts: await accounts.listAccounts() })));
+  server.registerTool('get_proxy_status', {
+    title: 'Plumivoxの中継状態',
+    description: 'このMCPプロセスが管理する中継の状態を取得する。通信や起動は行わず、接続先・資格情報は返さない。',
+    inputSchema: {}, annotations: { ...readOnly, openWorldHint: false },
+  }, handle(async () => proxyManager.getStatus()));
+  server.registerTool('start_proxy', {
+    title: 'Plumivoxの中継を起動',
+    description: '設定したアカウントの住宅回線出口とSSH中継を起動する。SSH鍵と接続設定はローカル設定だけから取得する。投稿やログインは行わない。',
+    inputSchema: { account }, annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+  }, handle(async ({ account: name }, signal) => {
+    const config = await accounts.getProxyConfiguration(name);
+    if (!config) throw new ConfigurationError('PROXY_EXTERNAL', 'externalモードのプロキシはPlumivoxの起動管理対象ではありません。');
+    return proxyManager.start(config, { signal });
+  }));
+  server.registerTool('stop_proxy', {
+    title: 'Plumivoxの中継を停止',
+    description: 'このMCPプロセスが所有する中継と住宅回線出口を停止する。次の投稿・認証要求では設定に従って再起動する。他のプロセスは終了させない。',
+    inputSchema: {}, annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+  }, handle(async () => { await proxyManager.stop(); return proxyManager.getStatus(); }));
+  const ensureProxy = async (selected, signal) => {
+    const config = await accounts.getProxyConfiguration(selected.account, { expectedProxy: selected.proxy });
+    await proxyManager.ensureReady(config, { signal });
+    const current = await accounts.getProxyConfiguration(selected.account, { expectedProxy: selected.proxy });
+    if (JSON.stringify(current) !== JSON.stringify(config)) {
+      throw new ConfigurationError('AUTH_CONFIG_CHANGED', '中継の準備中に設定が変更されました。再実行してください。');
+    }
+  };
   const authenticate = async (name, refresh, signal) => {
     const selected = await accounts.getAccount(name);
     if (authenticating.has(selected.account)) throw new PlumivoxError('AUTH_BUSY', 'このアカウントの認証更新は実行中です。');
@@ -50,6 +80,9 @@ export function createServer({ accounts, apiBaseUrl, timeoutMs } = {}) {
           throw new PlumivoxError('AUTH_CONFIG_CHANGED', '認証の準備中にアカウント設定が変更されました。保存セッションは変更していません。');
         }
         await accounts.prepareSessionStorage(selected.account);
+        lease.assertOwned();
+        if (signal?.aborted) throw new SessionStorageError('AUTH_CANCELLED');
+        await ensureProxy(credentials, authSignal);
         lease.assertOwned();
         if (signal?.aborted) throw new SessionStorageError('AUTH_CANCELLED');
         let cookie;
@@ -110,6 +143,10 @@ export function createServer({ accounts, apiBaseUrl, timeoutMs } = {}) {
     description: '利用者が投稿を依頼した文面を、指定アカウントから1回送信する。Xの加重文字数280以内。PNG/JPEG最大4枚、各5 MiB以下。同文でも明示呼び出しごとに送信し、ローカル履歴で停止しない。通信失敗や投稿ID欠落時に自動再送しない。',
     inputSchema: { account, text: z.string().min(1).max(30_000), images: z.array(z.string().min(1).max(4096)).max(4).optional().default([]) },
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
-  }, handle(async ({ account: name, ...input }, signal) => api.postTweet(await accounts.getAccount(name, { requirePosting: true }), { ...input, signal })));
+  }, handle(async ({ account: name, ...input }, signal) => {
+    const selected = await accounts.getAccount(name, { requirePosting: true });
+    return api.postTweet(selected, { ...input, signal, beforeSend: () => ensureProxy(selected, signal) });
+  }));
+  server.server.onclose = () => { void proxyManager.close(); };
   return server;
 }

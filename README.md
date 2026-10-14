@@ -7,7 +7,7 @@ TwitterAPI.ioを使い、Xへの投稿、キーワード・期間検索、フォ
 - Node.js 22以降。実行用バンドルに依存ライブラリを同梱しています。
 - ログイン・セッション更新はWindowsとPowerShell 7 (`pwsh`) が必要です。
 - TwitterAPI.ioのAPIキー。API利用には同サービスの従量課金が発生します。
-- 投稿には対象アカウントのv2ログインCookieとプロキシ。
+- 投稿には対象アカウントのv2ログインCookieとプロキシ。既存の外部プロキシに加え、Plumivox内の住宅回線出口とSSH中継を使えます。公開中継サーバーの初回準備は必要です。
 
 ## インストール
 
@@ -31,7 +31,7 @@ GitHubを追跡する登録・更新方法は[Codexのプラグイン資料](htt
 
 設定ファイルはリポジトリ外へ置きます。既定では `C:\Users\IMT\dev\Secret\secrets.json` の `twitterapi_io` を読み、vava／blblの `release_posting` と `blog_posting` をそのまま利用できます。別の場所を使う場合は `PLUMIVOX_SECRETS_FILE` を指定します。秘密値を会話やMCPの引数へ渡す必要はありません。
 
-[アカウントとCookieの設定](docs/configuration.md)
+[アカウントとCookieの設定](docs/configuration.md) · [Plumivoxでプロキシを管理する](docs/managed-proxy.md)
 
 ## 使えるツール
 
@@ -44,6 +44,9 @@ GitHubを追跡する登録・更新方法は[Codexのプラグイン資料](htt
 | `get_tweets` | 公開投稿をIDで取得。最大20件 |
 | `get_following_feed` | フォロー先の公開投稿を取得し、日時の降順に並べる |
 | `search_tweets` | キーワード・期間を指定して、X全体またはフォロー先の公開投稿を検索 |
+| `get_proxy_status` | このMCPプロセスが管理する中継の状態。起動・通信は行わない |
+| `start_proxy` | 設定した住宅回線出口とSSH中継を起動。投稿・ログインは行わない |
+| `stop_proxy` | このプロセスが所有する中継を停止。次の投稿・認証要求では再起動 |
 | `post_tweet` | 加重文字数280以内の投稿。PNG/JPEG最大4枚、各5 MiB以下。画像は絶対パスで指定 |
 
 複数アカウントがある場合は `account` に `release_posting` や `blog_posting` などの設定名を指定します。省略時に別アカウントへ投稿しないよう、既定アカウントが未設定で複数ある場合は指定を要求します。

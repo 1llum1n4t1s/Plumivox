@@ -40,27 +40,66 @@ export function createAccountStore({ secretsPath, profile, sessionPaths = {}, st
   const source = process.env.PLUMIVOX_SECRETS_FILE || secretsPath || DEFAULT_SECRETS;
   const sessions = createSessionStorage({ stateDirectory });
 
-  async function profiles() {
+  async function document() {
     try {
       const raw = await readFile(source, 'utf8');
       if (Buffer.byteLength(raw) > MAX_BYTES) throw new Error();
       const secrets = JSON.parse(raw);
       if (!object(secrets) || !object(secrets.twitterapi_io)) throw new Error();
-      return Object.fromEntries(Object.entries(secrets.twitterapi_io).filter(([, value]) => object(value)));
+      return secrets;
     } catch {
       throw new ConfigurationError('CONFIG_UNAVAILABLE', 'アカウント設定を読み込めません。設定ファイルを確認してください。');
     }
   }
 
+  const accountProfiles = (secrets) => Object.fromEntries(Object.entries(secrets.twitterapi_io).filter(([, value]) => object(value)));
+  async function profiles() { return accountProfiles(await document()); }
+
   async function select(account) {
-    const configs = await profiles();
+    const secrets = await document();
+    const configs = accountProfiles(secrets);
     const names = Object.keys(configs);
     const selected = account ?? process.env.PLUMIVOX_DEFAULT_ACCOUNT ?? profile ?? (names.length === 1 ? names[0] : undefined);
     if (!selected) throw new ConfigurationError('ACCOUNT_REQUIRED', '使用するアカウントを明示してください。');
     if (typeof selected !== 'string' || !Object.hasOwn(configs, selected)) {
       throw new ConfigurationError('ACCOUNT_UNKNOWN', '指定されたアカウント設定がありません。');
     }
-    return { account: selected, config: configs[selected] };
+    return { account: selected, config: configs[selected], secrets };
+  }
+
+  /** 公開中継の資格情報は設定ストアだけから読み、MCPへ返さない。 */
+  async function getProxyConfiguration(account, { expectedProxy } = {}) {
+    const { config, secrets } = await select(account);
+    const mode = config.proxy_mode ?? 'external';
+    if (!['external', 'managed'].includes(mode)) {
+      throw new ConfigurationError('PROXY_CONFIG', 'proxy_modeはexternalまたはmanagedを指定してください。');
+    }
+    if (expectedProxy !== undefined && config.proxy !== expectedProxy) {
+      throw new ConfigurationError('AUTH_CONFIG_CHANGED', '通信の準備中にプロキシ設定が変更されました。再実行してください。');
+    }
+    if (mode === 'external') return null;
+    const relay = secrets.plumivox?.managed_proxy;
+    const port = (value, fallback) => value === undefined ? fallback
+      : Number.isInteger(value) && value >= 1024 && value <= 65535 ? value : null;
+    const sshPort = relay?.ssh_port ?? 22;
+    if (!object(relay) || !validProxy(config.proxy) || !nonempty(relay.ssh_host)
+      || !/^[A-Za-z0-9._:[\]-]{1,253}$/.test(relay.ssh_host)
+      || !/^[A-Za-z0-9._-]{1,64}$/.test(relay.ssh_user ?? '')
+      || !Number.isInteger(sshPort) || sshPort < 1 || sshPort > 65535
+      || !nonempty(relay.private_key_file) || !path.isAbsolute(relay.private_key_file)
+      || /[\u0000-\u001f]/u.test(relay.private_key_file)
+      || !/^SHA256:[A-Za-z0-9+/]{43}$/.test(relay.host_key_sha256 ?? '')
+      || port(relay.local_port, 43128) === null || port(relay.remote_port, 43129) === null) {
+      throw new ConfigurationError('PROXY_CONFIG', 'Plumivoxの中継設定に接続先、SSH利用者、秘密鍵ファイル、ホスト鍵指紋、有効なポートを設定してください。');
+    }
+    const publicProxy = new URL(config.proxy);
+    if (publicProxy.hostname !== relay.ssh_host || !publicProxy.port
+      || publicProxy.pathname !== '/' || publicProxy.search || !publicProxy.username || !publicProxy.password) {
+      throw new ConfigurationError('PROXY_CONFIG', 'managedモードのproxyにはSSH接続先と同じホストの認証付き公開プロキシを設定してください。');
+    }
+    return { sshHost: relay.ssh_host, sshPort, sshUser: relay.ssh_user,
+      privateKeyFile: relay.private_key_file, hostKeySha256: relay.host_key_sha256,
+      localPort: port(relay.local_port, 43128), remotePort: port(relay.remote_port, 43129) };
   }
 
   const loginReady = (config, userName, apiKey, proxy) => Boolean(userName && apiKey && proxy &&
@@ -123,7 +162,8 @@ export function createAccountStore({ secretsPath, profile, sessionPaths = {}, st
       const accounts = [];
       for (const [account, config] of Object.entries(configs)) {
         const { userName, readConfigured, postConfigured, loginConfigured, sessionSource, sessionAcquiredAt } = await inspect(account, config);
-        accounts.push({ account, userName, readConfigured, postConfigured, loginConfigured, sessionSource, sessionAcquiredAt });
+        accounts.push({ account, userName, readConfigured, postConfigured, loginConfigured, sessionSource, sessionAcquiredAt,
+          proxyMode: ['external', 'managed'].includes(config.proxy_mode ?? 'external') ? config.proxy_mode ?? 'external' : 'invalid' });
       }
       return accounts;
     },
@@ -141,6 +181,7 @@ export function createAccountStore({ secretsPath, profile, sessionPaths = {}, st
       return { account: name, userName, apiKey, ...(proxy ? { proxy } : {}), ...(loginCookies ? { loginCookies } : {}) };
     },
     getLoginCredentials,
+    getProxyConfiguration,
     async withSessionLock(account, callback) {
       const selected = await select(account);
       const userName = selected.config.user_name;

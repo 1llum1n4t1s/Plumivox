@@ -419,11 +419,13 @@ export class TwitterApiClient {
     };
   }
 
-  async postTweet(account, { text, images = [], signal }) {
+  async postTweet(account, { text, images = [], signal, beforeSend }) {
     const parsed = parseTweetText(text);
     if (!text.trim() || !parsed.valid) fail('INVALID_TEXT', '投稿文は空でなく、Xの加重文字数280以内にしてください。');
     // 全ファイルの事前確認を終えてからアップロードを開始する。
     const files = await Promise.all(images.map(imageFile));
+    if (signal?.aborted) fail('CANCELLED_BEFORE_POST', '処理は中止されました。投稿は送信していません。');
+    if (beforeSend) await beforeSend();
     const mediaIds = [];
     for (const file of files) {
       if (signal?.aborted) fail('CANCELLED_BEFORE_POST', '処理は中止されました。投稿は送信していません。');

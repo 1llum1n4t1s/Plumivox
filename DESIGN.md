@@ -2,16 +2,18 @@
 
 ## 目的と境界
 
-PlumivoxはTwitterAPI.ioを経由してXへの投稿・認証更新・公開投稿の読取りを提供するローカルMCPサーバーである。Codexプラグインとしてstdioで起動し、HTTPサーバーやブラウザ操作は製品の実行経路に持たない。操作一覧と取得範囲は [README.md](README.md)、設定・保存形式は [docs/configuration.md](docs/configuration.md)、開発時の作業手順は [AGENTS.md](AGENTS.md) を参照する。
+PlumivoxはTwitterAPI.ioを経由してXへの投稿・認証更新・公開投稿の読取りを提供するローカルMCPサーバーである。Codexプラグインとしてstdioで起動し、ブラウザ操作は製品の実行経路に持たない。managedモードではloopback限定のCONNECT出口を起動し、既存の公開プロキシへSSH逆転送を張る。操作一覧と取得範囲は [README.md](README.md)、設定・保存形式は [docs/configuration.md](docs/configuration.md)、開発時の作業手順は [AGENTS.md](AGENTS.md) を参照する。
 
 ## 主要コンポーネント
 
 | コンポーネント | 責務 |
 | --- | --- |
 | `src/cli.mjs` | 引数なし／`--stdio` を受け付け、設定ストアとMCPサーバーを接続する |
-| `src/server.mjs` | 8ツールのZod入力スキーマ、MCP注釈、アカウント選択、認証処理、定型エラー応答 |
+| `src/server.mjs` | 11ツールのZod入力スキーマ、MCP注釈、アカウント選択、認証処理、定型エラー応答 |
 | `src/config.mjs` | 呼出し時の設定再読込み、アカウント・資格情報の検証、Cookieの選択、秘密を除いた準備状態の公開 |
 | `src/session.mjs` | PowerShell子プロセスによるWindows DPAPI、保存先検証・ACL、セッション照合、名前付きMutex、暗号化保存 |
+| `src/proxy-egress.mjs` | loopback限定のCONNECT出口、X宛先制限、DNS全候補検証、接続数・容量・時間制限 |
+| `src/proxy-manager.mjs` | SSHホスト鍵照合、逆転送の起動確認、単一の再接続処理、取消と停止時の清掃 |
 | `src/client.mjs` | HTTP通信、応答検証・正規化、画像検証・アップロード、投稿、フィード再構成、検索条件と継続cursorの検証 |
 | `scripts/build.mjs` / `dist/plumivox.mjs` | esbuildによるNode.js 22向けESMバンドルと、依存ライブラリを同梱する正式な実行物 |
 | `tests/e2e.mjs` / `tests/fixture-server.mjs` | localhostの偽APIと別プロセスのMCPを使い、通信内容・回数・失敗時の状態を検証する |
@@ -37,3 +39,11 @@ PlumivoxはTwitterAPI.ioを経由してXへの投稿・認証更新・公開投�
 - **フィードの限界**：公式ホームの再現ではない。検索バッチは順に取得して要求数を制限するが、保護投稿や全フォロー先の網羅、ページ間の全体時系列順は保証しない。フォロー一覧の続きと検索の続きは別cursorで、同時指定を拒否する。提供元または生成cursorが受理上限を超えた場合は、取得済み投稿・提供元の続き有無を維持し、継続不能の理由をcoverageへ返す。opaqueなcursorは切り詰めない。
 - **継続情報の境界**：フィードのcursorはversion 2で検索対象とcoverageをAPIキーのHMACで署名し、アカウントとユーザー名を照合して初回の検索対象を固定する。旧署名なし形式は拒否する。検索用cursorは条件と用途（投稿の続き／フォロー一覧の続き）を同じ方式で署名し、フィード用cursorとの混同や別条件への流用を拒否する。フォロー先検索では署名付きフィードcursorを内包する。APIキー変更で既存cursorは無効になる。署名は改変検知のためであり、内容の暗号化ではない。
 - **配布と検証**：依存を同梱したバンドルにより利用者側の `node_modules` を不要にする代わりに、ソース変更時の再ビルドが必要。E2Eは実際のXへの副作用を避けつつMCP・HTTP・DPAPI境界を検証するが、実サービス上のCookie有効性や投稿成功を証明するものではない。
+
+## 管理するプロキシの境界
+
+`proxy_mode` が `managed` のアカウントだけ、本文・画像の事前検証後または認証ロック取得後に中継を準備する。公開proxy URLは変更せず、Cookie bindingを維持する。設定の取得は資格情報ストア経由に限定し、API引数・MCP応答にSSH鍵や接続先を含めない。読取りと設定一覧は中継を起動しない。
+
+SSHの再接続は通信経路だけを復旧し、投稿・ログインは再送しない。停止・MCP終了では所有するsocket、timer、逆転送、ローカル出口を閉じる。ポート競合では別所有者を終了させず固定コードで拒否する。1台・1中継ポートを管理するMCPプロセスは一つに限定する。
+
+公開口は引き続き中継サーバーが担当し、無料Cloudflare Tunnel/WorkersをHTTP CONNECT公開プロキシの代替として実装していない。外部経路の初回準備と管理設定は [中継手順](docs/managed-proxy.md) を参照する。

@@ -329,7 +329,7 @@ try {
   // connect後もSDKが標準出力の非JSON行を検出する。
   const existingOnError = transport.onerror;
   transport.onerror = (error) => { protocolErrors.push(safe(error.message)); existingOnError?.(error); };
-  await run('MCP discovery', async () => { const tools = await client.listTools(); assert.deepEqual(tools.tools.map((tool) => tool.name).sort(), ['get_following_feed', 'get_my_posts', 'get_tweets', 'list_accounts', 'login_account', 'post_tweet', 'refresh_session', 'search_tweets']); });
+  await run('MCP discovery', async () => { const tools = await client.listTools(); assert.deepEqual(tools.tools.map((tool) => tool.name).sort(), ['get_following_feed', 'get_my_posts', 'get_proxy_status', 'get_tweets', 'list_accounts', 'login_account', 'post_tweet', 'refresh_session', 'search_tweets', 'start_proxy', 'stop_proxy']); });
   await run('Account metadata without secrets', async () => { const data = await succeeds('list_accounts'); assert.equal(data.accounts.length, Object.keys(syntheticConfig.twitterapi_io).length); assert.equal(data.accounts.find((item) => item.account === 'reading').readConfigured, true); assert.equal(data.accounts.find((item) => item.account === 'reading').postConfigured, false); });
   await run('Listed long account name can be selected through MCP', async () => {
     const accounts = await succeeds('list_accounts');
@@ -1045,7 +1045,7 @@ try {
       assert.equal(lost.result.isError, true);
       assert.equal(lost.data.error.code, 'AUTH_LOCK_LOST');
       assert.equal(ownerTransport.pid, ownerPid, 'MCP parent must remain alive');
-      assert.equal((await owner.listTools()).tools.length, 8);
+      assert.equal((await owner.listTools()).tools.length, 11);
       assert.deepEqual(await readFile(ownSessionPath), previous);
       scenario = 'normal';
       const recovered = await call('refresh_session', { account: 'auth' }, contender);
