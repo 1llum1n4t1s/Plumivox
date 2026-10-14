@@ -43947,7 +43947,7 @@ var cursor = external_exports.string().min(1).max(1e5).optional();
 var readOnly = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true };
 function createServer({ accounts, apiBaseUrl, timeoutMs } = {}) {
   const api = new TwitterApiClient({ apiBaseUrl, timeoutMs });
-  const server = new McpServer({ name: "plumivox", version: "0.1.0" });
+  const server = new McpServer({ name: "plumivox", version: "1.0.0" });
   const authenticating = /* @__PURE__ */ new Set();
   const handle = (action) => async (input2, extra) => {
     try {
