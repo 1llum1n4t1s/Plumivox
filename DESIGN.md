@@ -8,7 +8,7 @@ PlumivoxはTwitterAPI.ioを経由してXへの投稿・認証更新・公開投�
 
 | コンポーネント | 責務 |
 | --- | --- |
-| `src/cli.mjs` | 引数なし／`--stdio` を受け付け、設定ストアとMCPサーバーを接続する |
+| `src/cli.mjs` | 引数なし／`--stdio` で設定ストア・共有プロキシ管理・MCPサーバーを接続する。内部の `--proxy-daemon` 起動では標準入力からbootstrapを受け取りdaemonを実行する |
 | `src/server.mjs` | 11ツールのZod入力スキーマ、MCP注釈、アカウント選択、認証処理、定型エラー応答 |
 | `src/config.mjs` | 呼出し時の設定再読込み、アカウント・資格情報の検証、Cookieの選択、秘密を除いた準備状態の公開 |
 | `src/session.mjs` | PowerShell子プロセスによるWindows DPAPI、保存先検証・ACL、セッション照合、名前付きMutex、暗号化保存 |
@@ -18,6 +18,7 @@ PlumivoxはTwitterAPI.ioを経由してXへの投稿・認証更新・公開投�
 | `src/client.mjs` | HTTP通信、応答検証・正規化、画像検証・アップロード、投稿、フィード再構成、検索条件と継続cursorの検証 |
 | `scripts/build.mjs` / `dist/plumivox.mjs` | esbuildによるNode.js 22向けESMバンドルと、依存ライブラリを同梱する正式な実行物 |
 | `tests/e2e.mjs` / `tests/fixture-server.mjs` | localhostの偽APIと別プロセスのMCPを使い、通信内容・回数・失敗時の状態を検証する |
+| `tests/proxy-e2e.mjs` / `tests/proxy-shared-e2e.mjs` と起動fixture | 偽SSH・API・echoを使い、CONNECT経路と複数MCP間の共有・認証・停止を検証する |
 
 `mcp.json` はプラグイン取得先を `${PLUGIN_ROOT}` としてバンドルを起動する。マーケットプレイスは `.agents/plugins/marketplace.json`、プラグイン情報は `plugin.json` に置く。
 
@@ -43,7 +44,11 @@ PlumivoxはTwitterAPI.ioを経由してXへの投稿・認証更新・公開投�
 
 ## 管理するプロキシの境界
 
-`proxy_mode` が `managed` のアカウントだけ、本文・画像の事前検証後または認証ロック取得後に中継を準備する。公開proxy URLは変更せず、Cookie bindingを維持する。設定の取得は資格情報ストア経由に限定し、API引数・MCP応答にSSH鍵や接続先を含めない。読取りと設定一覧は中継を起動しない。
+`proxy_mode` が `managed` のアカウントだけ、本文・画像の事前検証後または認証ロック取得後に中継を準備し、準備後に設定を再確認する。明示的な `start_proxy` でも起動できる。公開proxy URLは変更せず、Cookie bindingを維持する。設定の取得は資格情報ストア経由に限定し、API引数・MCP応答にSSH鍵や接続先を含めない。読取り・設定一覧・保存Cookieの再利用は中継を起動せず、external呼出しは既存中継に干渉しない。
+
+投稿・ログインのAPI要求は従来どおりTwitterAPI.ioへ送り、同サービスが公開プロキシへ接続する。公開口から中継サーバーのloopbackポート、SSH逆転送、PCのloopback限定CONNECT出口を通り、住宅回線からXへ接続する。出口はX/Twitter/Twimgのドメインと443番だけを許可し、DNS全候補に特殊アドレスがあれば拒否する。検証済み公開IPへ直接接続してDNSの再解決を避け、接続数・容量・時間を制限する。
+
+Windowsの設定別名前付きパイプに接続し、未起動なら同じ配布バンドルを独立daemonとして起動する。SSHと固定ポートの所有を一つに集約して複数チャットで共有する。IPC秘密はSSH鍵ファイルから導出し、設定識別子・クライアントとチャネルのnonce・要求番号・操作・応答内容全体をHMACで結び付けて相互認証する。同じ鍵を使う別設定への転送や過去応答の再利用を拒否する。
 
 SSHの再接続は通信経路だけを復旧し、投稿・ログインは再送しない。停止では最後に利用した設定の共有daemonのsocket、timer、逆転送、ローカル出口を閉じる。MCP終了ではそのクライアントだけを離脱し、他チャットの中継を維持する。全クライアントが離脱して5分後にdaemonを終了する。ポート競合では別設定の所有者を終了させず固定コードで拒否する。
 
