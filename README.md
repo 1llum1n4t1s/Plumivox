@@ -31,6 +31,27 @@ codex plugin list --marketplace plumivox-local --json
 
 GitHubを追跡する登録・更新方法は[Codexのプラグイン資料](https://developers.openai.com/plugins/build/plugins#add-a-marketplace-from-the-cli)を参照してください。
 
+### Toolport経由で使う場合
+
+上記のGitHub `main`を追うプラグイン登録を残し、MCPだけをToolportへ登録できます。`codex plugin marketplace list`で`plumivox-local`の取得済みルートを確認し、Toolportに次のstdioサーバーを追加します。開発用クローンや版番号付きのインストールキャッシュは指定しません。
+
+- 名前: `plumivox`
+- コマンド: Node.js 22以降の`node`実行ファイル
+- 引数: `<取得済みルート>/dist/plumivox.mjs`、`--stdio`（別々の引数）
+- 作業ディレクトリ: 利用者のホームディレクトリ
+- 要求タイムアウト: 300000ミリ秒（ログインや中継の準備時間を含む）
+
+ToolportでCodexが利用するプロファイルに有効化し、`toolport_search_tools`の`server="plumivox"`で11ツールを確認します。`list_accounts`を検索・呼出しし、設定が読み込めてから、Codexのユーザー設定`config.toml`へ次を追加します。プラグイン本体は有効なままにし、設定用スキルを残します。
+
+```toml
+[plugins."plumivox@plumivox-local".mcp_servers.plumivox]
+enabled = false
+```
+
+Codexを再起動すると直接接続が無効になります。以後の操作はToolportでツールを検索し、返された実ツール名を`toolport_call_tool`へ渡します。APIキー・Cookie・SSH鍵はPlumivoxの既存設定から読み込み、Toolportの引数へ移しません。vava／blblも実ツール名を探索するため、この経路を利用できます。
+
+更新は上記の`codex plugin marketplace upgrade plumivox-local`で行います。Toolportが実行中のサーバーは読込み済みコードを使うため、更新後にToolportの`plumivox`を無効化・再有効化して、新しいスナップショットを読み込みます。取得済みルートが変わった場合は登録した引数も変更してください。起動時のGit取得や依存インストールは行いません。
+
 初めて使う場合は[セットアップ手順](docs/setup.md)に進んでください。VPSインストーラーとWindowsの設定ウィザードを同梱しています。Codexへ「Plumivoxをセットアップして」と依頼すると、同梱の`setup-plumivox`スキルでも案内できます。
 
 設定ファイルはリポジトリ外へ置きます。新規利用者は `%LOCALAPPDATA%\Kagayoi\Plumivox\settings.json`、既存の `~/dev/Secret/secrets.json` がある利用者はそのファイルの `twitterapi_io` を読みます。vava／blblの `release_posting` と `blog_posting` も維持します。別の場所を使う場合は `PLUMIVOX_SECRETS_FILE` を指定します。秘密値を会話やMCPの引数へ渡す必要はありません。
@@ -74,6 +95,8 @@ TwitterAPI.ioにX公式ホームの「フォロー中」を直接取得するAPI
 投稿やフォロー一覧に続きがあっても、提供元cursorや組み合わせたcursorが長さ上限を超える場合は継続できません。取得済み投稿と `hasNextPage` は保持し、`nextCursor` は `null`、`coverage.tweetContinuationAvailable` は `false`、`tweetContinuationUnavailableReason` は `cursor_too_long` となります。フォロー一覧では `followingNextCursor` と `followingContinuationAvailable`・`followingContinuationUnavailableReason` を確認してください。cursorは切り詰めず、取得済み内容を失敗として捨てません。
 
 ## キーワード・期間の検索
+
+セットアップで既定アカウントを保存しておくと、`account`を省略して検索できます。既存設定は同梱の`Setup-Plumivox.ps1 -SetDefaultAccount blog_posting`で変更できます。`list_accounts`の`isDefault`で省略先を確認し、別のアカウントを使う呼出しでは`account`を明示します。詳細は[初期設定](docs/setup.md)と[設定の優先順位](docs/configuration.md)を参照してください。
 
 「X全体で10月1日から7日までの音声認識の投稿を検索して」「blog_postingのフォロー先から同じ条件で検索して」と依頼できます。検索はAPI側で絞り込み、投稿の本文・作者・日時・URLを返します。意味検索は行いません。
 

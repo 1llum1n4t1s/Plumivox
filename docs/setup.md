@@ -100,6 +100,16 @@ pwsh -NoProfile -ExecutionPolicy Bypass -File (Join-Path $pluginRoot 'setup/Setu
 
 アカウント設定名の既定値は`main`です。変更するときは同じコマンドに`-Account blog`などを追加し、確認時にも同じ名前を指定します。
 
+初回登録したアカウントは、MCPの`account`を省略したときの既定としても保存します。既存の有効な既定は保持し、既定なしで複数候補があるときは設定名を選びます。登録時に`-DefaultAccount blog_posting`のように明示することもできます。投稿・検索・ログインで別のアカウントを使う場合は、呼出しの`account`を指定すると優先されます。
+
+既存利用者は次のコマンドで既定だけを変更できます。APIキー・Cookie・SSH鍵・中継設定は変更せず、秘密入力や接続確認も行いません。`blog_posting`は登録済みの設定名へ置き換えてください。
+
+```powershell
+pwsh -NoProfile -ExecutionPolicy Bypass -File (Join-Path $pluginRoot 'setup/Setup-Plumivox.ps1') -SetDefaultAccount blog_posting
+```
+
+別の設定ファイルを使っている場合は`-SettingsPath <絶対パス>`も指定します。`PLUMIVOX_DEFAULT_ACCOUNT`を環境変数へ設定している場合は、その値が保存済みの既定より優先されます。
+
 | 設定する項目 | 入力する値 |
 | --- | --- |
 | アカウント名 | 通常は`main`。Xユーザー名とは別の設定名 |

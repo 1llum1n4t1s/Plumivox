@@ -7,6 +7,7 @@ Plumivox は設定ファイルの `twitterapi_io` 以下にある各プロファ
 ```json
 {
   "twitterapi_io": {
+    "default_account": "release_posting",
     "release_posting": {
       "api_key": "YOUR_API_KEY",
       "user_name": "your_account",
@@ -24,8 +25,12 @@ Plumivox は設定ファイルの `twitterapi_io` 以下にある各プロファ
 | 設定 | 解決方法 |
 | --- | --- |
 | 設定ファイル | `PLUMIVOX_SECRETS_FILE` → `createAccountStore({secretsPath})` → 存在する `~/dev/Secret/secrets.json` → `%LOCALAPPDATA%\Kagayoi\Plumivox\settings.json` |
-| アカウント | `getAccount(account)` の引数 → `PLUMIVOX_DEFAULT_ACCOUNT` → `createAccountStore({profile})` → 唯一のプロファイル |
-| 複数アカウント | `main`、`release_posting`、`blog_posting` など、プロファイル名を明示して選択 |
+| アカウント | `getAccount(account)` の引数 → `PLUMIVOX_DEFAULT_ACCOUNT` → `createAccountStore({profile})` → `twitterapi_io.default_account` → 唯一のプロファイル |
+| 複数アカウント | `default_account`に省略時の設定名を保存。別の設定を使う呼出しでは`account`を明示 |
+
+`default_account`はXユーザー名ではなく、`main`・`blog_posting`など登録済みプロファイルの設定名です。初回セットアップは登録したアカウントを既定にします。既存利用者はセットアップの`-SetDefaultAccount blog_posting`で既定だけを変更できます。不正な型・空文字・未登録名の既定では、省略呼出しを`ACCOUNT_DEFAULT_INVALID`として通信前に拒否します。明示した`account`は既定より優先します。複数登録・既定なしの既存設定は`ACCOUNT_REQUIRED`を返し、先頭の登録先へ自動では送信しません。
+
+`list_accounts`の各項目の`isDefault`は、環境変数などの優先設定も含めた有効な省略先だけで`true`になります。既定が未設定・不正でも一覧は取得でき、全項目が`false`になります。`default_account`自体はアカウントとして列挙しません。
 
 設定ファイルの選択は起動時に固定し、各呼出しではそのファイルを読み直します。選択済みファイルが不正・削除された場合はエラーにし、別のファイルへ黙って切り替えません。`~`は現在の利用者のホームです。`LOCALAPPDATA`がない場合は`~/AppData/Local/Kagayoi/Plumivox/settings.json`を使います。Windows以外ではログインとセッション更新を利用できません。
 

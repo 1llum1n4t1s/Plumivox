@@ -7,7 +7,7 @@ import { createManagedProxyManager, ManagedProxyError } from './proxy-manager.mj
 import { ProxyEgressError } from './proxy-egress.mjs';
 import { SharedProxyError } from './proxy-shared.mjs';
 
-const account = z.string().min(1).optional().describe('list_accountsが返したアカウント設定名。複数設定時は明示する。');
+const account = z.string().min(1).optional().describe('list_accountsが返したアカウント設定名。省略時は設定済みの既定アカウントを使う。複数設定で既定がない場合は必須。明示した設定名を優先する。');
 const cursor = z.string().min(1).max(100_000).optional();
 const readOnly = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true };
 

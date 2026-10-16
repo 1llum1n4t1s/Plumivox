@@ -6,7 +6,7 @@ import { spawnSync } from 'node:child_process';
 import { mkdir, writeFile, readFile, realpath, stat } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 
-// 失敗条件: 上書き・不正指紋/ポート/2FA・鍵欠落・保存先リンク/ACL・秘密値漏洩・同時変更。
+// 失敗条件: 上書き・不正指紋/ポート/2FA・鍵欠落・保存先リンク/ACL・秘密値漏洩・同時変更・既定の不正指定/無言変更。
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const output = path.resolve(process.env.PLUMIVOX_SETUP_E2E_OUTPUT_DIR || path.join(os.tmpdir(), 'Codex', 'Plumivox', randomUUID()));
 const inside = (child, parent) => { const value = path.relative(parent, child); return value === '' || (!value.startsWith('..') && !path.isAbsolute(value)); };
@@ -69,18 +69,83 @@ if (process.platform === 'win32') {
   });
   await test('wizard-preserves-unrelated-config-and-check-is-readonly', async () => {
     await writeFile(settings, JSON.stringify({ unrelated: { value: ['keep', 7] }, twitterapi_io: { other: { user_name: 'other' } } }));
-    const configured = await runPs(invoke, valid);
+    const configured = await runPs(invoke, ['other', ...valid]);
     assert.equal(configured.status, 0, configured.stdout + configured.stderr); checkNoLeak(configured);
     const raw = await readFile(settings, 'utf8');
     const doc = JSON.parse(raw);
     assert.deepEqual(doc.unrelated, { value: ['keep', 7] });
     assert.deepEqual(doc.twitterapi_io.other, { user_name: 'other' });
     assert.equal(doc.twitterapi_io.main.proxy_mode, 'managed');
+    assert.equal(doc.twitterapi_io.default_account, 'other');
     const checked = await runPs(`$PSNativeCommandArgumentPassing='Legacy'; ${invoke} -Check`);
     assert.equal(checked.status, 0, checked.stdout + checked.stderr); checkNoLeak(checked);
+    assert.match(checked.stdout, /既定アカウント: other/);
     assert.equal(await readFile(settings, 'utf8'), raw);
     const refused = await runPs(invoke, valid); assert.equal(refused.status, 1); checkNoLeak(refused);
     assert.equal(await readFile(settings, 'utf8'), raw);
+  });
+  await test('wizard-default-first-account-preserve-and-explicit-selection', async () => {
+    for (const [name, existing, option, answers, expected] of [
+      ['first', {}, '', valid, 'main'],
+      ['preserve', { other: { user_name: 'other' }, default_account: 'other' }, '', valid, 'other'],
+      ['preserve-long', { ['profile-' + 'p'.repeat(65)]: { user_name: 'other' }, default_account: 'profile-' + 'p'.repeat(65) }, '', valid, 'profile-' + 'p'.repeat(65)],
+      ['explicit', { other: { user_name: 'other' }, default_account: 'other' }, '-DefaultAccount main', valid, 'main'],
+      ['prompt-main', { other: { user_name: 'other' } }, '', ['main', ...valid], 'main'],
+    ]) {
+      const target = path.join(output, `default-${name}.json`);
+      await writeFile(target, JSON.stringify({ twitterapi_io: existing }));
+      const result = await runPs(`Invoke-PlumivoxSetup -SettingsPath ${psQuote(target)} -PrivateKeyPath ${psQuote(key)} ${option}`, answers);
+      assert.equal(result.status, 0, result.stdout + result.stderr); checkNoLeak(result);
+      assert.equal(JSON.parse(await readFile(target, 'utf8')).twitterapi_io.default_account, expected);
+    }
+    for (const choice of ['', 'missing', 'OTHER']) {
+      const target = path.join(output, `default-invalid-${sequence}.json`);
+      const raw = JSON.stringify({ twitterapi_io: { other: { user_name: 'other' } } });
+      await writeFile(target, raw);
+      const result = await runPs(`Invoke-PlumivoxSetup -SettingsPath ${psQuote(target)} -PrivateKeyPath ${psQuote(key)}`, [choice, ...valid]);
+      assert.equal(result.status, 1); checkNoLeak(result);
+      assert.equal(await readFile(target, 'utf8'), raw);
+    }
+  });
+  await test('set-default-only-preserves-profiles-relay-and-rechecks-settings', async () => {
+    const target = path.join(output, 'default-only.json');
+    const doc = JSON.parse(await readFile(settings, 'utf8'));
+    await writeFile(target, JSON.stringify(doc));
+    const change = `Invoke-PlumivoxSetup -SettingsPath ${psQuote(target)} -SetDefaultAccount main`;
+    const result = await runPs(`Set-PlumivoxPrivateAcl ${psQuote(target)}; ${change}`);
+    assert.equal(result.status, 0, result.stdout + result.stderr); checkNoLeak(result);
+    doc.twitterapi_io.default_account = 'main';
+    assert.deepEqual(JSON.parse(await readFile(target, 'utf8')), doc);
+    const longName = 'profile-' + 'p'.repeat(65);
+    doc.twitterapi_io[longName] = { user_name: 'existing' };
+    doc.twitterapi_io.DEFAULT_ACCOUNT = { user_name: 'uppercase' };
+    await writeFile(target, JSON.stringify(doc));
+    for (const choice of [longName, 'DEFAULT_ACCOUNT', 'main']) {
+      const changedDefault = await runPs(`Invoke-PlumivoxSetup -SettingsPath ${psQuote(target)} -SetDefaultAccount ${psQuote(choice)}`);
+      assert.equal(changedDefault.status, 0, changedDefault.stdout + changedDefault.stderr);
+      doc.twitterapi_io.default_account = choice;
+      assert.deepEqual(JSON.parse(await readFile(target, 'utf8')), doc);
+    }
+    const raw = await readFile(target, 'utf8');
+    for (const choice of ['', 'missing', 'MAIN']) {
+      assert.equal((await runPs(`Invoke-PlumivoxSetup -SettingsPath ${psQuote(target)} -SetDefaultAccount ${psQuote(choice)}`)).status, 1);
+      assert.equal(await readFile(target, 'utf8'), raw);
+    }
+    const changed = '{"unrelated":"changed-during-default-save"}';
+    const race = await runPs(`function Assert-PlumivoxPath { param([string]$Path)\n$script:pathChecks++; if ($script:pathChecks -eq 2) { [IO.File]::WriteAllText(${psQuote(target)}, ${psQuote(changed)}) }; return $Path }; $script:pathChecks=0; ${change}`);
+    assert.equal(race.status, 1); checkNoLeak(race);
+    assert.equal(await readFile(target, 'utf8'), changed);
+  });
+  await test('check-refuses-invalid-default-without-mutating-settings', async () => {
+    for (const value of [null, 12, {}, 'missing', 'MAIN']) {
+      const target = path.join(output, `check-default-${sequence}.json`);
+      const doc = JSON.parse(await readFile(settings, 'utf8'));
+      doc.twitterapi_io.default_account = value;
+      const raw = JSON.stringify(doc);
+      await writeFile(target, raw);
+      assert.equal((await runPs(`Set-PlumivoxPrivateAcl ${psQuote(target)}; Invoke-PlumivoxSetup -Check -SettingsPath ${psQuote(target)}`)).status, 1);
+      assert.equal(await readFile(target, 'utf8'), raw);
+    }
   });
   await test('invalid-fingerprint-port-totp-and-missing-key-refused', async () => {
     for (const [index, value] of [[6, 'SHA256:not-verified'], [3, '0'], [12, '123456']]) {

@@ -331,6 +331,57 @@ try {
   transport.onerror = (error) => { protocolErrors.push(safe(error.message)); existingOnError?.(error); };
   await run('MCP discovery', async () => { const tools = await client.listTools(); assert.deepEqual(tools.tools.map((tool) => tool.name).sort(), ['get_following_feed', 'get_my_posts', 'get_proxy_status', 'get_tweets', 'list_accounts', 'login_account', 'post_tweet', 'refresh_session', 'search_tweets', 'start_proxy', 'stop_proxy']); });
   await run('Account metadata without secrets', async () => { const data = await succeeds('list_accounts'); assert.equal(data.accounts.length, Object.keys(syntheticConfig.twitterapi_io).length); assert.equal(data.accounts.find((item) => item.account === 'reading').readConfigured, true); assert.equal(data.accounts.find((item) => item.account === 'reading').postConfigured, false); });
+  await run('Omitted account without a configured default fails before HTTP', async () => {
+    assert.equal((await fails('search_tweets', { keyword: 'default account' }, true)).error.code, 'ACCOUNT_REQUIRED');
+  });
+  await run('Persisted default routes omitted reads, searches, posts and reused login', async () => {
+    try {
+      await writeFile(secretsPath, JSON.stringify({ twitterapi_io: { ...syntheticConfig.twitterapi_io, default_account: 'posting' } }));
+      await restart();
+      const listed = await succeeds('list_accounts');
+      assert.equal(listed.accounts.length, Object.keys(syntheticConfig.twitterapi_io).length);
+      assert.deepEqual(listed.accounts.filter((item) => item.isDefault).map((item) => item.account), ['posting']);
+      assert.equal((await succeeds('get_my_posts')).account, 'posting');
+      assert.equal((await succeeds('search_tweets', { keyword: 'default account' })).account, 'posting');
+      assert.equal((await succeeds('post_tweet', { text: '既定アカウントの検証' })).account, 'posting');
+      const login = await succeeds('login_account');
+      assert.equal(login.account, 'posting'); assert.equal(login.reused, true);
+      assert.equal((await succeeds('get_my_posts', { account: 'reading' })).account, 'reading');
+      assert.equal((await fails('post_tweet', { account: 'reading', text: '明示先を既定へ置換しない' }, true)).error.code, 'POSTING_UNAVAILABLE');
+      await writeFile(secretsPath, JSON.stringify({ twitterapi_io: { ...syntheticConfig.twitterapi_io, default_account: 'reading' } }));
+      assert.equal((await succeeds('search_tweets', { keyword: 'updated default' })).account, 'reading');
+    } finally { await writeFile(secretsPath, initialSecrets); await restart(); }
+  });
+  await run('Environment, embedded profile and explicit selection preserve default precedence', async () => {
+    for (const [environmentAccount, expected] of [['reading', 'reading'], [undefined, 'posting']]) {
+    const selectedTransport = new StdioClientTransport({ command: process.execPath,
+      args: [path.join(repo, 'tests/fixture-server.mjs'), apiBaseUrl, secretsPath, stateDirectory, '250', 'posting'], cwd: repo,
+      env: { ...Object.fromEntries(Object.entries(process.env).filter(([key, value]) => value !== undefined
+        && !['PLUMIVOX_SECRETS_FILE', 'PLUMIVOX_DEFAULT_ACCOUNT', 'PLUMIVOX_STATE_DIR'].includes(key))), ...(environmentAccount ? { PLUMIVOX_DEFAULT_ACCOUNT: environmentAccount } : {}) }, stderr: 'pipe' });
+    const selectedClient = new Client({ name: 'default-override-e2e', version: '1.0.0' });
+    try {
+      await writeFile(secretsPath, JSON.stringify({ twitterapi_io: { ...syntheticConfig.twitterapi_io, default_account: 'auth' } }));
+      await selectedClient.connect(selectedTransport);
+      const { data } = await call('get_my_posts', {}, selectedClient); assert.equal(data.account, expected);
+      const explicit = await call('get_my_posts', { account: 'auth' }, selectedClient); assert.equal(explicit.data.account, 'auth');
+      const listed = await call('list_accounts', {}, selectedClient);
+      assert.deepEqual(listed.data.accounts.filter((item) => item.isDefault).map((item) => item.account), [expected]);
+    } finally { await selectedClient.close(); await writeFile(secretsPath, initialSecrets); }
+    }
+  });
+  await run('Invalid configured defaults never fall back and explicit accounts still work', async () => {
+    try {
+      for (const value of ['', 'missing', null, 42, { user_name: 'NotAnAccount', api_key: fakeKey }]) {
+        await writeFile(secretsPath, JSON.stringify({ twitterapi_io: { posting: syntheticConfig.twitterapi_io.posting, default_account: value } }));
+        const listed = await succeeds('list_accounts');
+        assert.equal(listed.accounts.length, 1); assert.equal(listed.accounts[0].isDefault, false);
+        assert.equal((await fails('search_tweets', { keyword: 'invalid default' }, true)).error.code, 'ACCOUNT_DEFAULT_INVALID');
+        assert.equal((await succeeds('get_my_posts', { account: 'posting' })).account, 'posting');
+      }
+      await writeFile(secretsPath, JSON.stringify({ twitterapi_io: { posting: syntheticConfig.twitterapi_io.posting } }));
+      assert.equal((await succeeds('get_my_posts')).account, 'posting');
+    } finally { await writeFile(secretsPath, initialSecrets); }
+  });
   await run('Listed long account name can be selected through MCP', async () => {
     const accounts = await succeeds('list_accounts');
     assert.equal(accounts.accounts.find((item) => item.account === longAccountName).readConfigured, true);

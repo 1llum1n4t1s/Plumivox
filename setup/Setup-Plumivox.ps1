@@ -1,7 +1,7 @@
 #requires -Version 7.0
 [CmdletBinding()]
 param([switch]$PrepareKey, [switch]$Check, [string]$SettingsPath,
-  [string]$PrivateKeyPath, [string]$Account = 'main')
+  [string]$PrivateKeyPath, [string]$Account = 'main', [string]$DefaultAccount, [string]$SetDefaultAccount)
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
@@ -160,21 +160,25 @@ function Initialize-PlumivoxKey {
 }
 
 function Invoke-PlumivoxSetup {
-  param([switch]$PrepareKey, [switch]$Check, [string]$SettingsPath, [string]$PrivateKeyPath, [string]$Account = 'main')
+  param([switch]$PrepareKey, [switch]$Check, [string]$SettingsPath, [string]$PrivateKeyPath, [string]$Account = 'main', [string]$DefaultAccount, [string]$SetDefaultAccount)
   if (-not $IsWindows) { throw 'WINDOWS_REQUIRED' }
   if (-not $PrivateKeyPath) { $PrivateKeyPath = Join-Path $env:LOCALAPPDATA 'Kagayoi/Plumivox/keys/plumivox_ed25519' }
-  if ($PrepareKey -and $Check) { throw 'MODE_INVALID' }
+  $setDefault = $PSBoundParameters.ContainsKey('SetDefaultAccount')
+  $hasDefault = $PSBoundParameters.ContainsKey('DefaultAccount')
+  if (($PrepareKey -and $Check) -or ($setDefault -and ($PrepareKey -or $Check -or $hasDefault)) -or ($hasDefault -and ($PrepareKey -or $Check))) { throw 'MODE_INVALID' }
   if ($PrepareKey) {
     $keyLock = Enter-PlumivoxSetupLock (Assert-PlumivoxPath $PrivateKeyPath)
     try { Initialize-PlumivoxKey $PrivateKeyPath } finally { $keyLock.ReleaseMutex(); $keyLock.Dispose() }
     return
   }
+  if (-not $setDefault) {
   $node = Get-Command node -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
   if (-not $node) { throw 'NODE_REQUIRED' }
   $version = & $node.Source --version 2>$null
   if ($LASTEXITCODE -ne 0 -or $version -notmatch '^v(\d+)\.' -or [int]$Matches[1] -lt 22) { throw 'NODE_REQUIRED' }
   $ssh = Get-Command ssh -CommandType Application -ErrorAction SilentlyContinue
   if (-not $ssh -and -not (Test-Path -LiteralPath (Join-Path $env:WINDIR 'System32/OpenSSH/ssh.exe')) -and -not (Test-Path -LiteralPath (Join-Path $env:ProgramFiles 'Git/usr/bin/ssh.exe'))) { throw 'SSH_REQUIRED' }
+  }
   $destination = Assert-PlumivoxPath (Get-PlumivoxSettingsPath $SettingsPath)
   if ($Account -notmatch '^[A-Za-z0-9_-]{1,64}$') { throw 'ACCOUNT_INVALID' }
   $settingsLock = Enter-PlumivoxSetupLock $destination
@@ -185,6 +189,12 @@ function Invoke-PlumivoxSetup {
   try { $document = if ($exists) { [Text.Encoding]::UTF8.GetString($original) | ConvertFrom-Json -AsHashtable } else { @{} } }
   catch { throw 'SETTINGS_INVALID' }
   if ($document -isnot [System.Collections.IDictionary]) { throw 'SETTINGS_INVALID' }
+  if ($document.Contains('twitterapi_io') -and $document.twitterapi_io -isnot [System.Collections.IDictionary]) { throw 'SETTINGS_INVALID' }
+  $accountNames = @(if ($document.Contains('twitterapi_io')) { $document.twitterapi_io.Keys | Where-Object { $_ -cne 'default_account' -and $document.twitterapi_io[$_] -is [System.Collections.IDictionary] } })
+  $hasExistingDefault = $document.Contains('twitterapi_io') -and $document.twitterapi_io.Contains('default_account')
+  $existingDefault = if ($hasExistingDefault) { $document.twitterapi_io.default_account } else { $null }
+  $validDefault = $existingDefault -is [string] -and -not [string]::IsNullOrWhiteSpace($existingDefault) -and $accountNames -ccontains $existingDefault
+  if ($hasExistingDefault -and -not $validDefault -and -not $setDefault -and -not $hasDefault) { throw 'DEFAULT_ACCOUNT_INVALID' }
   if ($Check) {
     if (-not $document.Contains('twitterapi_io') -or -not $document.twitterapi_io.Contains($Account)) { throw 'ACCOUNT_MISSING' }
     $profile = $document.twitterapi_io[$Account]
@@ -195,11 +205,24 @@ function Invoke-PlumivoxSetup {
     if ($profile.Contains('totp_secret') -and $profile.totp_secret -and ($profile.totp_secret -notmatch '^[A-Za-z2-7]+={0,6}$' -or $profile.totp_secret -match '^\d{6}$')) { throw 'TOTP_INVALID' }
     Assert-PlumivoxPrivateAcl $destination
     Write-Host '設定の形式・秘密鍵・ACLを確認しました。ネットワーク通信は実行していません。'
+    Write-Host $(if ($validDefault) { "既定アカウント: $existingDefault" } else { '既定アカウント: 未設定' })
     return
   }
+  if ($setDefault) {
+    if ([string]::IsNullOrWhiteSpace($SetDefaultAccount) -or $accountNames -cnotcontains $SetDefaultAccount) { throw 'DEFAULT_ACCOUNT_INVALID' }
+    Assert-PlumivoxPrivateAcl $destination
+    $document.twitterapi_io.default_account = $SetDefaultAccount
+  } else {
   if ($document.Contains('twitterapi_io') -and $document.twitterapi_io -isnot [System.Collections.IDictionary]) { throw 'SETTINGS_INVALID' }
   if ($document.Contains('plumivox') -and $document.plumivox -isnot [System.Collections.IDictionary]) { throw 'SETTINGS_INVALID' }
   if (($document.Contains('twitterapi_io') -and $document.twitterapi_io.Contains($Account)) -or ($document.Contains('plumivox') -and $document.plumivox.Contains('managed_proxy'))) { throw 'SETTINGS_EXISTS' }
+  if ($Account -ieq 'default_account') { throw 'ACCOUNT_INVALID' }
+  $accountNames = @($accountNames) + $Account
+  $chosenDefault = if ($hasDefault) { $DefaultAccount } elseif ($validDefault) { $existingDefault } elseif ($accountNames.Count -eq 1) { $Account } else {
+    Write-Host ('アカウント設定名: ' + ($accountNames -join ', '))
+    Read-PlumivoxValue '既定にするアカウント設定名' ''
+  }
+  if ([string]::IsNullOrWhiteSpace($chosenDefault) -or $accountNames -cnotcontains $chosenDefault) { throw 'DEFAULT_ACCOUNT_INVALID' }
   $user = Read-PlumivoxValue 'Xユーザー名 (@なし)' ''
   if ($user -notmatch '^[A-Za-z0-9_]{1,15}$') { throw 'USER_INVALID' }
   $relay = @{ ssh_host = (Read-PlumivoxValue 'VPSホスト名/IP' ''); ssh_user = (Read-PlumivoxValue 'SSHユーザー' 'plumivox');
@@ -222,7 +245,9 @@ function Invoke-PlumivoxSetup {
   if (-not $document.Contains('twitterapi_io')) { $document.twitterapi_io = @{} }
   if (-not $document.Contains('plumivox')) { $document.plumivox = @{} }
   $document.twitterapi_io[$Account] = $profile
+  $document.twitterapi_io.default_account = $chosenDefault
   $document.plumivox.managed_proxy = $relay
+  }
   $json = $document | ConvertTo-Json -Depth 100
   [void]($json | ConvertFrom-Json -AsHashtable)
   $directory = Split-Path $destination -Parent
@@ -279,9 +304,10 @@ if ($MyInvocation.InvocationName -ne '.') {
       INPUT_REQUIRED = '必須入力が空欄でした。APIキー、Xログイン情報、プロキシパスワードを入力してください。'
       ACCOUNT_INVALID = '-Accountは英数字・アンダースコア・ハイフンの1〜64文字で指定してください。'
       ACCOUNT_MISSING = '指定されたアカウント設定がありません。設定ウィザードを実行するか、-Accountと保存先を確認してください。'
+      DEFAULT_ACCOUNT_INVALID = '既定アカウントには、存在するアカウント設定名を正確に指定してください。'
       SETTINGS_INVALID = '設定ファイルのJSON形式とアカウント情報を確認してください。既存設定は上書きしません。'
       PROXY_INVALID = '認証付きプロキシURLとVPSホスト名・ポートの設定を確認してください。'
-      MODE_INVALID = '-PrepareKeyと-Checkは同時に指定できません。'
+      MODE_INVALID = '-PrepareKey・-Check・-SetDefaultAccountは併用できません。-DefaultAccountは登録時だけ指定してください。'
       WINDOWS_REQUIRED = 'このセットアップはWindowsのPowerShell 7以降で実行してください。'
     }
     $code = $_.Exception.Message

@@ -62,18 +62,29 @@ export function createAccountStore({ secretsPath, profile, sessionPaths = {}, st
     }
   }
 
-  const accountProfiles = (secrets) => Object.fromEntries(Object.entries(secrets.twitterapi_io).filter(([, value]) => object(value)));
-  async function profiles() { return accountProfiles(await document()); }
+  const accountProfiles = (secrets) => Object.fromEntries(Object.entries(secrets.twitterapi_io)
+    .filter(([name, value]) => name !== 'default_account' && object(value)));
+
+  function selectedName(secrets, configs, account) {
+    let selected = account ?? process.env.PLUMIVOX_DEFAULT_ACCOUNT ?? profile;
+    if (selected == null && Object.hasOwn(secrets.twitterapi_io, 'default_account')) {
+      selected = secrets.twitterapi_io.default_account;
+      if (!nonempty(selected) || !Object.hasOwn(configs, selected)) {
+        throw new ConfigurationError('ACCOUNT_DEFAULT_INVALID', '既定アカウントの設定が不正です。default_accountに登録済みのアカウント設定名を指定してください。');
+      }
+    }
+    selected ??= Object.keys(configs).length === 1 ? Object.keys(configs)[0] : undefined;
+    if (!selected) throw new ConfigurationError('ACCOUNT_REQUIRED', 'アカウントを指定するか、セットアップで既定アカウントを設定してください。');
+    if (typeof selected !== 'string' || !Object.hasOwn(configs, selected)) {
+      throw new ConfigurationError('ACCOUNT_UNKNOWN', '指定されたアカウント設定がありません。');
+    }
+    return selected;
+  }
 
   async function select(account) {
     const secrets = await document();
     const configs = accountProfiles(secrets);
-    const names = Object.keys(configs);
-    const selected = account ?? process.env.PLUMIVOX_DEFAULT_ACCOUNT ?? profile ?? (names.length === 1 ? names[0] : undefined);
-    if (!selected) throw new ConfigurationError('ACCOUNT_REQUIRED', '使用するアカウントを明示してください。');
-    if (typeof selected !== 'string' || !Object.hasOwn(configs, selected)) {
-      throw new ConfigurationError('ACCOUNT_UNKNOWN', '指定されたアカウント設定がありません。');
-    }
+    const selected = selectedName(secrets, configs, account);
     return { account: selected, config: configs[selected], secrets };
   }
 
@@ -168,11 +179,16 @@ export function createAccountStore({ secretsPath, profile, sessionPaths = {}, st
 
   return {
     async listAccounts() {
-      const configs = await profiles();
+      const secrets = await document();
+      const configs = accountProfiles(secrets);
+      let defaultName;
+      try { defaultName = selectedName(secrets, configs); } catch (error) {
+        if (!(error instanceof ConfigurationError)) throw error;
+      }
       const accounts = [];
       for (const [account, config] of Object.entries(configs)) {
         const { userName, readConfigured, postConfigured, loginConfigured, sessionSource, sessionAcquiredAt } = await inspect(account, config);
-        accounts.push({ account, userName, readConfigured, postConfigured, loginConfigured, sessionSource, sessionAcquiredAt,
+        accounts.push({ account, userName, isDefault: account === defaultName, readConfigured, postConfigured, loginConfigured, sessionSource, sessionAcquiredAt,
           proxyMode: ['external', 'managed'].includes(config.proxy_mode ?? 'external') ? config.proxy_mode ?? 'external' : 'invalid' });
       }
       return accounts;
