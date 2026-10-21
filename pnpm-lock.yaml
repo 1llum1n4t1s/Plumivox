@@ -10,10 +10,10 @@ importers:
     dependencies:
       '@modelcontextprotocol/sdk':
         specifier: 1.32.1
-        version: 1.32.1(zod@4.6.6)
+        version: 1.32.1(zod@4.6.7)
       emoji-regex:
-        specifier: 10.6.0
-        version: 10.6.0
+        specifier: 11.0.0
+        version: 11.0.0
       ssh2:
         specifier: 1.17.0
         version: 1.17.0
@@ -21,8 +21,8 @@ importers:
         specifier: 3.1.0
         version: 3.1.0
       zod:
-        specifier: 4.6.6
-        version: 4.6.6
+        specifier: 4.6.7
+        version: 4.6.7
     devDependencies:
       esbuild:
         specifier: 0.28.2
@@ -303,8 +303,8 @@ packages:
   ee-first@1.1.1:
     resolution: {integrity: sha512-WMwm9LhRUo+WUaRN+vRuETqG89IgZphVSNkdFgeb6sS/E4OrDIN7t48CAewSHXc6C8lefD8KKfr5vY61brQlow==}
 
-  emoji-regex@10.6.0:
-    resolution: {integrity: sha512-toUI84YS5YmxW219erniWD0CIVOo46xGKColeNQRgOzDorgBi1v4D71/OFzgD9GO2UGKIv1C3Sp8DAn0+j5w7A==}
+  emoji-regex@11.0.0:
+    resolution: {integrity: sha512-2qQtc7syPcJmvF7BfKxBvwgvhzDth6u3q23+Jr4JOQUcmMGgmj7B4/ePZ2DmOhrrb77S8kMNHq2kilVASysfqA==}
 
   encodeurl@2.0.0:
     resolution: {integrity: sha512-Q0n9HRi4m6JuGIV1eFlmvJB7ZEVxu93IrMyiMsGC0lrMJMWzRgx6WGquyfQgZVb31vhGgXnfmPNNXmxnOkRBrg==}
@@ -602,8 +602,8 @@ packages:
     peerDependencies:
       zod: ^3.25.28 || ^4
 
-  zod@4.6.6:
-    resolution: {integrity: sha512-4UmzQUF5fxvfcYHlbjBmejU+w+hbDnWFx4aS8kBx7nPBHcO2SqPbpAG8snbdg+Xse4pRefR98hgjFgIMCI/UhA==}
+  zod@4.6.7:
+    resolution: {integrity: sha512-g8W2D2kU6a8untc053fX1uVBKzM7yqAxW/3zwk83+6RyF2+SKOuV+c0wBDhUwzV1PaGapmZH+rmcUzPf+3CGwg==}
 
 snapshots:
 
@@ -691,7 +691,7 @@ snapshots:
     dependencies:
       hono: 4.13.13
 
-  '@modelcontextprotocol/sdk@1.32.1(zod@4.6.6)':
+  '@modelcontextprotocol/sdk@1.32.1(zod@4.6.7)':
     dependencies:
       '@hono/node-server': 2.1.4(hono@4.13.13)
       ajv: 8.20.0
@@ -708,8 +708,8 @@ snapshots:
       json-schema-typed: 8.0.2
       pkce-challenge: 5.0.1
       raw-body: 3.0.2
-      zod: 4.6.6
-      zod-to-json-schema: 3.25.2(zod@4.6.6)
+      zod: 4.6.7
+      zod-to-json-schema: 3.25.2(zod@4.6.7)
     transitivePeerDependencies:
       - supports-color
 
@@ -809,7 +809,7 @@ snapshots:
 
   ee-first@1.1.1: {}
 
-  emoji-regex@10.6.0: {}
+  emoji-regex@11.0.0: {}
 
   encodeurl@2.0.0: {}
 
@@ -1154,8 +1154,8 @@ snapshots:
 
   wrappy@1.0.2: {}
 
-  zod-to-json-schema@3.25.2(zod@4.6.6):
+  zod-to-json-schema@3.25.2(zod@4.6.7):
     dependencies:
-      zod: 4.6.6
+      zod: 4.6.7
 
-  zod@4.6.6: {}
+  zod@4.6.7: {}

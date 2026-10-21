@@ -1,13 +1,12 @@
 import net from 'node:net';
-import { open } from 'node:fs/promises';
-import { isAbsolute } from 'node:path';
 import { timingSafeEqual } from 'node:crypto';
 import { Client } from 'ssh2';
 import { createEgressServer } from './proxy-egress.mjs';
+import { normalizeProxyConfig, withProxyPrivateKey } from './proxy-config.mjs';
 
-const MAX_KEY_BYTES = 1024 * 1024;
 const MAX_CONNECTIONS = 16;
 const MAX_RECONNECTS = 6;
+const SSH_SHUTDOWN_TIMEOUT_MS = 1_000;
 const MESSAGES = {
   PROXY_CONFIG: '管理プロキシの設定が不正です。',
   PROXY_KEY_UNAVAILABLE: '管理プロキシの秘密鍵を読み取れません。',
@@ -39,52 +38,13 @@ export class ManagedProxyError extends Error {
 
 function normalizedConfig(config) {
   if (config == null) return null;
-  const port = value => Number.isInteger(value) && value >= 1024 && value <= 65535;
-  if (typeof config !== 'object' ||
-    typeof config.sshHost !== 'string' || !config.sshHost || config.sshHost.length > 253 || /[\s\x00-\x1f]/.test(config.sshHost) ||
-    typeof config.sshUser !== 'string' || !/^[A-Za-z0-9._-]{1,64}$/.test(config.sshUser) ||
-    !Number.isInteger(config.sshPort) || config.sshPort < 1 || config.sshPort > 65535 ||
-    !port(config.localPort) || !port(config.remotePort) ||
-    typeof config.privateKeyFile !== 'string' || !isAbsolute(config.privateKeyFile) ||
-    typeof config.hostKeySha256 !== 'string' || !/^SHA256:[A-Za-z0-9+/]{43}=?$/.test(config.hostKeySha256)) {
-    throw new ManagedProxyError('PROXY_CONFIG');
-  }
-  const fingerprint = config.hostKeySha256.slice(7).replace(/=$/, '');
-  const bytes = Buffer.from(fingerprint, 'base64');
-  if (bytes.length !== 32 || bytes.toString('base64').replace(/=$/, '') !== fingerprint) throw new ManagedProxyError('PROXY_CONFIG');
-  return {
-    sshHost: config.sshHost, sshPort: config.sshPort, sshUser: config.sshUser,
-    privateKeyFile: config.privateKeyFile, hostKeySha256: `SHA256:${fingerprint}`,
-    localPort: config.localPort, remotePort: config.remotePort,
-  };
+  const snapshot = normalizeProxyConfig(config);
+  if (!snapshot) throw new ManagedProxyError('PROXY_CONFIG');
+  return snapshot;
 }
 
 async function readPrivateKey(path) {
-  let file;
-  let bytes;
-  try {
-    file = await open(path, 'r');
-    const stat = await file.stat();
-    if (!stat.isFile() || stat.size < 1) throw new ManagedProxyError('PROXY_KEY_UNAVAILABLE');
-    if (stat.size > MAX_KEY_BYTES) throw new ManagedProxyError('PROXY_KEY_TOO_LARGE');
-    // stat後に大きくなったファイルも上限+1バイトまでしか読まない。
-    bytes = Buffer.alloc(MAX_KEY_BYTES + 1);
-    let length = 0;
-    while (length < bytes.length) {
-      const result = await file.read(bytes, length, bytes.length - length, length);
-      if (!result.bytesRead) break;
-      length += result.bytesRead;
-    }
-    if (length > MAX_KEY_BYTES) throw new ManagedProxyError('PROXY_KEY_TOO_LARGE');
-    if (!length) throw new ManagedProxyError('PROXY_KEY_UNAVAILABLE');
-    const key = Buffer.from(bytes.subarray(0, length));
-    return key;
-  } catch (error) {
-    throw error instanceof ManagedProxyError ? error : new ManagedProxyError('PROXY_KEY_UNAVAILABLE');
-  } finally {
-    bytes?.fill(0);
-    await file?.close().catch(() => {});
-  }
+  return withProxyPrivateKey(path, ManagedProxyError, bytes => Buffer.from(bytes));
 }
 
 /** SSH接続だけを再接続する。利用者の投稿・ログインは再送しない。 */
@@ -112,11 +72,49 @@ export function createManagedProxyManager({
     lastErrorCode, managed: desired !== null,
   });
   function settleWaiters(code = null) {
-    for (const waiter of [...waiters]) waiter.finish(code);
+    for (const waiter of waiters) waiter.finish(code);
   }
   function clearReconnect() {
     clearTimeout(reconnectTimer);
     reconnectTimer = null;
+  }
+  function closeSsh(ctx) {
+    const client = ctx.client;
+    if (!client || ctx.sshClosed) return Promise.resolve();
+    return new Promise(resolve => {
+      let timer;
+      let finished = false;
+      let forcing = false;
+      const finish = () => {
+        if (finished) return;
+        finished = true;
+        clearTimeout(timer);
+        client.removeListener('close', finish);
+        resolve();
+      };
+      const force = () => {
+        if (finished || forcing) return;
+        forcing = true;
+        clearTimeout(timer);
+        timer = setTimeout(finish, SSH_SHUTDOWN_TIMEOUT_MS);
+        try { client.destroy(); } catch { finish(); }
+      };
+      client.once('close', finish);
+      if (ctx.sshReady && ctx.forwardRequested && !ctx.sshEnded) {
+        // 生きている自己接続は、remote listenerの解除応答を受けてから切断する。
+        // forwardInの応答が未着でも、同じSSH接続の要求順で解除を予約する。
+        timer = setTimeout(force, SSH_SHUTDOWN_TIMEOUT_MS);
+        try {
+          client.unforwardIn('127.0.0.1', ctx.config.remotePort, () => {
+            if (finished || forcing) return;
+            try { client.end(); } catch { force(); }
+          });
+        } catch { force(); }
+      } else {
+        // 未認証・切断済みでは解除応答を待たず、自分の接続だけを破棄する。
+        force();
+      }
+    });
   }
   function cleanup(ctx) {
     if (!ctx) return Promise.resolve();
@@ -126,8 +124,9 @@ export function createManagedProxyManager({
     for (const connection of [...ctx.connections]) connection.stop();
     ctx.key?.fill(0);
     ctx.key = null;
-    try { ctx.client?.destroy(); } catch { /* 所有するSSH接続だけを閉じる。 */ }
-    ctx.cleanup = Promise.resolve().then(() => ctx.egress?.close()).catch(() => {});
+    ctx.cleanup = Promise.all([
+      closeSsh(ctx), Promise.resolve().then(() => ctx.egress?.close()).catch(() => {}),
+    ]).then(() => {});
     return ctx.cleanup;
   }
   function failureCode(error, ctx) {
@@ -211,6 +210,7 @@ export function createManagedProxyManager({
     const ctx = {
       generation: expectedGeneration, config: desired, client: null, egress: null,
       key: null, disposed: false, cleanup: null, hostRejected: false,
+      sshReady: false, sshEnded: false, sshClosed: false, forwardRequested: false,
       connections: new Set(), readyTimer: null, pending: null,
     };
     context = ctx;
@@ -225,12 +225,14 @@ export function createManagedProxyManager({
         if (!current(ctx)) { await ctx.egress.close(); return; }
         ctx.client = createClient();
         ctx.client.on('error', error => failed(ctx, failureCode(error, ctx)));
-        ctx.client.on('end', () => failed(ctx, 'PROXY_CONNECT_FAILED'));
-        ctx.client.on('close', () => failed(ctx, 'PROXY_CONNECT_FAILED'));
+        ctx.client.on('end', () => { ctx.sshEnded = true; failed(ctx, 'PROXY_CONNECT_FAILED'); });
+        ctx.client.on('close', () => { ctx.sshClosed = true; failed(ctx, 'PROXY_CONNECT_FAILED'); });
         ctx.client.on('tcp connection', (details, accept, reject) => incoming(ctx, details, accept, reject));
         ctx.client.once('ready', () => {
           if (!current(ctx)) return;
+          ctx.sshReady = true;
           try {
+            ctx.forwardRequested = true;
             ctx.client.forwardIn('127.0.0.1', ctx.config.remotePort, (error, boundPort) => {
               if (!current(ctx)) return;
               if (error || (boundPort !== undefined && boundPort !== ctx.config.remotePort)) {

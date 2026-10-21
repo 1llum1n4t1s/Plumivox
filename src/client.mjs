@@ -114,24 +114,32 @@ async function imageFile(filePath) {
   }
 }
 
+function encodeSignedCursor(data, apiKey, prefix, maxLength) {
+  const payload = Buffer.from(JSON.stringify(data)).toString('base64url');
+  const signature = createHmac('sha256', apiKey).update(payload).digest('base64url');
+  const cursor = `${prefix}${payload}.${signature}`;
+  return cursor.length <= maxLength ? cursor : null;
+}
+
+function decodeSignedCursor(cursor, apiKey, prefix, maxLength) {
+  if (typeof cursor !== 'string' || cursor.length > maxLength || !cursor.startsWith(prefix)) throw new Error();
+  const [payload, signature, extra] = cursor.slice(prefix.length).split('.');
+  if (extra !== undefined || !/^[A-Za-z0-9_-]+$/.test(payload ?? '') || !/^[A-Za-z0-9_-]{43}$/.test(signature ?? '')) throw new Error();
+  const expected = createHmac('sha256', apiKey).update(payload).digest();
+  const received = Buffer.from(signature, 'base64url');
+  if (received.length !== expected.length || received.toString('base64url') !== signature || !timingSafeEqual(received, expected)) throw new Error();
+  return JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'));
+}
+
 function encodeFeedCursor(batches, coverage, account) {
-  const payload = Buffer.from(JSON.stringify({
+  return encodeSignedCursor({
     version: 2, account: account.account, userName: account.userName.toLowerCase(), batches, coverage,
-  })).toString('base64url');
-  const signature = createHmac('sha256', account.apiKey).update(payload).digest('base64url');
-  const cursor = `${FEED_CURSOR_PREFIX}${payload}.${signature}`;
-  return cursor.length <= MAX_FEED_CURSOR ? cursor : null;
+  }, account.apiKey, FEED_CURSOR_PREFIX, MAX_FEED_CURSOR);
 }
 
 function decodeFeedCursor(cursor, account) {
   try {
-    if (typeof cursor !== 'string' || cursor.length > MAX_FEED_CURSOR || !cursor.startsWith(FEED_CURSOR_PREFIX)) throw new Error();
-    const [payload, signature, extra] = cursor.slice(FEED_CURSOR_PREFIX.length).split('.');
-    if (extra !== undefined || !/^[A-Za-z0-9_-]+$/.test(payload ?? '') || !/^[A-Za-z0-9_-]{43}$/.test(signature ?? '')) throw new Error();
-    const expected = createHmac('sha256', account.apiKey).update(payload).digest();
-    const received = Buffer.from(signature, 'base64url');
-    if (received.length !== expected.length || received.toString('base64url') !== signature || !timingSafeEqual(received, expected)) throw new Error();
-    const data = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'));
+    const data = decodeSignedCursor(cursor, account.apiKey, FEED_CURSOR_PREFIX, MAX_FEED_CURSOR);
     if (data.version !== 2 || data.account !== account.account || data.userName !== account.userName.toLowerCase()
       || !Array.isArray(data.batches) || data.batches.length < 1 || data.batches.length > 10
       || !object(data.coverage) || !Number.isInteger(data.coverage.accounts)
@@ -212,21 +220,12 @@ function encodeSearchCursor(inner, account, conditions, kind) {
   if (typeof inner !== 'string' || !inner || inner.length > searchCursorLimit(conditions, kind)) {
     return null;
   }
-  const payload = Buffer.from(JSON.stringify({ version: 1, kind, conditions, inner })).toString('base64url');
-  const signature = createHmac('sha256', account.apiKey).update(payload).digest('base64url');
-  const cursor = `${SEARCH_CURSOR_PREFIX}${payload}.${signature}`;
-  return cursor.length <= MAX_SEARCH_CURSOR ? cursor : null;
+  return encodeSignedCursor({ version: 1, kind, conditions, inner }, account.apiKey, SEARCH_CURSOR_PREFIX, MAX_SEARCH_CURSOR);
 }
 
 function decodeSearchCursor(cursor, account, conditions, kind) {
   try {
-    if (typeof cursor !== 'string' || cursor.length > MAX_SEARCH_CURSOR || !cursor.startsWith(SEARCH_CURSOR_PREFIX)) throw new Error();
-    const [payload, signature, extra] = cursor.slice(SEARCH_CURSOR_PREFIX.length).split('.');
-    if (extra !== undefined || !/^[A-Za-z0-9_-]+$/.test(payload ?? '') || !/^[A-Za-z0-9_-]{43}$/.test(signature ?? '')) throw new Error();
-    const expected = createHmac('sha256', account.apiKey).update(payload).digest();
-    const received = Buffer.from(signature, 'base64url');
-    if (received.length !== expected.length || received.toString('base64url') !== signature || !timingSafeEqual(received, expected)) throw new Error();
-    const data = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'));
+    const data = decodeSignedCursor(cursor, account.apiKey, SEARCH_CURSOR_PREFIX, MAX_SEARCH_CURSOR);
     if (data.version !== 1 || data.kind !== kind || JSON.stringify(data.conditions) !== JSON.stringify(conditions)
       || typeof data.inner !== 'string' || !data.inner || data.inner.length > searchCursorLimit(conditions, kind)) throw new Error();
     return data.inner;
@@ -321,16 +320,24 @@ export class TwitterApiClient {
       const result = await this.request(account, 'user/followings', { query: { userName: account.userName, pageSize: maxAccounts, cursor: followingCursor }, signal });
       apiRequests++;
       if (!Array.isArray(result.followings)) fail('INVALID_RESPONSE', 'フォロー先一覧を確認できません。');
-      const protectedAccountsExcluded = result.followings.filter((user) => user.isProtected === true || user.protected === true).length;
-      const users = [...new Set(result.followings
-        .filter((user) => user.isProtected !== true && user.protected !== true && USER.test(user.userName ?? ''))
-        .map((user) => user.userName.toLowerCase()))].slice(0, maxAccounts);
-      const knownPublicUsers = new Set(result.followings
-        .filter((user) => user.isProtected !== true && user.protected !== true
-          && (user.isProtected === false || user.protected === false) && USER.test(user.userName ?? ''))
-        .map((user) => user.userName.toLowerCase()));
+      let protectedAccountsExcluded = 0;
+      const users = [];
+      const selectedUsers = new Set();
+      const unknownUsers = new Set();
+      for (const user of result.followings) {
+        if (user.isProtected === true || user.protected === true) { protectedAccountsExcluded++; continue; }
+        if (!USER.test(user.userName ?? '')) continue;
+        const name = user.userName.toLowerCase();
+        if (users.length < maxAccounts && !selectedUsers.has(name)) {
+          selectedUsers.add(name);
+          users.push(name);
+          unknownUsers.add(name);
+        }
+        // 上限の後ろにある同名の公開情報も、選択済みアカウントの未知数へ反映する。
+        if (user.isProtected === false || user.protected === false) unknownUsers.delete(name);
+      }
       // 未知数の母数は、重複除去と上限適用後に実際に検索するアカウント。
-      const protectionStatusUnknownAccounts = users.filter((name) => !knownPublicUsers.has(name)).length;
+      const protectionStatusUnknownAccounts = unknownUsers.size;
       const followingHasNextPage = result.has_next_page === true || result.followings.length > maxAccounts;
       const rawFollowingCursor = typeof result.next_cursor === 'string' && result.next_cursor ? result.next_cursor : null;
       const followingCursorTooLong = rawFollowingCursor !== null && rawFollowingCursor.length > MAX_PROVIDER_CURSOR;
@@ -361,10 +368,9 @@ export class TwitterApiClient {
       tweetCursorTooLong ||= page.coverage?.tweetContinuationUnavailableReason === 'cursor_too_long';
       if (page.hasNextPage && page.nextCursor) pending.push({ users: batch.users, cursor: page.nextCursor });
     }
-    const tweets = [...uniqueTweets.values()].sort((a, b) => {
-      const time = (Date.parse(b.createdAt ?? '') || 0) - (Date.parse(a.createdAt ?? '') || 0);
-      return time || (BigInt(a.id) < BigInt(b.id) ? 1 : -1);
-    });
+    const tweets = [...uniqueTweets.values()].map((tweet) => ({ tweet, time: Date.parse(tweet.createdAt ?? '') || 0 }))
+      .sort((a, b) => (b.time - a.time) || (BigInt(a.tweet.id) < BigInt(b.tweet.id) ? 1 : -1))
+      .map(({ tweet }) => tweet);
     // 1バッチでも安全に続けられない場合は、欠けた継続を全体の継続として返さない。
     const nextCursor = pending.length && !tweetCursorTooLong ? encodeFeedCursor(pending, coverage, account) : null;
     if (pending.length && !nextCursor) tweetCursorTooLong = true;
@@ -432,7 +438,9 @@ export class TwitterApiClient {
       const form = new FormData();
       form.set('login_cookies', account.loginCookies);
       form.set('proxy', account.proxy);
-      form.set('file', new Blob([file.bytes], { type: file.type }), file.name);
+      const blob = new Blob([file.bytes], { type: file.type });
+      file.bytes = null;
+      form.set('file', blob, file.name);
       const result = await this.request(account, 'upload_media_v2', { form, signal });
       if (result.status !== 'success' || !numericId(result.media_id)) fail('UPLOAD_FAILED', '画像アップロードの成功を確認できません。投稿は送信していません。');
       mediaIds.push(result.media_id);

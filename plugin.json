@@ -1,6 +1,6 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "plumivox",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "TwitterAPI.ioでXへ投稿・検索し、フォロー先の公開投稿を読み込む。VPS中継のセットアップを同梱するローカルMCPプラグイン"
 }

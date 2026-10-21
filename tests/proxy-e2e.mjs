@@ -56,7 +56,7 @@ const api = http.createServer(async (req, res) => {
 const apiPort = await listen(api);
 let sshMode = 'accept';
 const sshConnections = new Set(), forwarding = new Set(), relaySockets = new Set();
-let sshAttempts = 0;
+let sshAttempts = 0, forwardingCancellations = 0, forwardingReleaseDelayMs = 0;
 const ssh = new SshServer({ hostKeys: [privateKey] }, connection => {
   sshAttempts++; sshConnections.add(connection);
   connection.on('error', () => {});
@@ -67,10 +67,16 @@ const ssh = new SshServer({ hostKeys: [privateKey] }, connection => {
     context.accept();
   });
   const owned = new Set();
+  const release = async () => {
+    await delay(forwardingReleaseDelayMs);
+    for (const server of owned) { await close(server); forwarding.delete(server); }
+    owned.clear();
+  };
   connection.on('request', (accept, reject, name, info) => {
     if (name === 'cancel-tcpip-forward') {
-      for (const server of owned) { server.close(); forwarding.delete(server); }
-      owned.clear(); accept?.(); return;
+      forwardingCancellations++;
+      if (sshMode === 'ignore-cancel') return;
+      void release().then(() => accept?.()); return;
     }
     if (name !== 'tcpip-forward' || info.bindAddr !== '127.0.0.1') { reject?.(); return; }
     const server = net.createServer(socket => {
@@ -84,7 +90,7 @@ const ssh = new SshServer({ hostKeys: [privateKey] }, connection => {
     server.once('error', () => reject?.());
     server.listen(info.bindPort, info.bindAddr, () => { owned.add(server); forwarding.add(server); accept?.(info.bindPort); });
   });
-  connection.on('close', () => { sshConnections.delete(connection); for (const server of owned) { server.close(); forwarding.delete(server); } });
+  connection.on('close', () => { sshConnections.delete(connection); void release(); });
 });
 const sshPort = await listen(ssh);
 const localPort = await unusedPort(), remotePort = await unusedPort();
@@ -126,6 +132,27 @@ try {
     assert.equal((await client.listTools()).tools.length, 11);
     assert.equal((await status()).state, 'stopped');
   });
+  for (const [name, filename, content, code] of [
+    ['Empty', 'empty-key.pem', '', 'PROXY_KEY_UNAVAILABLE'],
+    ['Oversized', 'oversized-key.pem', Buffer.alloc(1024 * 1024 + 1), 'PROXY_KEY_TOO_LARGE'],
+    ['Non-file', 'key-directory', null, 'PROXY_KEY_UNAVAILABLE'],
+    ['Missing', 'missing-key.pem', undefined, 'PROXY_KEY_UNAVAILABLE'],
+  ]) await run(name + ' private key rejected before SSH or API connection', async () => {
+    const fixture = path.join(output, filename), attempts = sshAttempts, requests = trace.length;
+    if (content === null) await mkdir(fixture);
+    else if (content !== undefined) await writeFile(fixture, content);
+    config.plumivox.managed_proxy.private_key_file = fixture;
+    await writeFile(secretsPath, JSON.stringify(config));
+    try {
+      assert.equal((await fails('start_proxy', { account: 'managed' })).error.code, code);
+      assert.equal((await fails('post_tweet', { account: 'managed', text: 'invalid-key' })).error.code, code);
+      assert.equal(sshAttempts, attempts); assert.equal(trace.length, requests);
+    } finally {
+      await succeeds('stop_proxy');
+      config.plumivox.managed_proxy.private_key_file = keyPath;
+      await writeFile(secretsPath, JSON.stringify(config));
+    }
+  });
   await run('Reverse SSH forwarding carries CONNECT and early bytes exactly once', async () => {
     await succeeds('start_proxy', { account: 'managed' });
     assert.equal((await status()).state, 'ready');
@@ -144,6 +171,18 @@ try {
     assert.equal((await status()).state, 'ready');
     const tunnel = await openTunnel('x.com:443', 'external-kept-alive');
     try { await until(() => tunnel.data().includes('external-kept-alive'), 'External posting stopped managed forwarding'); } finally { tunnel.socket.destroy(); }
+  });
+  await run('Fragmented CONNECT preserves early payload exactly once', async () => {
+    const socket = net.connect({ host: '127.0.0.1', port: remotePort }); socket.on('error', () => {});
+    let data = ''; socket.on('data', chunk => { data += chunk.toString(); });
+    try {
+      await new Promise((resolve, reject) => { socket.once('connect', resolve); socket.once('error', reject); });
+      socket.write('CONNE'); await delay(30);
+      socket.write('CT x.com:443 HTTP/1.1\r\nHost: x.com:443\r\n'); await delay(30);
+      socket.write('\r\nfragmented-early-bytes');
+      await until(() => data.includes('fragmented-early-bytes'), 'Fragmented CONNECT payload missing');
+      assert.ok(data.startsWith('HTTP/1.1 200 ')); assert.equal(data.split('fragmented-early-bytes').length, 2);
+    } finally { socket.destroy(); }
   });
   for (const [name, authority] of [['Forbidden domain', 'x.com.evil.invalid:443'], ['Private DNS', 'private.x.com:443'], ['Mixed public and private DNS', 'mixed.x.com:443'], ['Literal private IP', '127.0.0.1:443'], ['Non-HTTPS destination port', 'x.com:80']]) {
     await run(name + ' rejected before upstream connection', async () => {
@@ -172,7 +211,52 @@ try {
     const tunnel = await openTunnel(); try { await until(() => tunnel.data().includes('200 Connection Established'), 'Recovered forwarding unusable'); } finally { tunnel.socket.destroy(); }
     assert.equal(trace.length, requests);
   });
+  await run('Stop waits for delayed remote listener release before immediate restart', async () => {
+    forwardingReleaseDelayMs = 350;
+    const before = forwardingCancellations, requests = trace.length;
+    try {
+      await succeeds('stop_proxy');
+      assert.equal(forwarding.size, 0, 'Stop returned before owned remote listener was released');
+      await succeeds('start_proxy', { account: 'managed' });
+      assert.ok(forwardingCancellations > before, 'Owned forwarding was not explicitly cancelled');
+      const tunnel = await openTunnel('x.com:443', 'immediate-restart');
+      try { await until(() => tunnel.data().includes('immediate-restart'), 'Immediate restart forwarding unusable'); }
+      finally { tunnel.socket.destroy(); }
+      assert.equal(trace.length, requests);
+    } finally { forwardingReleaseDelayMs = 0; await succeeds('stop_proxy'); await until(() => forwarding.size === 0, 'Delayed listener survived cleanup'); }
+  });
+  await run('Remote port owned by another listener fails permanently without stealing or API replay', async () => {
+    const blocker = net.createServer(socket => socket.end('other-owner'));
+    await new Promise(resolve => blocker.listen(remotePort, '127.0.0.1', resolve));
+    try {
+      const before = sshAttempts, requests = trace.length;
+      const result = await fails('start_proxy', { account: 'managed' });
+      assert.equal(result.error.code, 'PROXY_REMOTE_BIND_FAILED');
+      await delay(350);
+      assert.equal(sshAttempts, before + 1);
+      assert.equal((await status()).state, 'failed');
+      assert.equal(blocker.listening, true);
+      const socket = net.connect({ host: '127.0.0.1', port: remotePort });
+      let data = ''; socket.on('data', chunk => { data += chunk; }); socket.on('error', () => {});
+      try { await until(() => data.includes('other-owner'), 'Other owner listener was disturbed'); }
+      finally { socket.destroy(); }
+      assert.equal(trace.length, requests);
+    } finally { await succeeds('stop_proxy'); await close(blocker); }
+  });
+  await run('Unanswered forwarding cancellation cannot hang explicit stop', async () => {
+    await succeeds('start_proxy', { account: 'managed' });
+    sshMode = 'ignore-cancel';
+    const before = forwardingCancellations, started = Date.now();
+    try {
+      await succeeds('stop_proxy');
+      assert.ok(forwardingCancellations > before, 'Stop did not request forwarding cancellation');
+      assert.ok(Date.now() - started < 4000, 'SSH shutdown exceeded its finite timeout');
+      await until(() => forwarding.size === 0, 'Forced shutdown left owned listener behind');
+      assert.equal((await status()).state, 'stopped');
+    } finally { sshMode = 'accept'; }
+  });
   await run('Stop closes active tunnels and prevents automatic resurrection', async () => {
+    await succeeds('start_proxy', { account: 'managed' });
     const tunnel = await openTunnel(); await until(() => tunnel.data().includes('200 Connection Established'), 'Tunnel not established');
     await succeeds('stop_proxy'); await until(() => tunnel.socket.destroyed, 'Active tunnel survived stop');
     const after = sshAttempts; await delay(300); const data = await status();
@@ -190,7 +274,8 @@ try {
   });
   await run('SSH authentication failure blocks login and posting API', async () => {
     sshMode = 'reject'; const before = trace.length;
-    await fails('start_proxy', { account: 'managed' });
+    const failures = await Promise.all(Array.from({ length: 3 }, () => fails('start_proxy', { account: 'managed' })));
+    assert.ok(failures.every(value => value.error.code === failures[0].error.code));
     await fails('post_tweet', { account: 'managed', text: 'blocked' });
     await fails('refresh_session', { account: 'managed' }); assert.equal(trace.length, before);
     await succeeds('stop_proxy'); sshMode = 'accept';
@@ -201,6 +286,19 @@ try {
     await until(() => sshAttempts > before, 'SSH startup did not begin'); abort.abort(); await pending;
     await succeeds('stop_proxy'); sshMode = 'accept'; const attempts = sshAttempts;
     await delay(350); assert.equal((await status()).state, 'stopped'); assert.equal(sshAttempts, attempts);
+  });
+  await run('Concurrent startup waiters settle on readiness and stop after individual cancellation', async () => {
+    await Promise.all(Array.from({ length: 3 }, () => succeeds('start_proxy', { account: 'managed' })));
+    assert.equal((await status()).state, 'ready'); await succeeds('stop_proxy');
+    sshMode = 'stall'; const before = sshAttempts, abort = new AbortController();
+    const cancelled = call('start_proxy', { account: 'managed' }, { signal: abort.signal }).catch(() => null);
+    const stopped = Array.from({ length: 2 }, () => fails('start_proxy', { account: 'managed' }));
+    try {
+      await until(() => sshAttempts > before, 'Concurrent SSH startup did not begin');
+      abort.abort(); await cancelled; await succeeds('stop_proxy');
+      for (const value of await Promise.all(stopped)) assert.equal(value.error.code, 'PROXY_STOPPED');
+      assert.equal((await status()).state, 'stopped');
+    } finally { sshMode = 'accept'; await succeeds('stop_proxy'); }
   });
   await run('Stop during unresolved DNS prevents later upstream connection', async () => {
     await succeeds('start_proxy', { account: 'managed' }); const before = await connects(), lookups = (await events()).length;

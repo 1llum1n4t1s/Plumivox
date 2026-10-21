@@ -89,7 +89,7 @@ export function createEgressServer({ port = 43128, lookup = defaultLookup, conne
       return;
     }
     const controller = new AbortController();
-    const state = { client, upstream: null, stopped: false, rejected: false, established: false, timers: new Set(), stop: null };
+    const state = { upstream: null, stopped: false, rejected: false, established: false, timers: new Set(), stop: null };
     connections.add(state);
     const timer = (callback, milliseconds) => {
       const handle = setTimeout(callback, milliseconds);
@@ -138,7 +138,7 @@ export function createEgressServer({ port = 43128, lookup = defaultLookup, conne
         reject('431 Request Header Fields Too Large');
         return;
       }
-      header = Buffer.concat([header, chunk]);
+      header = header.length ? Buffer.concat([header, chunk]) : chunk;
       const boundary = header.indexOf('\r\n\r\n');
       if (boundary < 0) {
         if (header.length >= MAX_HEADER) {

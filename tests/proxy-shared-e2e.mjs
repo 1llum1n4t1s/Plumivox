@@ -204,12 +204,48 @@ try {
     assert.equal((await first.listTools()).tools.length, 11); assert.equal((await second.listTools()).tools.length, 11);
     assert.equal((await status(first)).state, 'stopped'); assert.equal((await status(second)).state, 'stopped');
   });
+  for (const [name, filename, content, code] of [
+    ['Empty', 'empty-key.pem', '', 'PROXY_KEY_UNAVAILABLE'],
+    ['Oversized', 'oversized-key.pem', Buffer.alloc(1024 * 1024 + 1), 'PROXY_KEY_TOO_LARGE'],
+    ['Non-file', 'key-directory', null, 'PROXY_KEY_UNAVAILABLE'],
+    ['Missing', 'missing-key.pem', undefined, 'PROXY_KEY_UNAVAILABLE'],
+  ]) await run(name + ' shared private key rejected before SSH or API connection', async () => {
+    const fixture = path.join(output, filename), attempts = sshAttempts, requests = trace.length;
+    if (content === null) await mkdir(fixture);
+    else if (content !== undefined) await writeFile(fixture, content);
+    config.plumivox.managed_proxy.private_key_file = fixture;
+    await writeFile(secretsPath, JSON.stringify(config));
+    try {
+      for (const [name, args] of [['start_proxy', { account: 'managed' }], ['post_tweet', { account: 'managed', text: 'invalid-key' }]]) {
+        const { result, data } = await call(first, name, args);
+        assert.equal(result.isError, true); assert.equal(data.error.code, code);
+      }
+      assert.equal(sshAttempts, attempts); assert.equal(trace.length, requests);
+    } finally {
+      config.plumivox.managed_proxy.private_key_file = keyPath;
+      await writeFile(secretsPath, JSON.stringify(config));
+    }
+  });
   await run('Concurrent MCP start creates one SSH and forwarding owner', async () => {
     await Promise.all([succeeds(first, 'start_proxy', { account: 'managed' }), succeeds(second, 'start_proxy', { account: 'managed' })]);
     assert.equal((await status(first)).state, 'ready'); assert.equal((await status(second)).state, 'ready');
     assert.equal(sshAttempts, 1); assert.equal(sshConnections.size, 1); assert.equal(forwarding.size, 1);
     assert.equal((await daemonEvents()).filter(event => event.event === 'start').length, 1);
     await echoCheck('shared-concurrent-start');
+  });
+  await run('Equivalent key path retains shared IPC identity', async () => {
+    const attempts = sshAttempts, starts = (await daemonEvents()).filter(event => event.event === 'start').length;
+    config.plumivox.managed_proxy.private_key_file = path.dirname(keyPath) + path.sep + '.' + path.sep + path.basename(keyPath);
+    await writeFile(secretsPath, JSON.stringify(config));
+    try {
+      await succeeds(second, 'start_proxy', { account: 'managed' });
+      assert.equal(sshAttempts, attempts);
+      assert.equal((await daemonEvents()).filter(event => event.event === 'start').length, starts);
+      await echoCheck('same-shared-ipc-identity');
+    } finally {
+      config.plumivox.managed_proxy.private_key_file = keyPath;
+      await writeFile(secretsPath, JSON.stringify(config));
+    }
   });
   await run('Attached idle MCPs keep daemon alive beyond idle timeout', async () => {
     const attempts = sshAttempts; await delay(1000); assert.equal((await status(second)).state, 'ready');
@@ -233,6 +269,30 @@ try {
   });
   await run('Oversized IPC frame rejected without changing shared state', async () => {
     await ipcRejected('x'.repeat(8193)); assert.equal((await status(second)).state, 'ready'); await echoCheck('oversized-ipc-safe');
+  });
+  await run('Fragmented IPC frames preserve authentication and successive challenge order', async () => {
+    const { socketPath } = JSON.parse(await readFile(ipcPathFile, 'utf8'));
+    const socket = net.connect(socketPath); socket.on('error', () => {}); const frames = framesFor(socket);
+    const fragmented = async body => {
+      const bytes = JSON.stringify(body) + '\n';
+      socket.write(bytes.slice(0, 11)); await delay(30); socket.write(bytes.slice(11));
+    };
+    try {
+      await new Promise((resolve, reject) => { socket.once('connect', resolve); socket.once('error', reject); });
+      await fragmented({ type: 'hello', version: 2, context: ipcContext, clientNonce: nonce() });
+      let challenge = await frames.next(); assert.equal(challenge.type, 'challenge');
+      for (let requestId = 1; requestId <= 3; requestId++) {
+        const body = { type: 'request', version: 2, context: ipcContext, clientNonce: challenge.clientNonce,
+          channelNonce: challenge.channelNonce, challenge: challenge.challenge, requestId, operation: 'status' };
+        if (requestId === 2) socket.write(JSON.stringify({ ...body, hmac: proof('request', body) }) + '\n');
+        else await fragmented({ ...body, hmac: proof('request', body) });
+        const response = await frames.next();
+        assert.equal(response.requestId, requestId); assert.equal(response.requestChallenge, body.challenge);
+        assert.equal(response.ok, true); assert.equal(response.status.state, 'ready');
+        const { proof: signature, ...responseBody } = response; assert.equal(signature, proof('response', responseBody));
+        challenge = response;
+      }
+    } finally { socket.destroy(); }
   });
   await run('Global stop closes every user tunnel without automatic restart', async () => {
     const tunnel = await openTunnel('global-stop'); await until(() => tunnel.data().includes('global-stop'), 'Tunnel not ready');

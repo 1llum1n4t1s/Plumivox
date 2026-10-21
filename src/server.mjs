@@ -13,7 +13,7 @@ const readOnly = { readOnlyHint: true, destructiveHint: false, idempotentHint: t
 
 export function createServer({ accounts, apiBaseUrl, timeoutMs, proxyManager = createManagedProxyManager() } = {}) {
   const api = new TwitterApiClient({ apiBaseUrl, timeoutMs });
-  const server = new McpServer({ name: 'plumivox', version: '1.0.2' });
+  const server = new McpServer({ name: 'plumivox', version: '1.0.3' });
   const authenticating = new Set();
   const handle = (action) => async (input, extra) => {
     try {
@@ -68,7 +68,7 @@ export function createServer({ accounts, apiBaseUrl, timeoutMs, proxyManager = c
     authenticating.add(selected.account);
     try {
       if (!refresh) {
-        const ready = (await accounts.listAccounts()).find((item) => item.account === selected.account);
+        const ready = await accounts.getAccountMetadata(selected.account);
         if (ready?.postConfigured) return {
           account: ready.account, userName: ready.userName, sessionSource: ready.sessionSource,
           acquiredAt: ready.sessionAcquiredAt ?? null, postConfigured: true, reused: true,

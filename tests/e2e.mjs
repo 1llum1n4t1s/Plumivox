@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { mkdir, writeFile, realpath, stat, readFile } from 'node:fs/promises';
-import { randomUUID, createHash } from 'node:crypto';
+import { randomUUID, createHash, createHmac } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
@@ -58,6 +58,9 @@ const corruptedPostingDirectory = path.join(corruptedStateDirectory, createHash(
 await mkdir(corruptedPostingDirectory, { recursive: true });
 await writeFile(path.join(corruptedPostingDirectory, 'session.dpapi'), 'deliberately invalid synthetic encrypted session');
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/l9sAAAAASUVORK5CYII=', 'base64');
+const orderedImages = Array.from({ length: 4 }, (_, index) => Buffer.concat([png, Buffer.from(`image-order-${index}`)]));
+const orderedImagePaths = orderedImages.map((_, index) => path.join(output, `ordered-${index}.png`));
+await Promise.all(orderedImages.map((bytes, index) => writeFile(orderedImagePaths[index], bytes)));
 await writeFile(pngPath, png);
 await writeFile(invalidPath, 'not an image');
 await writeFile(oversizedPath, Buffer.concat([png, Buffer.alloc(5 * 1024 * 1024)]));
@@ -68,6 +71,7 @@ const authGateFiles = [];
 let scenario = 'normal';
 let nextPost = 900;
 let uploadAccepted;
+let scenarioUploads = 0;
 let searchAccepted;
 let loginAccepted;
 let releaseHeldLogin;
@@ -83,9 +87,14 @@ const mock = http.createServer(async (req, res) => {
   const body = Buffer.concat(chunks);
   let payload;
   if (req.headers['content-type']?.startsWith('application/json')) { try { payload = JSON.parse(body); } catch {} }
+  let uploadedImageHash;
+  if (url.pathname.endsWith('/upload_media_v2') && ['image-order', 'image-later-failure'].includes(scenario)) {
+    const form = await new Response(body, { headers: { 'content-type': req.headers['content-type'] } }).formData();
+    uploadedImageHash = createHash('sha256').update(Buffer.from(await form.get('file').arrayBuffer())).digest('hex');
+  }
   trace.push({ method: req.method, path: url.pathname, query: Object.fromEntries(url.searchParams), authenticated: req.headers['x-api-key'] === fakeKey, cookieHeaderPresent: Boolean(req.headers.cookie), contentType: req.headers['content-type'] || null, bodyBytes: body.length,
     ...(url.pathname.endsWith('/create_tweet_v2') ? { postingPayloadValid: payload?.login_cookies === fakeCookie && payload?.proxy === 'http://127.0.0.1:8888' && typeof payload?.tweet_text === 'string', mediaIds: payload?.media_ids ?? [] } : {}),
-    ...(url.pathname.endsWith('/upload_media_v2') ? { multipartPayloadValid: body.includes(Buffer.from(fakeCookie)) && body.includes(Buffer.from('name="proxy"')) && body.includes(Buffer.from('name="file"')) && body.includes(png) } : {}),
+    ...(url.pathname.endsWith('/upload_media_v2') ? { multipartPayloadValid: body.includes(Buffer.from(fakeCookie)) && body.includes(Buffer.from('name="proxy"')) && body.includes(Buffer.from('name="file"')) && body.includes(png), ...(uploadedImageHash ? { uploadedImageHash } : {}) } : {}),
     ...(url.pathname.endsWith('/user_login_v2') ? { loginPayloadValid: payload?.user_name === 'AuthUser' && payload?.email === 'auth@example.invalid' && payload?.password === fakePassword && payload?.proxy === 'http://127.0.0.1:8888', totpSeedExact: payload?.totp_secret === fakeSeed, loginPayloadKeys: Object.keys(payload || {}).sort() } : {}),
   });
   const send = (data, code = 200) => { res.writeHead(code, { 'content-type': 'application/json' }); res.end(JSON.stringify(data)); };
@@ -151,6 +160,15 @@ const mock = http.createServer(async (req, res) => {
   }
   if (url.pathname.endsWith('/tweets')) return send({ tweets: [tweet('502')] });
   if (url.pathname.endsWith('/user/followings')) {
+    if (scenario === 'following-selection') return send({ followings: [
+      { userName: 'FirstUnknown' }, { userName: 'FIRSTUNKNOWN' },
+      { userName: '', isProtected: false }, { userName: 'invalid-name', protected: false },
+      { userName: 'Private', isProtected: true, protected: false }, { userName: 'OtherPrivate', isProtected: false, protected: true },
+      { userName: 'KnownFirst', protected: false }, { userName: 'KNOWNFIRST' },
+      ...Array.from({ length: 18 }, (_, index) => ({ userName: `Chosen${index}` })),
+      { userName: 'PastLimit', isProtected: false }, { userName: 'FIRSTUNKNOWN', protected: false },
+      { userName: 'Chosen0', isProtected: true, protected: false }, { userName: 'Chosen1', isProtected: false },
+    ], has_next_page: true, next_cursor: 'selection-next' });
     if (scenario === 'cursor-wrapper-following') return send({ followings: Array.from({ length: 20 }, (_, index) => ({ userName: `Public${index}`, isProtected: false })), has_next_page: false, next_cursor: '' });
     if (scenario === 'unknown-following') return send({ followings: [{ userName: 'KnownPublic', isProtected: false }, { userName: 'UnknownPublic' }, { userName: 'OtherUnknown' }, { userName: 'Private', isProtected: true }], has_next_page: false, next_cursor: '' });
     if (scenario.startsWith('cursor-aggregate')) return send({ followings: Array.from({ length: 160 }, (_, index) => ({ userName: `Public${index}`, isProtected: false })), has_next_page: false, next_cursor: '' });
@@ -161,6 +179,12 @@ const mock = http.createServer(async (req, res) => {
   }
   if (url.pathname.endsWith('/tweet/advanced_search')) {
     const query = url.searchParams.get('query') || '';
+    if (scenario === 'feed-date-order') return send({ tweets: [
+      tweet('10', '1969-12-31T23:59:59Z'), tweet('20', null), tweet('30', 'invalid-date'),
+      tweet('40', '1970-01-01T00:00:00Z'), tweet('50', '2026-10-12T12:00:00Z'),
+      tweet('60', '2026-10-12T12:00:00Z'), tweet('070', '2026-10-12T12:00:00Z'),
+      tweet('70', '2026-10-12T12:00:00Z'), tweet('80', '1969-12-31T23:59:58Z'),
+    ], has_next_page: false, next_cursor: '' });
     if (providerCursorLengths[scenario]) return send({ tweets: [tweet('1200')], has_next_page: !url.searchParams.get('cursor'), next_cursor: url.searchParams.get('cursor') ? '' : 'c'.repeat(providerCursorLengths[scenario]) });
     if (scenario.startsWith('search-')) {
       if (scenario === 'search-cancel') {
@@ -197,6 +221,10 @@ const mock = http.createServer(async (req, res) => {
     return send({ tweets: second ? [tweet('601', '2026-10-12T13:00:00Z'), tweet('602', '2026-10-12T14:00:00Z')] : [tweet('603', '2026-10-12T11:00:00Z'), tweet('601', '2026-10-12T13:00:00Z')], has_next_page: !url.searchParams.get('cursor'), next_cursor: !url.searchParams.get('cursor') ? 'search-next' : '' });
   }
   if (url.pathname.endsWith('/upload_media_v2')) {
+    if (['image-order', 'image-later-failure'].includes(scenario)) {
+      const index = scenarioUploads++;
+      return send(scenario === 'image-later-failure' && index === 2 ? { status: 'success' } : { status: 'success', media_id: String(700 + index) });
+    }
     if (scenario === 'cancel-upload') {
       uploadAccepted?.();
       setTimeout(() => { if (!res.destroyed) send({ status: 'success', media_id: '700', media_id_string: '700' }); }, 150).unref();
@@ -459,6 +487,24 @@ try {
   for (const [name, text, length] of [['Japanese 140 characters', 'あ'.repeat(140), 280], ['Compound family emoji', '👨‍👩‍👧‍👦', 2], ['Long URL', `https://example.com/${'a'.repeat(300)}`, 23]]) await run(name, async () => { const data = await succeeds('post_tweet', { account: 'posting', text }); assert.equal(data.weightedLength, length); assert.ok(/^\d+$/.test(data.tweetId)); assert.ok(data.url.includes(data.tweetId)); });
   await run('Explicit duplicate posts send twice', async () => { const before = trace.filter((item) => item.path.endsWith('/create_tweet_v2')).length; await succeeds('post_tweet', { account: 'posting', text: 'explicit duplicate' }); await succeeds('post_tweet', { account: 'posting', text: 'explicit duplicate' }); assert.equal(trace.filter((item) => item.path.endsWith('/create_tweet_v2')).length - before, 2); });
   await run('Image uses multipart upload then one post', async () => { const before = trace.length; await succeeds('post_tweet', { account: 'posting', text: 'image', images: [pngPath] }); const requests = trace.slice(before); assert.equal(requests.filter((item) => item.path.endsWith('/upload_media_v2')).length, 1); const upload = requests.find((item) => item.path.endsWith('/upload_media_v2')); assert.match(upload.contentType, /^multipart\/form-data; boundary=/); assert.equal(upload.multipartPayloadValid, true); assert.equal(requests.filter((item) => item.path.endsWith('/create_tweet_v2')).length, 1); assert.deepEqual(requests.find((item) => item.path.endsWith('/create_tweet_v2')).mediaIds, ['700']); });
+  // 失敗条件を先に固定: 全画像の事前検証、4枚の内容と順序、後続upload失敗時の投稿・再送禁止。
+  for (const problem of ['image-order', 'image-later-failure']) await run(`Four image snapshots preserve order and stop on ${problem}`, async () => {
+    scenario = problem;
+    scenarioUploads = 0;
+    const before = trace.length;
+    try {
+      const args = { account: 'posting', text: 'four images', images: orderedImagePaths };
+      if (problem === 'image-order') await succeeds('post_tweet', args);
+      else assert.equal((await fails('post_tweet', args)).error.code, 'UPLOAD_FAILED');
+      const requests = trace.slice(before);
+      const uploads = requests.filter((item) => item.path.endsWith('/upload_media_v2'));
+      assert.deepEqual(uploads.map((item) => item.uploadedImageHash), orderedImages.slice(0, problem === 'image-order' ? 4 : 3).map((bytes) => createHash('sha256').update(bytes).digest('hex')));
+      assert.ok(uploads.every((item) => item.multipartPayloadValid));
+      const posts = requests.filter((item) => item.path.endsWith('/create_tweet_v2'));
+      assert.equal(posts.length, problem === 'image-order' ? 1 : 0);
+      if (posts.length) { assert.deepEqual(posts[0].mediaIds, ['700', '701', '702', '703']); assert.equal(requests.at(-1), posts[0]); }
+    } finally { scenario = 'normal'; }
+  });
   await run('MCP cancellation during upload prevents tweet creation', async () => {
     scenario = 'cancel-upload';
     const before = trace.length;
@@ -506,6 +552,32 @@ try {
     } finally { scenario = 'normal'; }
   });
   let cursor;
+  // 失敗条件を先に固定: 無効・欠落・epoch前の日時、同時刻のID順、同数値のID表記を従来どおり扱う。
+  await run('Feed date keys preserve invalid epoch negative and equal-date ordering', async () => {
+    scenario = 'feed-date-order';
+    try {
+      const data = await succeeds('get_following_feed', { account: 'reading', maxAccounts: 20 });
+      assert.deepEqual(data.tweets.map((item) => item.id), ['70', '070', '60', '50', '40', '30', '20', '10', '80']);
+    } finally { scenario = 'normal'; }
+  });
+  // 失敗条件を先に固定: protected=true優先、無効名、初出の大小文字重複、上限後の公開重複。
+  await run('Following selection scans late duplicates and preserves selected unknown counts', async () => {
+    scenario = 'following-selection';
+    try {
+      for (const [name, extra] of [['get_following_feed', {}], ['search_tweets', { scope: 'following', keyword: 'needle phrase' }]]) {
+        const before = trace.length;
+        const data = await succeeds(name, { account: 'reading', maxAccounts: 20, ...extra });
+        assert.equal(data.coverage.accounts, 20);
+        assert.equal(data.coverage.protectedAccountsExcluded, 3);
+        assert.equal(data.coverage.protectionStatusUnknownAccounts, 17);
+        assert.equal(data.coverage.followingHasNextPage, true);
+        const requests = trace.slice(before).filter((item) => item.path.endsWith('/advanced_search'));
+        assert.equal(requests.length, 1);
+        const names = [...requests[0].query.query.matchAll(/from:([a-z0-9_]+)/g)].map((match) => match[1]);
+        assert.deepEqual(names, ['firstunknown', 'knownfirst', ...Array.from({ length: 18 }, (_, index) => `chosen${index}`)]);
+      }
+    } finally { scenario = 'normal'; }
+  });
   await run('Feed batches deduplicate and sort with coverage', async () => { const before = trace.length; const data = await succeeds('get_following_feed', { account: 'reading' }); assert.equal(data.mode, 'reconstructed_following_feed'); assert.equal(data.officialHomeEquivalent, false); assert.deepEqual(data.tweets.map((item) => item.id), ['602', '601', '603']); assert.equal(data.coverage.protectedAccountsExcluded, 1); assert.equal(data.hasNextPage, true); assert.ok(data.nextCursor); cursor = data.nextCursor; const search = trace.slice(before).filter((item) => item.path.endsWith('/advanced_search')); assert.equal(search.length, 2); for (const request of search) { assert.ok((request.query.query.match(/from:/g) || []).length <= 20); assert.ok(request.query.query.includes('include:nativeretweets')); assert.equal(request.query.queryType, 'Latest'); assert.ok(!request.query.query.includes('from:Private')); } });
   await run('Feed cursor account binding rejects before HTTP', async () => { assert.ok(cursor, 'Feed did not provide cursor'); await fails('get_following_feed', { account: 'posting', cursor }, true); });
   // G1/G2: 同一アカウントのcursor改変と保護情報欠落を、署名・coverageで区別する。
@@ -538,6 +610,57 @@ try {
     } finally { scenario = 'normal'; }
   });
   await run('Malformed cursor rejects before HTTP', () => fails('get_following_feed', { account: 'reading', cursor: 'bad-cursor!' }, true));
+  // 旧wire形式を独立に構成し、共通化後も既発行cursorとcanonical署名の契約を維持する。
+  const legacySignedCursor = (prefix, data) => {
+    const payload = Buffer.from(JSON.stringify(data)).toString('base64url');
+    return `${prefix}${payload}.${createHmac('sha256', fakeKey).update(payload).digest('base64url')}`;
+  };
+  const legacyFeedData = {
+    version: 2, account: 'reading', userName: 'reader', batches: [{ users: ['public0'], cursor: 'search-next' }],
+    coverage: { accounts: 1, followingHasNextPage: false, followingNextCursor: null, protectedAccountsExcluded: 0,
+      protectionStatusUnknownAccounts: 0, followingPage: 'first', followingContinuationAvailable: false, followingContinuationUnavailableReason: null },
+  };
+  const legacySearchConditions = { account: 'reading', userName: 'reader', scope: 'all', keyword: 'needle phrase', startEpoch: null, endEpoch: null, maxAccounts: null };
+  const legacySearchData = { version: 1, kind: 'tweets', conditions: legacySearchConditions, inner: 'search-filter-next' };
+  await run('Legacy feed and search cursors resume without changing signed wire format', async () => {
+    const first = await succeeds('get_following_feed', { account: 'reading', maxAccounts: 20 });
+    assert.equal(first.nextCursor, legacySignedCursor('plumivox-feed.', { ...legacyFeedData,
+      batches: [{ users: Array.from({ length: 20 }, (_, index) => `public${index}`), cursor: 'search-next' }],
+      coverage: { ...legacyFeedData.coverage, accounts: 20, followingHasNextPage: true, protectedAccountsExcluded: 1 },
+    }));
+    const beforeFeed = trace.length;
+    await succeeds('get_following_feed', { account: 'reading', cursor: legacySignedCursor('plumivox-feed.', legacyFeedData) });
+    assert.equal(trace.length - beforeFeed, 1);
+    assert.equal(trace.at(-1).query.cursor, 'search-next');
+    scenario = 'search-normal';
+    try {
+      const firstSearch = await succeeds('search_tweets', { account: 'reading', keyword: 'needle phrase' });
+      assert.equal(firstSearch.nextCursor, legacySignedCursor('plumivox-search.', legacySearchData));
+      const next = await succeeds('search_tweets', { account: 'reading', keyword: 'needle phrase', cursor: legacySignedCursor('plumivox-search.', legacySearchData) });
+      assert.equal(next.hasNextPage, false);
+      assert.equal(trace.at(-1).query.cursor, 'search-filter-next');
+      const nested = legacySignedCursor('plumivox-search.', { ...legacySearchData,
+        conditions: { ...legacySearchConditions, scope: 'following', maxAccounts: 100 }, inner: legacySignedCursor('plumivox-feed.', legacyFeedData),
+      });
+      await succeeds('search_tweets', { account: 'reading', keyword: 'needle phrase', scope: 'following', cursor: nested });
+      assert.equal(trace.at(-1).query.cursor, 'search-next');
+    } finally { scenario = 'normal'; }
+  });
+  await run('Signed cursors reject noncanonical signatures malformed envelopes and wrong versions before HTTP', async () => {
+    const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
+    for (const [name, prefix, data, args, message] of [
+      ['get_following_feed', 'plumivox-feed.', legacyFeedData, {}, 'フィードのcursorが不正、または別アカウントのものです。'],
+      ['search_tweets', 'plumivox-search.', legacySearchData, { keyword: 'needle phrase' }, '検索のcursorが不正、または検索条件・アカウントが一致しません。'],
+    ]) {
+      const valid = legacySignedCursor(prefix, data);
+      const noncanonical = valid.slice(0, -1) + alphabet[alphabet.indexOf(valid.at(-1)) + 1];
+      for (const invalid of [noncanonical, `${valid}.extra`, valid.slice(0, -1), legacySignedCursor(prefix, { ...data, version: 99 })]) {
+        const rejected = await fails(name, { account: 'reading', ...args, cursor: invalid }, true);
+        assert.equal(rejected.error.code, 'INVALID_CURSOR');
+        assert.equal(rejected.error.message, message);
+      }
+    }
+  });
   await run('Feed continuation', async () => { assert.ok(cursor); const data = await succeeds('get_following_feed', { account: 'reading', cursor }); assert.equal(data.hasNextPage, false); });
   await run('Empty following coverage', async () => { scenario = 'empty'; try { const data = await succeeds('get_following_feed', { account: 'reading' }); assert.deepEqual(data.tweets, []); assert.equal(data.hasNextPage, false); } finally { scenario = 'normal'; } });
   await run('Incomplete following list reported', async () => { scenario = 'following-page'; try { const data = await succeeds('get_following_feed', { account: 'reading' }); assert.equal(data.coverage.followingHasNextPage, true); } finally { scenario = 'normal'; } });
@@ -777,6 +900,125 @@ try {
     assertLoginMetadata(data, true);
     assert.equal(data.account, 'posting');
     assert.equal(trace.length, before);
+  });
+  await run('Reused login inspects only its selected account after configuration reread', async () => {
+    const prefix = path.join(output, `account-inspection-${randomUUID()}`);
+    const configPath = `${prefix}.json`, sessionRoot = `${prefix}-state`;
+    const preloadPath = `${prefix}.mjs`, countsPath = `${prefix}-counts.json`;
+    const profiles = Object.fromEntries(['selected', 'other1', 'other2'].map((name) => [name,
+      { ...syntheticConfig.twitterapi_io.posting, user_name: name }]));
+    const config = { twitterapi_io: { ...profiles, default_account: 'selected' } };
+    await writeFile(configPath, JSON.stringify(config));
+    for (const name of ['other1', 'other2']) {
+      const directory = path.join(sessionRoot, createHash('sha256').update(`${name}\n${name}`).digest('hex'));
+      await mkdir(directory, { recursive: true });
+      await writeFile(path.join(directory, 'session.dpapi'), 'invalid synthetic encrypted session');
+    }
+    authGateFiles.push(configPath, sessionRoot, preloadPath, countsPath);
+    await writeFile(preloadPath, `import fs from 'node:fs/promises';
+import childProcess from 'node:child_process';
+import { writeFileSync } from 'node:fs';
+import { syncBuiltinESMExports } from 'node:module';
+import { McpServer } from ${JSON.stringify(pathToFileURL(path.join(repo, 'node_modules/@modelcontextprotocol/sdk/dist/esm/server/mcp.js')).href)};
+const counts = { configReads: 0, sessionChecks: 0, sessionReads: 0, decryptSpawns: 0 }, results = [];
+const readFile = fs.readFile, lstat = fs.lstat, spawn = childProcess.spawn;
+fs.readFile = async function(file, ...args) {
+  const value = await readFile.call(this, file, ...args);
+  if (String(file) === ${JSON.stringify(configPath)} && ++counts.configReads === 1) {
+    const changed = JSON.parse(value); changed.twitterapi_io.default_account = 'other1';
+    writeFileSync(file, JSON.stringify(changed));
+  }
+  if (String(file).endsWith('session.dpapi')) counts.sessionReads++;
+  return value;
+};
+fs.lstat = function(file, ...args) { if (String(file).endsWith('session.dpapi')) counts.sessionChecks++; return lstat.call(this, file, ...args); };
+childProcess.spawn = function(command, args, ...rest) {
+  if (command === 'pwsh' && args?.includes('-EncodedCommand')) counts.decryptSpawns++;
+  return spawn.call(this, command, args, ...rest);
+};
+syncBuiltinESMExports();
+const registerTool = McpServer.prototype.registerTool;
+McpServer.prototype.registerTool = function(name, definition, callback) {
+  return registerTool.call(this, name, definition, async (...args) => {
+    const before = { ...counts }, result = await callback(...args);
+    results.push({ name, ...Object.fromEntries(Object.entries(counts).map(([key, value]) => [key, value - before[key]])) });
+    writeFileSync(${JSON.stringify(countsPath)}, JSON.stringify(results));
+    return result;
+  });
+};
+`);
+    const measuredTransport = makeTransport(configPath, sessionRoot, 250, preloadPath);
+    const measuredClient = new Client({ name: 'plumivox-account-inspection-e2e', version: '1.0.0' });
+    try {
+      await measuredClient.connect(measuredTransport);
+      const before = trace.length;
+      const reused = await call('login_account', {}, measuredClient);
+      assert.notEqual(reused.result.isError, true);
+      assertLoginMetadata(reused.data, true);
+      assert.equal(reused.data.account, 'selected');
+      assert.equal(trace.length, before);
+      const listed = await call('list_accounts', {}, measuredClient);
+      assert.notEqual(listed.result.isError, true);
+      assert.equal(listed.data.accounts.length, 3);
+      assert.deepEqual(listed.data.accounts.filter((item) => item.isDefault).map((item) => item.account), ['other1']);
+      assert.deepEqual(JSON.parse(await readFile(countsPath, 'utf8')), [
+        { name: 'login_account', configReads: 2, sessionChecks: 2, sessionReads: 0, decryptSpawns: 0 },
+        { name: 'list_accounts', configReads: 1, sessionChecks: 3, sessionReads: 2, decryptSpawns: 2 },
+      ]);
+    } finally { await measuredClient.close(); }
+  });
+  await run('DPAPI output byte limit preserves UTF8 across child stream chunks', async () => {
+    const prefix = path.join(output, `session-output-${randomUUID()}`);
+    const configPath = `${prefix}.json`, sessionRoot = `${prefix}-state`;
+    const preloadPath = `${prefix}.mjs`, childPath = `${prefix}-child.mjs`;
+    const profiles = {};
+    for (const [name, offset] of [['below', -1], ['exact', 0], ['over', 1]]) {
+      profiles[name] = { ...syntheticConfig.twitterapi_io.posting, user_name: name };
+      const directory = path.join(sessionRoot, createHash('sha256').update(`${name}\n${name}`).digest('hex'));
+      await mkdir(directory, { recursive: true });
+      await writeFile(path.join(directory, 'session.dpapi'), JSON.stringify({ name, bytes: 2 * 1024 * 1024 + offset }));
+    }
+    await writeFile(configPath, JSON.stringify({ twitterapi_io: profiles }));
+    authGateFiles.push(configPath, sessionRoot, preloadPath, childPath);
+    await writeFile(childPath, `import { once } from 'node:events';
+let input = ''; process.stdin.setEncoding('utf8');
+for await (const chunk of process.stdin) input += chunk;
+const { name, bytes } = JSON.parse(JSON.parse(input).value);
+const session = JSON.stringify({ schema_version: 2, cookie: 'synthetic-🙂あe\\u0301-cookie',
+  binding: ${JSON.stringify(createHash('sha256').update(`${fakeKey}\n${syntheticConfig.twitterapi_io.posting.proxy}`).digest('hex'))},
+  user_name: name, source: 'plumivox_api', acquired_at: '2026-10-21T00:00:00.000Z' });
+const body = Buffer.from(session + ' '.repeat(bytes - Buffer.byteLength(session)));
+const split = body.indexOf(Buffer.from('🙂'));
+for (const chunk of [body.subarray(0, split + 1), body.subarray(split + 1, split + 2), body.subarray(split + 2, split + 3), body.subarray(split + 3, split + 4)]) {
+  process.stdout.write(chunk); await new Promise((resolve) => setTimeout(resolve, 15));
+}
+for (let offset = split + 4; offset < body.length; offset += 16381) {
+  if (!process.stdout.write(body.subarray(offset, offset + 16381))) await once(process.stdout, 'drain');
+  await new Promise(setImmediate);
+}
+`);
+    await writeFile(preloadPath, `import childProcess from 'node:child_process';
+import { syncBuiltinESMExports } from 'node:module';
+const spawn = childProcess.spawn;
+childProcess.spawn = function(command, args, options) {
+  return command === 'pwsh' && args?.includes('-EncodedCommand')
+    ? spawn.call(this, process.execPath, [${JSON.stringify(childPath)}], options)
+    : spawn.apply(this, arguments);
+};
+syncBuiltinESMExports();
+`);
+    const boundedTransport = makeTransport(configPath, sessionRoot, 250, preloadPath);
+    const boundedClient = new Client({ name: 'plumivox-session-output-e2e', version: '1.0.0' });
+    try {
+      await boundedClient.connect(boundedTransport);
+      const { result, data } = await call('list_accounts', {}, boundedClient);
+      assert.notEqual(result.isError, true);
+      assert.deepEqual(data.accounts.map(({ account, postConfigured, sessionSource }) => ({ account, postConfigured, sessionSource })), [
+        { account: 'below', postConfigured: true, sessionSource: 'plumivox_dpapi' },
+        { account: 'exact', postConfigured: true, sessionSource: 'plumivox_dpapi' },
+        { account: 'over', postConfigured: false, sessionSource: null },
+      ]);
+    } finally { await boundedClient.close(); }
   });
   await run('Login saves DPAPI and passes exact Base32 seed once', async () => {
     const before = trace.length;
@@ -1145,7 +1387,7 @@ try {
 } catch (error) { results.push({ name: 'MCP process startup', status: 'fail', message: safe(error.message) }); }
 finally { await client.close().catch(() => {}); mock.closeAllConnections(); await new Promise((resolve) => mock.close(resolve)); }
 if (!results.length) results.push({ name: 'Selected E2E case exists', status: 'fail', message: 'No case matched PLUMIVOX_E2E_CASE' });
-const summary = { status: results.every((item) => item.status === 'pass') ? 'pass' : 'fail', passed: results.filter((item) => item.status === 'pass').length, failed: results.filter((item) => item.status === 'fail').length, results, retainedFiles: [secretsPath, mismatchedSecretsPath, singleAccountSecretsPath, pngPath, invalidPath, oversizedPath, stateDirectory, corruptedStateDirectory, ...authGateFiles], retention: 'Synthetic input fixtures, E2E-only auth gates and encrypted sessions are retained for the caller to remove through the approved Windows recycle-bin workflow; summary and HTTP trace are reproducible evidence.' };
+const summary = { status: results.every((item) => item.status === 'pass') ? 'pass' : 'fail', passed: results.filter((item) => item.status === 'pass').length, failed: results.filter((item) => item.status === 'fail').length, results, retainedFiles: [secretsPath, mismatchedSecretsPath, singleAccountSecretsPath, pngPath, ...orderedImagePaths, invalidPath, oversizedPath, stateDirectory, corruptedStateDirectory, ...authGateFiles], retention: 'Synthetic input fixtures, E2E-only auth gates and encrypted sessions are retained for the caller to remove through the approved Windows recycle-bin workflow; summary and HTTP trace are reproducible evidence.' };
 await writeFile(path.join(output, 'summary.json'), JSON.stringify(summary, null, 2));
 await writeFile(path.join(output, 'http-trace.json'), JSON.stringify(trace, null, 2));
 console.log(JSON.stringify({ status: summary.status, passed: summary.passed, failed: summary.failed, output }));

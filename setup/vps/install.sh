@@ -84,6 +84,8 @@ Match User $ssh_user
     AuthorizedKeysCommand none
     PasswordAuthentication no
     KbdInteractiveAuthentication no
+    ClientAliveInterval 15
+    ClientAliveCountMax 3
     AllowTcpForwarding remote
     AllowStreamLocalForwarding no
     GatewayPorts no
@@ -165,7 +167,7 @@ if ((!owned)); then
 fi
 verify_effective() {
   local effective=$1 line
-  for line in 'authenticationmethods publickey' 'pubkeyauthentication yes' 'authorizedkeysfile .ssh/authorized_keys' 'authorizedkeyscommand none' 'passwordauthentication no' 'kbdinteractiveauthentication no' 'allowtcpforwarding remote' 'allowstreamlocalforwarding no' 'gatewayports no' "permitlisten 127.0.0.1:$remote_port" 'permitopen none' 'allowagentforwarding no' 'x11forwarding no' 'permittty no' 'forcecommand /usr/sbin/nologin' 'disableforwarding no'; do
+  for line in 'authenticationmethods publickey' 'pubkeyauthentication yes' 'authorizedkeysfile .ssh/authorized_keys' 'authorizedkeyscommand none' 'passwordauthentication no' 'kbdinteractiveauthentication no' 'clientaliveinterval 15' 'clientalivecountmax 3' 'allowtcpforwarding remote' 'allowstreamlocalforwarding no' 'gatewayports no' "permitlisten 127.0.0.1:$remote_port" 'permitopen none' 'allowagentforwarding no' 'x11forwarding no' 'permittty no' 'forcecommand /usr/sbin/nologin' 'disableforwarding no'; do
     grep -Fxq "$line" <<<"$effective" || fail 'SSHの既存Match制約と専用設定が競合します。管理者が確認してください'
   done
 }

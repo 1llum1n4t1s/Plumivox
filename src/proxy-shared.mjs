@@ -1,13 +1,13 @@
 import net from 'node:net';
 import { spawn } from 'node:child_process';
-import { open, mkdir } from 'node:fs/promises';
+import { mkdir } from 'node:fs/promises';
 import { isAbsolute, join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import { createManagedProxyManager } from './proxy-manager.mjs';
+import { normalizeProxyConfig, withProxyPrivateKey } from './proxy-config.mjs';
 
 const MAX_FRAME_BYTES = 8 * 1024;
-const MAX_KEY_BYTES = 1024 * 1024;
 const STATES = new Set(['stopped', 'starting', 'ready', 'reconnecting', 'failed', 'external']);
 const MESSAGES = {
   PROXY_CONFIG: '共有プロキシの設定が不正です。',
@@ -55,23 +55,11 @@ function safeStatus(status) {
 const stoppedStatus = () => ({ state: 'stopped', managed: false, activeConnections: 0, lastErrorCode: null });
 
 function snapshotConfig(config) {
-  const port = value => Number.isInteger(value) && value >= 1024 && value <= 65535;
-  if (!config || typeof config !== 'object' ||
-    typeof config.sshHost !== 'string' || !config.sshHost || config.sshHost.length > 253 || /[\s\x00-\x1f]/.test(config.sshHost) ||
-    typeof config.sshUser !== 'string' || !/^[A-Za-z0-9._-]{1,64}$/.test(config.sshUser) ||
-    !Number.isInteger(config.sshPort) || config.sshPort < 1 || config.sshPort > 65535 ||
-    !port(config.localPort) || !port(config.remotePort) ||
-    typeof config.privateKeyFile !== 'string' || !isAbsolute(config.privateKeyFile) ||
-    typeof config.hostKeySha256 !== 'string' || !/^SHA256:[A-Za-z0-9+/]{43}=?$/.test(config.hostKeySha256)) {
-    throw new SharedProxyError('PROXY_CONFIG');
-  }
-  const fingerprint = config.hostKeySha256.slice(7).replace(/=$/, '');
-  if (Buffer.from(fingerprint, 'base64').toString('base64').replace(/=$/, '') !== fingerprint) throw new SharedProxyError('PROXY_CONFIG');
-  return {
-    sshHost: config.sshHost.toLowerCase(), sshPort: config.sshPort, sshUser: config.sshUser,
-    privateKeyFile: resolve(config.privateKeyFile), hostKeySha256: `SHA256:${fingerprint}`,
-    localPort: config.localPort, remotePort: config.remotePort,
-  };
+  const snapshot = normalizeProxyConfig(config);
+  if (!snapshot) throw new SharedProxyError('PROXY_CONFIG');
+  snapshot.sshHost = snapshot.sshHost.toLowerCase();
+  snapshot.privateKeyFile = resolve(snapshot.privateKeyFile);
+  return snapshot;
 }
 
 function configId(config) {
@@ -84,29 +72,8 @@ function defaultSocketPath(config) {
 }
 
 async function defaultDeriveSecret(config) {
-  let file;
-  let bytes;
-  try {
-    file = await open(config.privateKeyFile, 'r');
-    const stat = await file.stat();
-    if (!stat.isFile() || stat.size < 1) throw new SharedProxyError('PROXY_KEY_UNAVAILABLE');
-    if (stat.size > MAX_KEY_BYTES) throw new SharedProxyError('PROXY_KEY_TOO_LARGE');
-    bytes = Buffer.alloc(MAX_KEY_BYTES + 1);
-    let length = 0;
-    while (length < bytes.length) {
-      const result = await file.read(bytes, length, bytes.length - length, length);
-      if (!result.bytesRead) break;
-      length += result.bytesRead;
-    }
-    if (length > MAX_KEY_BYTES) throw new SharedProxyError('PROXY_KEY_TOO_LARGE');
-    if (!length) throw new SharedProxyError('PROXY_KEY_UNAVAILABLE');
-    return createHash('sha256').update('Plumivox shared proxy IPC v1\0').update(bytes.subarray(0, length)).digest();
-  } catch (error) {
-    throw error instanceof SharedProxyError ? error : new SharedProxyError('PROXY_KEY_UNAVAILABLE');
-  } finally {
-    bytes?.fill(0);
-    await file?.close().catch(() => {});
-  }
+  return withProxyPrivateKey(config.privateKeyFile, SharedProxyError, bytes =>
+    createHash('sha256').update('Plumivox shared proxy IPC v1\0').update(bytes).digest());
 }
 
 function secretBytes(secret) {
@@ -187,15 +154,16 @@ function writeFrame(socket, frame, callback) {
 }
 
 function readFrames(socket, onFrame, onInvalid) {
-  let pending = Buffer.alloc(0);
+  const empty = Buffer.alloc(0);
+  let pending = empty;
   socket.on('data', chunk => {
     if (pending.length + chunk.length > MAX_FRAME_BYTES) { onInvalid(); return; }
-    pending = Buffer.concat([pending, chunk]);
+    pending = pending.length ? Buffer.concat([pending, chunk]) : chunk;
     while (pending.length) {
       const boundary = pending.indexOf(10);
       if (boundary < 0) break;
       const bytes = pending.subarray(0, boundary);
-      pending = pending.subarray(boundary + 1);
+      pending = boundary + 1 === pending.length ? empty : pending.subarray(boundary + 1);
       let frame;
       try {
         frame = JSON.parse(bytes.toString('utf8'));
@@ -497,7 +465,7 @@ export async function runProxyDaemon({ config, socketPath, secret, managerFactor
     let challenge = null;
     const peer = {
       socket, context: configId(snapshot), clientNonce: null, channelNonce: null,
-      challenge: null, requestId: 0, authenticated: false, busy: false, timer: null, controller: null,
+      requestId: 0, authenticated: false, busy: false, timer: null, controller: null,
     };
     connections.add(peer);
     peer.timer = setTimeout(() => socket.destroy(), 3_000);
@@ -521,7 +489,7 @@ export async function runProxyDaemon({ config, socketPath, secret, managerFactor
         writeFrame(socket, { ...body, proof: mac(key, 'server', body) });
         return;
       }
-      const request = { ...requestBody({ ...peer, challenge }, frame.requestId, frame.operation) };
+      const request = requestBody({ ...peer, challenge }, frame.requestId, frame.operation);
       if (!exactKeys(frame, ['type', 'version', 'context', 'clientNonce', 'channelNonce', 'challenge', 'requestId', 'operation', 'hmac']) ||
         frame.type !== 'request' || !sameChannel(frame, peer) || !['ready', 'status', 'stop'].includes(frame.operation) ||
         !challenge || frame.challenge !== challenge || !Number.isSafeInteger(frame.requestId) || frame.requestId !== peer.requestId + 1 ||

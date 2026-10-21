@@ -213,7 +213,6 @@ function Invoke-PlumivoxSetup {
     Assert-PlumivoxPrivateAcl $destination
     $document.twitterapi_io.default_account = $SetDefaultAccount
   } else {
-  if ($document.Contains('twitterapi_io') -and $document.twitterapi_io -isnot [System.Collections.IDictionary]) { throw 'SETTINGS_INVALID' }
   if ($document.Contains('plumivox') -and $document.plumivox -isnot [System.Collections.IDictionary]) { throw 'SETTINGS_INVALID' }
   if (($document.Contains('twitterapi_io') -and $document.twitterapi_io.Contains($Account)) -or ($document.Contains('plumivox') -and $document.plumivox.Contains('managed_proxy'))) { throw 'SETTINGS_EXISTS' }
   if ($Account -ieq 'default_account') { throw 'ACCOUNT_INVALID' }

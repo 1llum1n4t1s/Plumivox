@@ -208,6 +208,7 @@ function protectedOperation(operation, payload) {
   if (process.platform !== 'win32') return Promise.reject(new SessionStorageError());
   return new Promise((resolve, reject) => {
     let output = '';
+    let outputBytes = 0;
     let settled = false;
     const child = spawn('pwsh', ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand',
       Buffer.from(DPAPI, 'utf16le').toString('base64')], { windowsHide: true, stdio: ['pipe', 'pipe', 'ignore'] });
@@ -223,8 +224,9 @@ function protectedOperation(operation, payload) {
     child.stdin.on('error', () => finish(true));
     child.stdout.setEncoding('utf8');
     child.stdout.on('data', (chunk) => {
-      output += chunk.toString('utf8');
-      if (Buffer.byteLength(output) > MAX_BYTES) { child.kill(); finish(true); }
+      output += chunk;
+      outputBytes += Buffer.byteLength(chunk);
+      if (outputBytes > MAX_BYTES) { child.kill(); finish(true); }
     });
     child.on('close', (code) => finish(code !== 0));
     child.stdin.end(JSON.stringify({ operation, ...payload }));

@@ -1,6 +1,6 @@
 {
   "name": "plumivox",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "private": true,
   "description": "TwitterAPI.ioを使うX投稿・フォロー先フィードのローカルMCPサーバー",
   "type": "module",
@@ -23,10 +23,10 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.32.1",
-    "emoji-regex": "10.6.0",
+    "emoji-regex": "11.0.0",
     "ssh2": "1.17.0",
     "twitter-text": "3.1.0",
-    "zod": "4.6.6"
+    "zod": "4.6.7"
   },
   "devDependencies": {
     "esbuild": "0.28.2"

@@ -127,13 +127,18 @@ export function createAccountStore({ secretsPath, profile, sessionPaths = {}, st
     nonempty(config.email) && nonempty(config.password) &&
     validTotpSecret(config.totp_secret));
 
+  function normalizedAccount(config) {
+    const userName = typeof config.user_name === 'string' && USER_NAME.test(config.user_name) ? config.user_name : '';
+    const apiKey = nonempty(config.api_key) ? config.api_key : '';
+    const proxy = validProxy(config.proxy) ? config.proxy : undefined;
+    return { userName, apiKey, proxy };
+  }
+
   /** ログインに必要な項目だけを内部呼出元へ返す。MCP出力へ返さない。 */
   async function getLoginCredentials(account) {
     const selected = await select(account);
     const { config } = selected;
-    const userName = typeof config.user_name === 'string' && USER_NAME.test(config.user_name) ? config.user_name : '';
-    const apiKey = nonempty(config.api_key) ? config.api_key : '';
-    const proxy = validProxy(config.proxy) ? config.proxy : undefined;
+    const { userName, apiKey, proxy } = normalizedAccount(config);
     if (!validTotpSecret(config.totp_secret)) {
       throw new ConfigurationError('LOGIN_CREDENTIALS_INVALID', 'totp_secretには認証コードではなくBase32の2FA秘密鍵を設定してください。');
     }
@@ -146,9 +151,7 @@ export function createAccountStore({ secretsPath, profile, sessionPaths = {}, st
 
   /** @param {string} account @param {Record<string,unknown>} config */
   async function inspect(account, config) {
-    const userName = typeof config.user_name === 'string' && USER_NAME.test(config.user_name) ? config.user_name : '';
-    const apiKey = nonempty(config.api_key) ? config.api_key : '';
-    const proxy = validProxy(config.proxy) ? config.proxy : undefined;
+    const { userName, apiKey, proxy } = normalizedAccount(config);
     const readConfigured = Boolean(userName && apiKey);
     const loginConfigured = loginReady(config, userName, apiKey, proxy);
     let loginCookies;
@@ -177,21 +180,33 @@ export function createAccountStore({ secretsPath, profile, sessionPaths = {}, st
       postConfigured: Boolean(readConfigured && proxy && loginCookies), sessionSource };
   }
 
+  function defaultName(secrets, configs) {
+    try { return selectedName(secrets, configs); } catch (error) {
+      if (!(error instanceof ConfigurationError)) throw error;
+      return undefined;
+    }
+  }
+
+  async function metadata(account, config, selectedDefault) {
+    const { userName, readConfigured, postConfigured, loginConfigured, sessionSource, sessionAcquiredAt } = await inspect(account, config);
+    return { account, userName, isDefault: account === selectedDefault, readConfigured, postConfigured, loginConfigured, sessionSource, sessionAcquiredAt,
+      proxyMode: ['external', 'managed'].includes(config.proxy_mode ?? 'external') ? config.proxy_mode ?? 'external' : 'invalid' };
+  }
+
   return {
     async listAccounts() {
       const secrets = await document();
       const configs = accountProfiles(secrets);
-      let defaultName;
-      try { defaultName = selectedName(secrets, configs); } catch (error) {
-        if (!(error instanceof ConfigurationError)) throw error;
-      }
+      const selectedDefault = defaultName(secrets, configs);
       const accounts = [];
       for (const [account, config] of Object.entries(configs)) {
-        const { userName, readConfigured, postConfigured, loginConfigured, sessionSource, sessionAcquiredAt } = await inspect(account, config);
-        accounts.push({ account, userName, isDefault: account === defaultName, readConfigured, postConfigured, loginConfigured, sessionSource, sessionAcquiredAt,
-          proxyMode: ['external', 'managed'].includes(config.proxy_mode ?? 'external') ? config.proxy_mode ?? 'external' : 'invalid' });
+        accounts.push(await metadata(account, config, selectedDefault));
       }
       return accounts;
+    },
+    async getAccountMetadata(account) {
+      const selected = await select(account);
+      return metadata(selected.account, selected.config, defaultName(selected.secrets, accountProfiles(selected.secrets)));
     },
     /** @param {string} [account] @param {{requirePosting?:boolean}} [options] @returns {Promise<Account>} */
     async getAccount(account, { requirePosting = false } = {}) {
