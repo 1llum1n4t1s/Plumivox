@@ -48,7 +48,7 @@ ToolportでCodexが利用するプロファイルに有効化し、`toolport_sea
 enabled = false
 ```
 
-Codexを再起動すると直接接続が無効になります。以後の操作はToolportでツールを検索し、返された実ツール名を`toolport_call_tool`へ渡します。APIキー・Cookie・SSH鍵はPlumivoxの既存設定から読み込み、Toolportの引数へ移しません。vava／blblも実ツール名を探索するため、この経路を利用できます。
+Codexを再起動すると直接接続が無効になります。以後の操作はToolportでツールを検索し、返された実ツール名を`toolport_call_tool`へ渡します。APIキー・Cookie・SSH鍵はPlumivoxの既存設定から読み込み、Toolportの引数へ移しません。
 
 更新は上記の`codex plugin marketplace upgrade plumivox-local`で行います。Toolportが実行中のサーバーは読込み済みコードを使うため、更新後にToolportの`plumivox`を無効化・再有効化して、新しいスナップショットを読み込みます。取得済みルートが変わった場合は登録した引数も変更してください。起動時のGit取得や依存インストールは行いません。
 
@@ -88,7 +88,7 @@ Codexを再起動すると直接接続が無効になります。以後の操作
 
 ## フォロー中フィードの取得範囲
 
-TwitterAPI.ioにX公式ホームの「フォロー中」を直接取得するAPIはありません。Plumivoxはフォロー一覧の先頭から最大100アカウントを読み、20アカウントずつまとめて公開投稿を検索します。`maxAccounts` は20〜200に設定できます。初回100なら最大6回、200なら最大11回のAPI要求です。最新の単価は[TwitterAPI.ioの料金](https://twitterapi.io/pricing)を確認してください。
+TwitterAPI.ioにX公式ホームの「フォロー中」を直接取得するAPIはありません。Plumivoxは既定ではフォロー一覧の先頭から最大100アカウントを読み、20アカウントずつまとめて公開投稿を検索します。`maxAccounts` は20〜200に設定できます。初回100なら最大6回、200なら最大11回のAPI要求です。最新の単価は[TwitterAPI.ioの料金](https://twitterapi.io/pricing)を確認してください。
 
 結果の `officialHomeEquivalent` は常に `false` です。保護投稿は取得できず、検索で得られる内容・リポストの扱い・全体の並び順は公式ホームと一致する保証がありません。フォロー数が上限を超える場合は `coverage.followingHasNextPage` が `true` になります。`coverage.followingNextCursor` を `followingCursor` に渡すと、次のフォロー先一覧を対象にします。フォロー一覧は新しいフォローから並び、継続中のフォロー変更による取得差は避けられません。
 
@@ -133,8 +133,6 @@ API応答が10MiBを超えた場合は受信を打ち切って失敗を返しま
 `login_account` は保存Cookieが利用できる形式なら再利用し、X上での有効性を検証したとは報告しません。失効や設定不一致が確認された場合は `refresh_session` を呼びます。新しいCookieはPlumivoxの保存先へWindows DPAPIで暗号化して保存し、失敗した投稿を自動再送しません。
 
 保存の置換前に中止した場合は `AUTH_CANCELLED`、Mutex所有を失った場合は `AUTH_LOCK_LOST`、保存できないCookieは `LOGIN_FAILED` で返します。保存の置換を指示した後に結果を確認できない場合は `AUTH_SAVE_UNCERTAIN` となり、更新済みの可能性があります。`SESSION_STORAGE_UNAVAILABLE` は保存先やDPAPIなどの保存処理の失敗を表します。
-
-vavaのX告知は `release_posting`、blblのX告知は `blog_posting` を指定して、このプラグインのMCPツールを利用します。
 
 ## 開発・検証
 

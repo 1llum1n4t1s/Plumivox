@@ -23,7 +23,7 @@ pnpm test:e2e
 ```
 
 - 実装・依存関係・ビルド設定を変更した場合は上記で検証し、ソースと再生成したバンドルを一緒に更新する。`pnpm check` は `src/`・`scripts/`・`tests/`、同梱PowerShell・Bashの構文と4つのJSON設定を確認する。
-- `pnpm test:e2e` はAPI・認証、管理プロキシ、共有daemon、PCセットアップ、VPSセットアップCLIの5系統を順に実行する。ローカルの偽API・偽SSHと別プロセスのMCP・daemonを使い、実際のXへ投稿せず、実際のSSHホストへ接続しない。VPS CLIの確認だけで実Linuxへの導入成功を扱わない。失敗条件を先に確認し、挙動の検証は対応する既存E2Eへ追加する。
+- `pnpm test:e2e` はAPI・認証、管理プロキシ、共有daemon、PCセットアップ、VPSセットアップCLIの5系統を順に実行する。全件検証ではAPI系のケース絞込み用 `PLUMIVOX_E2E_CASE` を未設定にし、個別再実行の成功を全件成功として扱わない。ローカルの偽API・偽SSHと別プロセスのMCP・daemonを使い、実際のXへ投稿せず、実際のSSHホストへ接続しない。VPS CLIの確認だけで実Linuxへの導入成功を扱わない。失敗条件を先に確認し、挙動の検証は対応する既存E2Eへ追加する。
 - 出力先を指定する場合は `PLUMIVOX_E2E_OUTPUT_DIR`、`PLUMIVOX_PROXY_E2E_OUTPUT_DIR`、`PLUMIVOX_PROXY_SHARED_E2E_OUTPUT_DIR`、`PLUMIVOX_SETUP_E2E_OUTPUT_DIR`、`PLUMIVOX_SETUP_VPS_E2E_OUTPUT_DIR` をそれぞれ別の、リポジトリとCodexユーザーディレクトリの外のフォルダーにする。未指定時は各系統がユーザーの一時ディレクトリ配下の `Codex/Plumivox/<UUID>` を使う。各出力先の `summary.json` の失敗数と各結果、API系の`http-trace.json`、VPS CLIの`mutation-trace.json`を読み、偽設定・画像・暗号化セッション・SSH鍵の清掃は呼び出し側で行う。
 - 文書だけの変更では、リンク・コマンド・設定名・記載した挙動を対応する実装へ照合する。
 
