@@ -78,6 +78,7 @@ let releaseHeldLogin;
 let activeLogins = 0;
 let peakLogins = 0;
 let oversizedResponse;
+let failedUploadBody;
 const tweet = (id, createdAt = '2026-10-12T12:00:00Z') => ({ id, text: `Tweet ${id}`, createdAt, author: { userName: 'PublicUser', name: 'Public User' }, url: `https://x.com/PublicUser/status/${id}` });
 const providerCursorLengths = { 'cursor-provider-over': 10001, 'cursor-provider-below': 9500, 'cursor-aggregate-over': 9500, 'cursor-aggregate-below': 8000, 'cursor-wrapper-over': 9500, 'cursor-wrapper-following': 1000, 'cursor-timeline-over': 100001 };
 const mock = http.createServer(async (req, res) => {
@@ -88,7 +89,7 @@ const mock = http.createServer(async (req, res) => {
   let payload;
   if (req.headers['content-type']?.startsWith('application/json')) { try { payload = JSON.parse(body); } catch {} }
   let uploadedImageHash;
-  if (url.pathname.endsWith('/upload_media_v2') && ['image-order', 'image-later-failure'].includes(scenario)) {
+  if (url.pathname.endsWith('/upload_media_v2') && ['image-order', 'image-later-failure', 'upload-retry-order'].includes(scenario)) {
     const form = await new Response(body, { headers: { 'content-type': req.headers['content-type'] } }).formData();
     uploadedImageHash = createHash('sha256').update(Buffer.from(await form.get('file').arrayBuffer())).digest('hex');
   }
@@ -98,6 +99,39 @@ const mock = http.createServer(async (req, res) => {
     ...(url.pathname.endsWith('/user_login_v2') ? { loginPayloadValid: payload?.user_name === 'AuthUser' && payload?.email === 'auth@example.invalid' && payload?.password === fakePassword && payload?.proxy === 'http://127.0.0.1:8888', totpSeedExact: payload?.totp_secret === fakeSeed, loginPayloadKeys: Object.keys(payload || {}).sort() } : {}),
   });
   const send = (data, code = 200) => { res.writeHead(code, { 'content-type': 'application/json' }); res.end(JSON.stringify(data)); };
+  if (scenario === 'create502' && url.pathname.endsWith('/create_tweet_v2')) return send({ message: fakeCookie }, 502);
+  if (scenario.startsWith('upload-') && url.pathname.endsWith('/upload_media_v2')) {
+    const attempt = ++scenarioUploads;
+    if (scenario === 'upload-stream502') {
+      if (attempt > 1) return send({ status: 'success', media_id: '700' });
+      const stats = { cancelled: false };
+      failedUploadBody = stats;
+      res.writeHead(502, { 'content-type': 'text/plain' });
+      res.write(fakeCookie);
+      const timer = setInterval(() => res.write(fakeCookie), 20);
+      stats.closed = new Promise((resolve) => res.once('close', () => { clearInterval(timer); stats.cancelled = !res.writableEnded; resolve(); }));
+      return;
+    }
+    if (scenario === 'upload-retry-time-budget') {
+      setTimeout(() => { if (!res.destroyed) send(attempt === 1 ? { message: fakeCookie } : { status: 'success', media_id: '700' }, attempt === 1 ? 502 : 200); }, attempt === 1 ? 100 : 900).unref();
+      return;
+    }
+    if (scenario === 'upload-retry-order') return send(attempt === 2 ? { message: fakeCookie } : { status: 'success', media_id: String(700 + attempt) }, attempt === 2 ? 502 : 200);
+    if (scenario === 'upload-jsonerror') return send({ status: 'error', message: fakeCookie });
+    if (scenario === 'upload-html') { res.writeHead(200); return res.end(fakeCookie); }
+    if (scenario === 'upload-missing-id') return send({ status: 'success' });
+    if (scenario === 'upload-timeout') { setTimeout(() => { if (!res.destroyed) send({ status: 'success', media_id: '700' }); }, 1800).unref(); return; }
+    if (scenario === 'upload-network') return req.socket.destroy();
+    if (scenario === 'upload-cancel-backoff') { res.once('finish', () => uploadAccepted?.()); return send({ message: fakeCookie }, 502); }
+    if (scenario === 'upload-cancel-second') {
+      if (attempt === 1) return send({ message: fakeCookie }, 502);
+      uploadAccepted?.();
+      setTimeout(() => { if (!res.destroyed) send({ status: 'success', media_id: '700' }); }, 150).unref();
+      return;
+    }
+    const match = /^upload-(recover|always)-(401|429|500|502|503|504)$/.exec(scenario);
+    if (match) return send(match[1] === 'recover' && attempt > 1 ? { status: 'success', media_id: '700' } : { message: fakeCookie }, match[1] === 'recover' && attempt > 1 ? 200 : Number(match[2]));
+  }
   if (scenario === 'oversized-response') {
     const stats = { sentBytes: 0, totalBytes: 32 * 1024 * 1024, cancelled: false };
     oversizedResponse = stats;
@@ -119,7 +153,7 @@ const mock = http.createServer(async (req, res) => {
     setTimeout(() => { if (!res.destroyed) res.end(bytes.subarray(split)); }, 10).unref();
     return;
   }
-  if (/^http(401|429|500)$/.test(scenario)) return send({ message: fakeKey }, Number(scenario.slice(4)));
+  if (/^http(401|429|500|502|503|504)$/.test(scenario)) return send({ message: fakeKey }, Number(scenario.slice(4)));
   if (scenario === 'html') { res.writeHead(200, { 'content-type': 'text/html' }); return res.end(`<html>${fakeCookie}</html>`); }
   if (scenario === 'jsonerror') return send({ status: 'error', msg: fakeCookie });
   if (scenario === 'timeout') { setTimeout(() => { if (!res.destroyed) send({ tweet_id: '999' }); }, 700).unref(); return; }
@@ -237,7 +271,7 @@ const mock = http.createServer(async (req, res) => {
 });
 await new Promise((resolve) => mock.listen(0, '127.0.0.1', resolve));
 const apiBaseUrl = `http://127.0.0.1:${mock.address().port}`;
-const makeTransport = (configPath = secretsPath, sessionRoot = stateDirectory, timeoutMs = 250, preloadPath) => new StdioClientTransport({ command: process.execPath, args: [...(preloadPath ? ['--import', pathToFileURL(preloadPath).href] : []), path.join(repo, 'tests/fixture-server.mjs'), apiBaseUrl, configPath, sessionRoot, String(timeoutMs)], cwd: repo, env: Object.fromEntries(Object.entries(process.env).filter(([key, value]) => value !== undefined && !['PLUMIVOX_SECRETS_FILE', 'PLUMIVOX_DEFAULT_ACCOUNT', 'PLUMIVOX_STATE_DIR'].includes(key))), stderr: 'pipe' });
+const makeTransport = (configPath = secretsPath, sessionRoot = stateDirectory, timeoutMs = 250, preloadPath, fixtureProfile) => new StdioClientTransport({ command: process.execPath, args: [...(preloadPath ? ['--import', pathToFileURL(preloadPath).href] : []), path.join(repo, 'tests/fixture-server.mjs'), apiBaseUrl, configPath, sessionRoot, String(timeoutMs), ...(fixtureProfile ? [fixtureProfile] : [])], cwd: repo, env: Object.fromEntries(Object.entries(process.env).filter(([key, value]) => value !== undefined && !['PLUMIVOX_SECRETS_FILE', 'PLUMIVOX_DEFAULT_ACCOUNT', 'PLUMIVOX_STATE_DIR'].includes(key))), stderr: 'pipe' });
 // G3: 製品へtest flagを加えず、E2E子プロセスの標準入力・保存ackだけを停止する。
 const authGate = async (mode) => {
   const prefix = path.join(output, `auth-gate-${randomUUID()}`);
@@ -325,7 +359,7 @@ transport.stderr?.on('data', (data) => diagnostics.push(String(data)));
 const sensitiveValues = [fakeKey, fakeCookie, fakePassword, fakeSeed, 'http://127.0.0.1:8888'];
 const safe = (value) => sensitiveValues.reduce((text, secret) => text.replaceAll(secret, '[REDACTED]'), String(value)).replaceAll(secretsPath, '[SYNTHETIC_CONFIG]');
 const attachDiagnostics = () => { client.onerror = (error) => protocolErrors.push(safe(error.message)); transport.stderr?.on('data', (data) => diagnostics.push(String(data))); };
-const restart = async (configPath = secretsPath, sessionRoot = stateDirectory) => { await client.close(); transport = makeTransport(configPath, sessionRoot); client = new Client({ name: 'plumivox-e2e', version: '1.0.0' }); attachDiagnostics(); await client.connect(transport); };
+const restart = async (configPath = secretsPath, sessionRoot = stateDirectory, timeoutMs = 250) => { await client.close(); transport = makeTransport(configPath, sessionRoot, timeoutMs); client = new Client({ name: 'plumivox-e2e', version: '1.0.0' }); attachDiagnostics(); await client.connect(transport); };
 const run = async (name, check) => { if (process.env.PLUMIVOX_E2E_CASE && name !== process.env.PLUMIVOX_E2E_CASE) return; try { await check(); results.push({ name, status: 'pass' }); } catch (error) { results.push({ name, status: 'fail', message: safe(error.message) }); } };
 const call = async (name, args = {}, connection = client, options = {}) => {
   const result = await connection.callTool({ name, arguments: args }, undefined, { timeout: 30000, ...options });
@@ -460,7 +494,41 @@ try {
     } finally { scenario = 'normal'; }
   });
   await run('Non-numeric tweet ID rejected', () => fails('get_tweets', { account: 'reading', tweetIds: ['bad'] }, true));
-  await run('Missing Cookie rejected before HTTP', () => fails('post_tweet', { account: 'reading', text: 'hello' }, true));
+  await run('Missing Cookie rejected before HTTP', async () => {
+    const { error } = await fails('post_tweet', { account: 'reading', text: 'hello' }, true);
+    assert.equal(error.code, 'POSTING_UNAVAILABLE');
+    assert.equal(error.stage, 'pre_send');
+    assert.equal(error.postAttempted, false);
+    assert.equal(error.uploadAttempts, 0);
+  });
+  // 失敗条件を先に固定: 準備後の設定再確認失敗は既知の未送信、未知の失敗は未送信と断定しない。
+  await run('Post preparation errors retain safe metadata', async () => {
+    for (const mode of ['--proxy-config-change', '--unknown-proxy-error']) {
+      const connection = new Client({ name: 'plumivox-preparation-e2e', version: '1.0.0' });
+      const dedicatedTransport = makeTransport(secretsPath, stateDirectory, 250, undefined, mode);
+      dedicatedTransport.stderr?.on('data', (data) => diagnostics.push(String(data)));
+      try {
+        await connection.connect(dedicatedTransport);
+        const before = trace.length;
+        const { result, data } = await call('post_tweet', { account: 'posting', text: 'configuration recheck' }, connection);
+        assert.equal(result.isError, true);
+        assert.equal(trace.length, before, 'Preparation failure caused HTTP traffic');
+        if (mode === '--proxy-config-change') {
+          assert.equal(data.error.code, 'AUTH_CONFIG_CHANGED');
+          assert.equal(data.error.message, '中継の準備中に設定が変更されました。再実行してください。');
+          assert.equal(data.error.stage, 'pre_send');
+          assert.equal(data.error.postAttempted, false);
+          assert.equal(data.error.uploadAttempts, 0);
+        } else {
+          assert.equal(data.error.code, 'INTERNAL_ERROR');
+          for (const field of ['stage', 'postAttempted', 'uploadAttempts']) assert.equal(Object.hasOwn(data.error, field), false);
+        }
+        const unrelated = await call('get_tweets', { account: 'missing', tweetIds: ['502'] }, connection);
+        assert.equal(unrelated.data.error.code, 'ACCOUNT_UNKNOWN');
+        for (const field of ['stage', 'postAttempted', 'uploadAttempts']) assert.equal(Object.hasOwn(unrelated.data.error, field), false);
+      } finally { await connection.close(); }
+    }
+  });
   for (const [name, args] of [ ['Empty text', { text: '' }], ['Japanese 141 characters', { text: 'あ'.repeat(141) }], ['Relative image', { text: 'image', images: ['relative.png'] }], ['Invalid image format', { text: 'image', images: [invalidPath] }], ['Invalid second image', { text: 'image', images: [pngPath, invalidPath] }], ['Oversized image', { text: 'image', images: [oversizedPath] }], ['More than four images', { text: 'image', images: Array(5).fill(pngPath) }] ]) await run(`${name} rejected before HTTP`, () => fails('post_tweet', { account: 'posting', ...args }, true));
   for (const [name, emoji] of [['Mixed skin handshake', '🫱🏻‍🫲🏽'], ['Skin tone heart hands', '🫶🏻'], ['Head shaking', '🙂‍↔️'], ['Phoenix', '🐦‍🔥'], ['Direction walking', '🚶‍➡️'], ['Sark flag', '🇨🇶']]) {
     await run(`${name} emoji reaches 280 weighted characters`, async () => {
@@ -487,6 +555,87 @@ try {
   for (const [name, text, length] of [['Japanese 140 characters', 'あ'.repeat(140), 280], ['Compound family emoji', '👨‍👩‍👧‍👦', 2], ['Long URL', `https://example.com/${'a'.repeat(300)}`, 23]]) await run(name, async () => { const data = await succeeds('post_tweet', { account: 'posting', text }); assert.equal(data.weightedLength, length); assert.ok(/^\d+$/.test(data.tweetId)); assert.ok(data.url.includes(data.tweetId)); });
   await run('Explicit duplicate posts send twice', async () => { const before = trace.filter((item) => item.path.endsWith('/create_tweet_v2')).length; await succeeds('post_tweet', { account: 'posting', text: 'explicit duplicate' }); await succeeds('post_tweet', { account: 'posting', text: 'explicit duplicate' }); assert.equal(trace.filter((item) => item.path.endsWith('/create_tweet_v2')).length - before, 2); });
   await run('Image uses multipart upload then one post', async () => { const before = trace.length; await succeeds('post_tweet', { account: 'posting', text: 'image', images: [pngPath] }); const requests = trace.slice(before); assert.equal(requests.filter((item) => item.path.endsWith('/upload_media_v2')).length, 1); const upload = requests.find((item) => item.path.endsWith('/upload_media_v2')); assert.match(upload.contentType, /^multipart\/form-data; boundary=/); assert.equal(upload.multipartPayloadValid, true); assert.equal(requests.filter((item) => item.path.endsWith('/create_tweet_v2')).length, 1); assert.deepEqual(requests.find((item) => item.path.endsWith('/create_tweet_v2')).mediaIds, ['700']); });
+  // 失敗条件を先に固定: upload/createの段階、限定HTTPだけ同画像を一度再試行、全画像後に投稿一回。
+  // 拒否・不正応答・通信不明・予算不足は再試行せず、取消後は次のupload/postへ進まない。
+  await run('Posting upload recovery and stage safety', async () => {
+    await restart(secretsPath, stateDirectory, 1500);
+    const invoke = async (problem, expectedUploads, expectedPosts, code, images = [pngPath]) => {
+      scenario = problem;
+      scenarioUploads = 0;
+      const before = trace.length;
+      const args = { account: 'posting', text: 'upload recovery', images };
+      const data = await (code ? fails('post_tweet', args) : succeeds('post_tweet', args));
+      const requests = trace.slice(before);
+      assert.equal(requests.filter((item) => item.path.endsWith('/upload_media_v2')).length, expectedUploads, problem);
+      assert.equal(requests.filter((item) => item.path.endsWith('/create_tweet_v2')).length, expectedPosts, problem);
+      if (code) {
+        assert.equal(data.error.code, code, problem);
+        assert.equal(data.error.stage, expectedPosts ? 'post_creation' : 'image_upload', problem);
+        assert.equal(data.error.postAttempted, Boolean(expectedPosts), problem);
+        assert.equal(data.error.uploadAttempts, expectedUploads, problem);
+      }
+      return requests;
+    };
+    try {
+      await invoke('upload-jsonerror', 1, 0, 'API_REJECTED');
+      for (const status of [502, 503, 504]) {
+        await invoke(`upload-recover-${status}`, 2, 1);
+        await invoke(`upload-always-${status}`, 2, 0, 'API_HTTP_ERROR');
+      }
+      await invoke('upload-stream502', 2, 1);
+      let bodyCloseTimer;
+      try {
+        await Promise.race([failedUploadBody.closed, new Promise((_, reject) => { bodyCloseTimer = setTimeout(() => reject(new Error('HTTP error body was not released')), 1000); })]);
+      } finally { clearTimeout(bodyCloseTimer); }
+      assert.equal(failedUploadBody.cancelled, true, 'HTTP error body was not cancelled');
+      for (const status of [401, 429, 500]) await invoke(`upload-always-${status}`, 1, 0, 'API_HTTP_ERROR');
+      await invoke('upload-html', 1, 0, 'INVALID_RESPONSE');
+      await invoke('upload-missing-id', 1, 0, 'UPLOAD_FAILED');
+      await invoke('upload-timeout', 1, 0, 'API_UNAVAILABLE');
+      await invoke('upload-network', 1, 0, 'API_UNAVAILABLE');
+      const ordered = await invoke('upload-retry-order', 5, 1, undefined, orderedImagePaths);
+      const hashes = orderedImages.map((bytes) => createHash('sha256').update(bytes).digest('hex'));
+      assert.deepEqual(ordered.slice(0, -1).map((item) => item.uploadedImageHash), [hashes[0], hashes[1], hashes[1], hashes[2], hashes[3]]);
+      assert.deepEqual(ordered.at(-1).mediaIds, ['701', '703', '704', '705']);
+      await invoke('create502', 1, 1, 'POST_UNCERTAIN');
+      await invoke('jsonerror', 0, 1, 'API_REJECTED', []);
+      await invoke('missing-id', 0, 1, 'POST_UNCERTAIN', []);
+      scenario = 'normal';
+      const invalid = await fails('post_tweet', { account: 'posting', text: 'invalid image', images: [invalidPath] }, true);
+      assert.equal(invalid.error.stage, 'input_validation');
+      assert.equal(invalid.error.postAttempted, false);
+      assert.equal(invalid.error.uploadAttempts, 0);
+      await restart();
+      await invoke('upload-always-502', 1, 0, 'API_HTTP_ERROR');
+      await restart(secretsPath, stateDirectory, 1000);
+      const budgetStart = performance.now();
+      await invoke('upload-retry-time-budget', 2, 0, 'API_UNAVAILABLE');
+      assert.ok(performance.now() - budgetStart < 1200, 'Retry received a fresh timeout budget');
+    } finally { scenario = 'normal'; await restart(); }
+  });
+  for (const [phase, expectedUploads] of [['backoff', 1], ['second', 2]]) await run(`MCP cancellation during upload retry ${phase} prevents further requests`, async () => {
+    await restart(secretsPath, stateDirectory, 1500);
+    scenario = `upload-cancel-${phase}`;
+    scenarioUploads = 0;
+    const before = trace.length;
+    const controller = new AbortController();
+    let acceptanceTimer;
+    const accepted = new Promise((resolve, reject) => {
+      uploadAccepted = resolve;
+      acceptanceTimer = setTimeout(() => reject(new Error('Mock did not reject image upload')), 1000);
+    });
+    const request = client.callTool({ name: 'post_tweet', arguments: { account: 'posting', text: 'cancel backoff', images: [pngPath] } }, undefined, { signal: controller.signal, timeout: 5000 });
+    const cancelled = assert.rejects(request);
+    try {
+      await accepted;
+      if (phase === 'backoff') await new Promise((resolve) => setTimeout(resolve, 60));
+      controller.abort();
+      await cancelled;
+      await new Promise((resolve) => setTimeout(resolve, 350));
+      assert.equal(trace.slice(before).filter((item) => item.path.endsWith('/upload_media_v2')).length, expectedUploads);
+      assert.equal(trace.slice(before).filter((item) => item.path.endsWith('/create_tweet_v2')).length, 0);
+    } finally { clearTimeout(acceptanceTimer); uploadAccepted = undefined; controller.abort(); await cancelled; scenario = 'normal'; await restart(); }
+  });
   // 失敗条件を先に固定: 全画像の事前検証、4枚の内容と順序、後続upload失敗時の投稿・再送禁止。
   for (const problem of ['image-order', 'image-later-failure']) await run(`Four image snapshots preserve order and stop on ${problem}`, async () => {
     scenario = problem;
@@ -495,7 +644,13 @@ try {
     try {
       const args = { account: 'posting', text: 'four images', images: orderedImagePaths };
       if (problem === 'image-order') await succeeds('post_tweet', args);
-      else assert.equal((await fails('post_tweet', args)).error.code, 'UPLOAD_FAILED');
+      else {
+        const { error } = await fails('post_tweet', args);
+        assert.equal(error.code, 'UPLOAD_FAILED');
+        assert.equal(error.stage, 'image_upload');
+        assert.equal(error.postAttempted, false);
+        assert.equal(error.uploadAttempts, 3);
+      }
       const requests = trace.slice(before);
       const uploads = requests.filter((item) => item.path.endsWith('/upload_media_v2'));
       assert.deepEqual(uploads.map((item) => item.uploadedImageHash), orderedImages.slice(0, problem === 'image-order' ? 4 : 3).map((bytes) => createHash('sha256').update(bytes).digest('hex')));
@@ -1070,7 +1225,7 @@ syncBuiltinESMExports();
       assert.equal(await readFile(secretsPath, 'utf8'), initialSecrets);
     } finally { scenario = 'normal'; }
   });
-  for (const problem of ['http401', 'html', 'jsonerror', 'login-missing-cookie', 'timeout']) await run(`${problem} login failure retains encrypted session and does not retry`, async () => {
+  for (const problem of ['http401', 'http502', 'http503', 'http504', 'html', 'jsonerror', 'login-missing-cookie', 'timeout']) await run(`${problem} login failure retains encrypted session and does not retry`, async () => {
     const previous = await readFile(ownSessionPath);
     const before = trace.length;
     scenario = problem;

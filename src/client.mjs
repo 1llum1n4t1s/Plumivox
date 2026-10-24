@@ -3,6 +3,7 @@ import path from 'node:path';
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import twitterText from 'twitter-text';
 import emojiRegex from 'emoji-regex';
+import { setTimeout as delay } from 'node:timers/promises';
 
 const ID = /^\d{1,30}$/;
 const USER = /^[A-Za-z0-9_]{1,15}$/;
@@ -242,7 +243,7 @@ export class TwitterApiClient {
     this.timeoutMs = timeoutMs;
   }
 
-  async request(account, endpoint, { query, body, form, signal } = {}) {
+  async request(account, endpoint, { query, body, form, signal, timeoutMs = this.timeoutMs } = {}) {
     const url = new URL(`/twitter/${endpoint}`, this.baseUrl);
     for (const [key, value] of Object.entries(query ?? {})) if (value !== undefined && value !== null) url.searchParams.set(key, String(value));
     let response;
@@ -252,9 +253,13 @@ export class TwitterApiClient {
         headers: { 'X-API-Key': account.apiKey, ...(body ? { 'Content-Type': 'application/json' } : {}) },
         body: form ?? (body ? JSON.stringify(body) : undefined),
         redirect: 'error',
-        signal: AbortSignal.any([AbortSignal.timeout(this.timeoutMs), ...(signal ? [signal] : [])]),
+        signal: AbortSignal.any([AbortSignal.timeout(timeoutMs), ...(signal ? [signal] : [])]),
       });
-      if (!response.ok) fail('API_HTTP_ERROR', 'APIが要求を受け付けませんでした。', { httpStatus: response.status });
+      if (!response.ok) {
+        // エラー本文は読まず、再試行・次の処理の前に接続資源を解放する。
+        await response.body?.cancel().catch(() => {});
+        fail('API_HTTP_ERROR', 'APIが要求を受け付けませんでした。', { httpStatus: response.status });
+      }
       const raw = await responseText(response);
       let result;
       try { result = JSON.parse(raw); } catch { fail('INVALID_RESPONSE', 'APIからJSON応答を確認できません。'); }
@@ -426,33 +431,66 @@ export class TwitterApiClient {
   }
 
   async postTweet(account, { text, images = [], signal, beforeSend }) {
-    const parsed = parseTweetText(text);
-    if (!text.trim() || !parsed.valid) fail('INVALID_TEXT', '投稿文は空でなく、Xの加重文字数280以内にしてください。');
-    // 全ファイルの事前確認を終えてからアップロードを開始する。
-    const files = await Promise.all(images.map(imageFile));
-    if (signal?.aborted) fail('CANCELLED_BEFORE_POST', '処理は中止されました。投稿は送信していません。');
-    if (beforeSend) await beforeSend();
-    const mediaIds = [];
-    for (const file of files) {
+    let stage = 'input_validation';
+    let postAttempted = false;
+    let uploadAttempts = 0;
+    try {
+      const parsed = parseTweetText(text);
+      if (!text.trim() || !parsed.valid) fail('INVALID_TEXT', '投稿文は空でなく、Xの加重文字数280以内にしてください。');
+      // 全ファイルの事前確認を終えてからアップロードを開始する。
+      const files = await Promise.all(images.map(imageFile));
       if (signal?.aborted) fail('CANCELLED_BEFORE_POST', '処理は中止されました。投稿は送信していません。');
-      const form = new FormData();
-      form.set('login_cookies', account.loginCookies);
-      form.set('proxy', account.proxy);
-      const blob = new Blob([file.bytes], { type: file.type });
-      file.bytes = null;
-      form.set('file', blob, file.name);
-      const result = await this.request(account, 'upload_media_v2', { form, signal });
-      if (result.status !== 'success' || !numericId(result.media_id)) fail('UPLOAD_FAILED', '画像アップロードの成功を確認できません。投稿は送信していません。');
-      mediaIds.push(result.media_id);
+      stage = 'pre_send';
+      if (beforeSend) await beforeSend();
+      const mediaIds = [];
+      stage = 'image_upload';
+      for (const file of files) {
+        if (signal?.aborted) fail('CANCELLED_BEFORE_POST', '処理は中止されました。投稿は送信していません。');
+        const form = new FormData();
+        form.set('login_cookies', account.loginCookies);
+        form.set('proxy', account.proxy);
+        const blob = new Blob([file.bytes], { type: file.type });
+        file.bytes = null;
+        form.set('file', blob, file.name);
+        // 各画像の全要求と待機を従来の一要求分の時間枠に収める。
+        const deadline = performance.now() + this.timeoutMs;
+        let result;
+        for (let attempt = 1; attempt <= 2; attempt++) {
+          if (signal?.aborted) fail('CANCELLED_BEFORE_POST', '処理は中止されました。投稿は送信していません。');
+          const remaining = Math.floor(deadline - performance.now());
+          if (remaining <= 0) fail('API_UNAVAILABLE', 'API通信が完了しませんでした。');
+          uploadAttempts++;
+          try {
+            result = await this.request(account, 'upload_media_v2', { form, signal, timeoutMs: remaining });
+            break;
+          } catch (error) {
+            if (signal?.aborted) fail('CANCELLED_BEFORE_POST', '処理は中止されました。投稿は送信していません。');
+            if (attempt !== 1 || !(error instanceof PlumivoxError) || error.code !== 'API_HTTP_ERROR'
+              || ![502, 503, 504].includes(error.details.httpStatus) || deadline - performance.now() <= 250) throw error;
+            try { await delay(250, undefined, { signal }); }
+            catch { fail('CANCELLED_BEFORE_POST', '処理は中止されました。投稿は送信していません。'); }
+          }
+        }
+        if (result.status !== 'success' || !numericId(result.media_id)) fail('UPLOAD_FAILED', '画像アップロードの成功を確認できません。投稿は送信していません。');
+        mediaIds.push(result.media_id);
+      }
+      if (signal?.aborted) fail('CANCELLED_BEFORE_POST', '処理は中止されました。投稿は送信していません。');
+      stage = 'post_creation';
+      postAttempted = true;
+      const result = await this.request(account, 'create_tweet_v2', { body: {
+        login_cookies: account.loginCookies, proxy: account.proxy, tweet_text: text,
+        ...(mediaIds.length ? { media_ids: mediaIds } : {}),
+      }, signal });
+      if (result.status !== 'success' || !numericId(result.tweet_id)) {
+        fail('POST_UNCERTAIN', '投稿IDを確認できないため成否は未確定です。自動再送はしていません。');
+      }
+      return { account: account.account, tweetId: result.tweet_id, url: `https://x.com/i/status/${result.tweet_id}`, weightedLength: parsed.weightedLength };
+    } catch (error) {
+      if (error instanceof PlumivoxError) {
+        if (stage === 'image_upload' && error.code === 'API_UNAVAILABLE') error.message = '画像アップロードの通信が完了しませんでした。投稿は送信していません。';
+        error.details = { ...error.details, stage, postAttempted, uploadAttempts };
+      }
+      throw error;
     }
-    if (signal?.aborted) fail('CANCELLED_BEFORE_POST', '処理は中止されました。投稿は送信していません。');
-    const result = await this.request(account, 'create_tweet_v2', { body: {
-      login_cookies: account.loginCookies, proxy: account.proxy, tweet_text: text,
-      ...(mediaIds.length ? { media_ids: mediaIds } : {}),
-    }, signal });
-    if (result.status !== 'success' || !numericId(result.tweet_id)) {
-      fail('POST_UNCERTAIN', '投稿IDを確認できないため成否は未確定です。自動再送はしていません。');
-    }
-    return { account: account.account, tweetId: result.tweet_id, url: `https://x.com/i/status/${result.tweet_id}`, weightedLength: parsed.weightedLength };
   }
 }

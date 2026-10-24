@@ -13,9 +13,9 @@ const readOnly = { readOnlyHint: true, destructiveHint: false, idempotentHint: t
 
 export function createServer({ accounts, apiBaseUrl, timeoutMs, proxyManager = createManagedProxyManager() } = {}) {
   const api = new TwitterApiClient({ apiBaseUrl, timeoutMs });
-  const server = new McpServer({ name: 'plumivox', version: '1.0.3' });
+  const server = new McpServer({ name: 'plumivox', version: '1.0.4' });
   const authenticating = new Set();
-  const handle = (action) => async (input, extra) => {
+  const handle = (action, { posting = false } = {}) => async (input, extra) => {
     try {
       const result = await action(input, extra?.signal);
       return { content: [{ type: 'text', text: JSON.stringify(result) }], structuredContent: result };
@@ -25,6 +25,7 @@ export function createServer({ accounts, apiBaseUrl, timeoutMs, proxyManager = c
       const result = { error: {
         code: known ? error.code : 'INTERNAL_ERROR',
         message: known ? error.message : '処理に失敗しました。設定とAPIの状態を確認してください。',
+        ...(posting && known ? { stage: 'pre_send', postAttempted: false, uploadAttempts: 0 } : {}),
         ...(error instanceof PlumivoxError ? error.details : {}),
       } };
       return { isError: true, content: [{ type: 'text', text: JSON.stringify(result) }] };
@@ -147,7 +148,7 @@ export function createServer({ accounts, apiBaseUrl, timeoutMs, proxyManager = c
   }, handle(async ({ account: name, ...input }, signal) => {
     const selected = await accounts.getAccount(name, { requirePosting: true });
     return api.postTweet(selected, { ...input, signal, beforeSend: () => ensureProxy(selected, signal) });
-  }));
+  }, { posting: true }));
   server.server.onclose = () => { void proxyManager.close(); };
   return server;
 }
