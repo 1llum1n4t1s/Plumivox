@@ -3,6 +3,7 @@ import net from 'node:net';
 import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
+import { isInside as inside } from './path-containment.mjs';
 import { fileURLToPath } from 'node:url';
 import { mkdir, readFile, writeFile, realpath, stat } from 'node:fs/promises';
 import { generateKeyPairSync, createHash, randomUUID } from 'node:crypto';
@@ -13,7 +14,6 @@ import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const output = path.resolve(process.env.PLUMIVOX_PROXY_E2E_OUTPUT_DIR || path.join(os.tmpdir(), 'Codex', 'Plumivox', randomUUID()));
-const inside = (child, parent) => { const relative = path.relative(parent, child); return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative)); };
 let ancestor = output;
 while (true) { try { await stat(ancestor); break; } catch (error) { if (error.code !== 'ENOENT') throw error; ancestor = path.dirname(ancestor); } }
 const resolved = path.join(await realpath(ancestor), path.relative(ancestor, output));

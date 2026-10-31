@@ -9,10 +9,10 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
+import { isInside } from './path-containment.mjs';
 
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const output = path.resolve(process.env.PLUMIVOX_E2E_OUTPUT_DIR || path.join(os.tmpdir(), 'Codex', 'Plumivox', randomUUID()));
-const isInside = (child, parent) => { const relative = path.relative(parent, child); return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative)); };
 const forbidden = [repo, path.join(os.homedir(), '.codex'), ...(process.env.CODEX_HOME ? [path.resolve(process.env.CODEX_HOME)] : [])];
 let ancestor = output;
 while (true) { try { await stat(ancestor); break; } catch (error) { if (error.code !== 'ENOENT') throw error; const next = path.dirname(ancestor); if (next === ancestor) throw error; ancestor = next; } }
@@ -389,6 +389,15 @@ const assertLoginMetadata = (data, reused) => {
 };
 try {
   await client.connect(transport);
+  await run('Evidence path containment distinguishes dot-prefixed children', () => {
+    for (const root of forbidden) {
+      assert.equal(isInside(root, root), true);
+      assert.equal(isInside(path.join(root, 'evidence'), root), true);
+      assert.equal(isInside(path.join(root, '..evidence'), root), true);
+      assert.equal(isInside(path.dirname(root), root), false);
+      assert.equal(isInside(path.join(path.dirname(root), `${path.basename(root)}-sibling`), root), false);
+    }
+  });
   // connect後もSDKが標準出力の非JSON行を検出する。
   const existingOnError = transport.onerror;
   transport.onerror = (error) => { protocolErrors.push(safe(error.message)); existingOnError?.(error); };
@@ -1129,12 +1138,24 @@ McpServer.prototype.registerTool = function(name, definition, callback) {
       assertLoginMetadata(reused.data, true);
       assert.equal(reused.data.account, 'selected');
       assert.equal(trace.length, before);
+      for (const [name, args] of [
+        ['get_my_posts', {}],
+        ['get_tweets', { tweetIds: ['502'] }],
+        ['get_following_feed', {}],
+        ['search_tweets', { keyword: 'needle' }],
+      ]) {
+        const result = await call(name, { account: 'other1', ...args }, measuredClient);
+        assert.notEqual(result.result.isError, true, name);
+        assert.equal(result.data.account, 'other1');
+      }
       const listed = await call('list_accounts', {}, measuredClient);
       assert.notEqual(listed.result.isError, true);
       assert.equal(listed.data.accounts.length, 3);
       assert.deepEqual(listed.data.accounts.filter((item) => item.isDefault).map((item) => item.account), ['other1']);
       assert.deepEqual(JSON.parse(await readFile(countsPath, 'utf8')), [
-        { name: 'login_account', configReads: 2, sessionChecks: 2, sessionReads: 0, decryptSpawns: 0 },
+        { name: 'login_account', configReads: 2, sessionChecks: 1, sessionReads: 0, decryptSpawns: 0 },
+        ...['get_my_posts', 'get_tweets', 'get_following_feed', 'search_tweets'].map((name) =>
+          ({ name, configReads: 1, sessionChecks: 0, sessionReads: 0, decryptSpawns: 0 })),
         { name: 'list_accounts', configReads: 1, sessionChecks: 3, sessionReads: 2, decryptSpawns: 2 },
       ]);
     } finally { await measuredClient.close(); }

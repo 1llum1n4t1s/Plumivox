@@ -208,6 +208,14 @@ export function createAccountStore({ secretsPath, profile, sessionPaths = {}, st
       const selected = await select(account);
       return metadata(selected.account, selected.config, defaultName(selected.secrets, accountProfiles(selected.secrets)));
     },
+    async getReadAccount(account) {
+      const selected = await select(account);
+      const { userName, apiKey } = normalizedAccount(selected.config);
+      if (!userName || !apiKey) {
+        throw new ConfigurationError('ACCOUNT_INVALID', 'APIキーと有効なユーザー名を設定してください。');
+      }
+      return { account: selected.account, userName, apiKey };
+    },
     /** @param {string} [account] @param {{requirePosting?:boolean}} [options] @returns {Promise<Account>} */
     async getAccount(account, { requirePosting = false } = {}) {
       const selected = await select(account);

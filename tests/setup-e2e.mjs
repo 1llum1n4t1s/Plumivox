@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import os from 'node:os';
 import path from 'node:path';
+import { isInside as inside } from './path-containment.mjs';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { mkdir, writeFile, readFile, realpath, stat } from 'node:fs/promises';
@@ -9,7 +10,6 @@ import { randomUUID } from 'node:crypto';
 // 失敗条件: 上書き・不正指紋/ポート/2FA・鍵欠落・保存先リンク/ACL・秘密値漏洩・同時変更・既定の不正指定/無言変更。
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const output = path.resolve(process.env.PLUMIVOX_SETUP_E2E_OUTPUT_DIR || path.join(os.tmpdir(), 'Codex', 'Plumivox', randomUUID()));
-const inside = (child, parent) => { const value = path.relative(parent, child); return value === '' || (!value.startsWith('..') && !path.isAbsolute(value)); };
 let ancestor = output;
 while (true) { try { await stat(ancestor); break; } catch (error) { if (error.code !== 'ENOENT') throw error; ancestor = path.dirname(ancestor); } }
 const resolved = path.join(await realpath(ancestor), path.relative(ancestor, output));

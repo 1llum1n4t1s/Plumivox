@@ -3,15 +3,12 @@ import { spawnSync } from 'node:child_process';
 import { mkdir, writeFile, readFile, realpath, access } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { isInside as within } from './path-containment.mjs';
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const output = path.resolve(process.env.PLUMIVOX_SETUP_VPS_E2E_OUTPUT_DIR ?? path.join(os.tmpdir(), 'Codex', 'Plumivox', randomUUID()));
-const within = (target, directory) => {
-  const relative = path.relative(directory, target);
-  return relative === '' || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative));
-};
 // 既存祖先の実体を確認し、リンク経由の禁止先も拒否する。
 let ancestor = output;
 const suffix = [];
