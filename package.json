@@ -8,7 +8,7 @@
   "engines": {
     "node": ">=22"
   },
-  "packageManager": "pnpm@11.4.0",
+  "packageManager": "pnpm@12.16.1",
   "bin": {
     "plumivox": "./dist/plumivox.mjs"
   },
@@ -22,7 +22,7 @@
     "test:setup-e2e": "node tests/setup-e2e.mjs && node tests/setup-vps-e2e.mjs"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "1.32.1",
+    "@modelcontextprotocol/sdk": "1.32.2",
     "emoji-regex": "11.0.0",
     "ssh2": "1.17.0",
     "twitter-text": "3.1.0",
