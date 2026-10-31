@@ -234,26 +234,29 @@ function decodeSearchCursor(cursor, account, conditions, kind) {
 }
 
 export class TwitterApiClient {
-  constructor({ apiBaseUrl = 'https://api.twitterapi.io', timeoutMs = 45_000 } = {}) {
+  constructor({ apiBaseUrl = 'https://api.twitterapi.io', timeoutMs, imageUploadTimeoutMs } = {}) {
     this.baseUrl = new URL(apiBaseUrl);
     if (this.baseUrl.origin !== 'https://api.twitterapi.io' &&
       !(this.baseUrl.protocol === 'http:' && ['127.0.0.1', '[::1]'].includes(this.baseUrl.hostname))) {
       throw new Error('Unsupported API origin');
     }
-    this.timeoutMs = timeoutMs;
+    this.timeoutMs = timeoutMs ?? 45_000;
+    this.imageUploadTimeoutMs = imageUploadTimeoutMs ?? timeoutMs ?? 120_000;
   }
 
   async request(account, endpoint, { query, body, form, signal, timeoutMs = this.timeoutMs } = {}) {
     const url = new URL(`/twitter/${endpoint}`, this.baseUrl);
     for (const [key, value] of Object.entries(query ?? {})) if (value !== undefined && value !== null) url.searchParams.set(key, String(value));
     let response;
+    let timeoutSignal;
     try {
+      timeoutSignal = AbortSignal.timeout(timeoutMs);
       response = await fetch(url, {
         method: body || form ? 'POST' : 'GET',
         headers: { 'X-API-Key': account.apiKey, ...(body ? { 'Content-Type': 'application/json' } : {}) },
         body: form ?? (body ? JSON.stringify(body) : undefined),
         redirect: 'error',
-        signal: AbortSignal.any([AbortSignal.timeout(timeoutMs), ...(signal ? [signal] : [])]),
+        signal: AbortSignal.any([timeoutSignal, ...(signal ? [signal] : [])]),
       });
       if (!response.ok) {
         // エラー本文は読まず、再試行・次の処理の前に接続資源を解放する。
@@ -277,7 +280,8 @@ export class TwitterApiClient {
         throw error;
       }
       if (endpoint === 'create_tweet_v2') fail('POST_UNCERTAIN', '投稿の成否は未確定です。投稿済みの可能性があります。自動再送はしていません。');
-      fail('API_UNAVAILABLE', 'API通信が完了しませんでした。自動再試行はしていません。');
+      fail('API_UNAVAILABLE', 'API通信が完了しませんでした。自動再試行はしていません。', endpoint === 'upload_media_v2'
+        ? { failureKind: signal?.aborted ? 'cancelled' : timeoutSignal?.aborted ? 'timeout' : 'network' } : {});
     }
   }
 
@@ -452,8 +456,8 @@ export class TwitterApiClient {
         const blob = new Blob([file.bytes], { type: file.type });
         file.bytes = null;
         form.set('file', blob, file.name);
-        // 各画像の全要求と待機を従来の一要求分の時間枠に収める。
-        const deadline = performance.now() + this.timeoutMs;
+        // 各画像の全要求と待機を画像専用の時間枠に収める。
+        const deadline = performance.now() + this.imageUploadTimeoutMs;
         let result;
         for (let attempt = 1; attempt <= 2; attempt++) {
           if (signal?.aborted) fail('CANCELLED_BEFORE_POST', '処理は中止されました。投稿は送信していません。');

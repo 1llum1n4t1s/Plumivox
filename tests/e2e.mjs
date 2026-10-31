@@ -121,6 +121,7 @@ const mock = http.createServer(async (req, res) => {
     if (scenario === 'upload-html') { res.writeHead(200); return res.end(fakeCookie); }
     if (scenario === 'upload-missing-id') return send({ status: 'success' });
     if (scenario === 'upload-timeout') { setTimeout(() => { if (!res.destroyed) send({ status: 'success', media_id: '700' }); }, 1800).unref(); return; }
+    if (scenario === 'upload-slow') { setTimeout(() => { if (!res.destroyed) send({ status: 'success', media_id: '700' }); }, 900).unref(); return; }
     if (scenario === 'upload-network') return req.socket.destroy();
     if (scenario === 'upload-cancel-backoff') { res.once('finish', () => uploadAccepted?.()); return send({ message: fakeCookie }, 502); }
     if (scenario === 'upload-cancel-second') {
@@ -555,6 +556,19 @@ try {
   for (const [name, text, length] of [['Japanese 140 characters', 'あ'.repeat(140), 280], ['Compound family emoji', '👨‍👩‍👧‍👦', 2], ['Long URL', `https://example.com/${'a'.repeat(300)}`, 23]]) await run(name, async () => { const data = await succeeds('post_tweet', { account: 'posting', text }); assert.equal(data.weightedLength, length); assert.ok(/^\d+$/.test(data.tweetId)); assert.ok(data.url.includes(data.tweetId)); });
   await run('Explicit duplicate posts send twice', async () => { const before = trace.filter((item) => item.path.endsWith('/create_tweet_v2')).length; await succeeds('post_tweet', { account: 'posting', text: 'explicit duplicate' }); await succeeds('post_tweet', { account: 'posting', text: 'explicit duplicate' }); assert.equal(trace.filter((item) => item.path.endsWith('/create_tweet_v2')).length - before, 2); });
   await run('Image uses multipart upload then one post', async () => { const before = trace.length; await succeeds('post_tweet', { account: 'posting', text: 'image', images: [pngPath] }); const requests = trace.slice(before); assert.equal(requests.filter((item) => item.path.endsWith('/upload_media_v2')).length, 1); const upload = requests.find((item) => item.path.endsWith('/upload_media_v2')); assert.match(upload.contentType, /^multipart\/form-data; boundary=/); assert.equal(upload.multipartPayloadValid, true); assert.equal(requests.filter((item) => item.path.endsWith('/create_tweet_v2')).length, 1); assert.deepEqual(requests.find((item) => item.path.endsWith('/create_tweet_v2')).mediaIds, ['700']); });
+  await run('Slow image upload uses its own budget then creates one post', async () => {
+    const slowTransport = makeTransport(secretsPath, stateDirectory, 250, undefined, '--slow-image-upload');
+    const slowClient = new Client({ name: 'plumivox-slow-image-e2e', version: '1.0.0' });
+    try {
+      await slowClient.connect(slowTransport);
+      scenario = 'upload-slow';
+      const before = trace.length;
+      const { result, data } = await call('post_tweet', { account: 'posting', text: 'slow image', images: [pngPath] }, slowClient);
+      assert.notEqual(result.isError, true, JSON.stringify(data));
+      assert.match(data.tweetId, /^\d+$/);
+      assert.deepEqual(trace.slice(before).map((entry) => entry.path), ['/twitter/upload_media_v2', '/twitter/create_tweet_v2']);
+    } finally { scenario = 'normal'; await slowClient.close(); }
+  });
   // 失敗条件を先に固定: upload/createの段階、限定HTTPだけ同画像を一度再試行、全画像後に投稿一回。
   // 拒否・不正応答・通信不明・予算不足は再試行せず、取消後は次のupload/postへ進まない。
   await run('Posting upload recovery and stage safety', async () => {
@@ -573,6 +587,9 @@ try {
         assert.equal(data.error.stage, expectedPosts ? 'post_creation' : 'image_upload', problem);
         assert.equal(data.error.postAttempted, Boolean(expectedPosts), problem);
         assert.equal(data.error.uploadAttempts, expectedUploads, problem);
+        if (problem === 'upload-timeout' || problem === 'upload-network') {
+          assert.equal(data.error.failureKind, problem === 'upload-timeout' ? 'timeout' : 'network', problem);
+        }
       }
       return requests;
     };

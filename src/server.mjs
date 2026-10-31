@@ -11,8 +11,8 @@ const account = z.string().min(1).optional().describe('list_accountsが返した
 const cursor = z.string().min(1).max(100_000).optional();
 const readOnly = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true };
 
-export function createServer({ accounts, apiBaseUrl, timeoutMs, proxyManager = createManagedProxyManager() } = {}) {
-  const api = new TwitterApiClient({ apiBaseUrl, timeoutMs });
+export function createServer({ accounts, apiBaseUrl, timeoutMs, imageUploadTimeoutMs, proxyManager = createManagedProxyManager() } = {}) {
+  const api = new TwitterApiClient({ apiBaseUrl, timeoutMs, imageUploadTimeoutMs });
   const server = new McpServer({ name: 'plumivox', version: '1.0.4' });
   const authenticating = new Set();
   const handle = (action, { posting = false } = {}) => async (input, extra) => {

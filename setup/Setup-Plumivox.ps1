@@ -38,14 +38,17 @@ function Assert-PlumivoxPath {
 function Set-PlumivoxPrivateAcl {
   param([string]$Path)
   $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User
-  $isDirectory = (Get-Item -LiteralPath $Path -Force).PSIsContainer
-  $acl = if ($isDirectory) { [Security.AccessControl.DirectorySecurity]::new() } else { [Security.AccessControl.FileSecurity]::new() }
-  $acl.SetOwner($sid)
+  $info = Get-Item -LiteralPath $Path -Force
+  $isDirectory = $info.PSIsContainer
+  # 本人所有の対象だけを扱い、所有者の再設定に必要な権限を要求しない。
+  $acl = [IO.FileSystemAclExtensions]::GetAccessControl($info, [Security.AccessControl.AccessControlSections]'Access, Owner')
+  if ($acl.GetOwner([Security.Principal.SecurityIdentifier]).Value -ne $sid.Value) { throw 'ACL_OWNER' }
   $acl.SetAccessRuleProtection($true, $false)
+  foreach ($rule in $acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier])) { [void]$acl.RemoveAccessRuleSpecific($rule) }
   $inheritance = if ($isDirectory) { [Security.AccessControl.InheritanceFlags]'ContainerInherit, ObjectInherit' } else { [Security.AccessControl.InheritanceFlags]::None }
   $acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new($sid, 'FullControl', $inheritance, 'None', 'Allow'))
-  if ($isDirectory) { [IO.FileSystemAclExtensions]::SetAccessControl([IO.DirectoryInfo]::new($Path), $acl) }
-  else { [IO.FileSystemAclExtensions]::SetAccessControl([IO.FileInfo]::new($Path), $acl) }
+  [IO.FileSystemAclExtensions]::SetAccessControl($info, $acl)
+  Assert-PlumivoxPrivateAcl $Path
 }
 
 function Assert-PlumivoxPrivateAcl {

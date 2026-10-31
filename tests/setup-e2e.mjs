@@ -63,6 +63,8 @@ if (process.platform === 'win32') {
     assert.equal(first.status, 0, first.stdout + first.stderr);
     assert.match(first.stdout, /ssh-ed25519 /);
     assert.ok(!first.stdout.includes('PRIVATE KEY'));
+    const restricted = await runPs([path.dirname(key), key, `${key}.pub`].map((target) => `Assert-PlumivoxPrivateAcl ${psQuote(target)}`).join('; '));
+    assert.equal(restricted.status, 0, restricted.stdout + restricted.stderr);
     assert.equal((await runPs('Invoke-PlumivoxSetup -PrepareKey')).status, 1);
     const repeated = spawnSync('pwsh', ['-NoProfile', '-File', script, '-PrepareKey'], { encoding: 'utf8', env: { ...process.env, LOCALAPPDATA: local, PLUMIVOX_SECRETS_FILE: '' } });
     assert.equal(repeated.status, 1); assert.match(repeated.stdout, /既存鍵をそのまま再利用/); checkNoLeak(repeated);

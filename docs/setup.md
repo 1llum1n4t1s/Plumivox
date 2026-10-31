@@ -34,7 +34,7 @@ pwsh -NoProfile -ExecutionPolicy Bypass -File (Join-Path $pluginRoot 'setup/Setu
 $publicKey = Join-Path $env:LOCALAPPDATA 'Kagayoi/Plumivox/keys/plumivox_ed25519.pub'
 ```
 
-鍵は利用者だけが読める場所へ保存し、既存の鍵を上書きしません。VPSへ送るのは`.pub`の公開鍵だけで、秘密鍵はPCへ残します。
+鍵は利用者だけが読める場所へ保存し、既存の鍵を上書きしません。鍵・設定のアクセス権は本人所有を確認してから制限し、所有者は変更しません。VPSへ送るのは`.pub`の公開鍵だけで、秘密鍵はPCへ残します。
 
 `ssh`・`scp`が見つからない場合はWindowsの「オプション機能」で「OpenSSHクライアント」を追加し、ターミナルを開き直します。
 
