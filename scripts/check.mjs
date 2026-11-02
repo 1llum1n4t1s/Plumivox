@@ -2,8 +2,11 @@ import { readdir, readFile } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { cargo, run } from './native.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+run(cargo, ['fmt', '--all', '--', '--check']);
+run(cargo, ['check', '--locked', '--all-targets', '--features', 'test-fixture']);
 const files = [];
 for (const folder of ['src', 'scripts', 'tests']) {
   for (const file of await readdir(path.join(root, folder)).catch(() => [])) {
@@ -20,8 +23,8 @@ for (const file of ['package.json', 'plugin.json', 'mcp.json', '.agents/plugins/
 // 同梱セットアップも配布物として構文を確認する。開発環境だけで実行する。
 const setupScript = path.join(root, 'setup', 'Setup-Plumivox.ps1').replaceAll("'", "''");
 const psCommand = `$tokens=$null;$errors=$null;[void][System.Management.Automation.Language.Parser]::ParseFile('${setupScript}',[ref]$tokens,[ref]$errors);if($errors.Count){$errors | ForEach-Object { [Console]::Error.WriteLine($_.Message) };exit 1}`;
-const ps = spawnSync('pwsh', ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(psCommand, 'utf16le').toString('base64')], { stdio: 'inherit' });
-if (ps.error || ps.status !== 0) {
+const ps = process.platform === 'win32' ? spawnSync('pwsh', ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(psCommand, 'utf16le').toString('base64')], { stdio: 'inherit' }) : null;
+if (ps && (ps.error || ps.status !== 0)) {
   console.error('セットアップ構文の確認にはPowerShell 7 (pwsh) が必要です');
   process.exit(1);
 }

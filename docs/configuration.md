@@ -24,19 +24,19 @@ Plumivox は設定ファイルの `twitterapi_io` 以下にある各プロファ
 
 | 設定 | 解決方法 |
 | --- | --- |
-| 設定ファイル | `PLUMIVOX_SECRETS_FILE` → `createAccountStore({secretsPath})` → 存在する `~/dev/Secret/secrets.json` → `%LOCALAPPDATA%\Kagayoi\Plumivox\settings.json` |
-| アカウント | `getAccount(account)` の引数 → `PLUMIVOX_DEFAULT_ACCOUNT` → `createAccountStore({profile})` → `twitterapi_io.default_account` → 唯一のプロファイル |
+| 設定ファイル | `PLUMIVOX_SECRETS_FILE` → 内部起動設定の`secrets_path` → 存在する`~/dev/Secret/secrets.json` → OS別の標準保存先 |
+| アカウント | ツールの`account`引数 → `PLUMIVOX_DEFAULT_ACCOUNT` → 内部起動設定の`profile` → `twitterapi_io.default_account` → 唯一のプロファイル |
 | 複数アカウント | `default_account`に省略時の設定名を保存。別の設定を使う呼出しでは`account`を明示 |
 
-`default_account`はXユーザー名ではなく、`main`・`blog_posting`など登録済みプロファイルの設定名です。初回セットアップは登録したアカウントを既定にします。既存利用者はセットアップの`-SetDefaultAccount blog_posting`で既定だけを変更できます。不正な型・空文字・未登録名の既定では、省略呼出しを`ACCOUNT_DEFAULT_INVALID`として通信前に拒否します。明示した`account`は既定より優先します。複数登録・既定なしの既存設定は`ACCOUNT_REQUIRED`を返し、先頭の登録先へ自動では送信しません。
+`default_account`はXユーザー名ではなく、`main`・`blog_posting`など登録済みプロファイルの設定名です。初回セットアップは登録したアカウントを既定にします。既存利用者は実行ファイルの`--setup --set-default-account blog_posting`で既定だけを変更できます。不正な型・空文字・未登録名の既定では、省略呼出しを`ACCOUNT_DEFAULT_INVALID`として通信前に拒否します。明示した`account`は既定より優先します。複数登録・既定なしの既存設定は`ACCOUNT_REQUIRED`を返し、先頭の登録先へ自動では送信しません。
 
 `list_accounts`の各項目の`isDefault`は、環境変数などの優先設定も含めた有効な省略先だけで`true`になります。既定が未設定・不正でも一覧は取得でき、全項目が`false`になります。`default_account`自体はアカウントとして列挙しません。
 
-設定ファイルの選択は起動時に固定し、各呼出しではそのファイルを読み直します。選択済みファイルが不正・削除された場合はエラーにし、別のファイルへ黙って切り替えません。`~`は現在の利用者のホームです。`LOCALAPPDATA`がない場合は`~/AppData/Local/Kagayoi/Plumivox/settings.json`を使います。Windows以外ではログインとセッション更新を利用できません。
+設定ファイルの選択は起動時に固定し、各呼出しではそのファイルを読み直します。選択済みファイルが不正・削除された場合はエラーにし、別のファイルへ黙って切り替えません。`~`は現在の利用者のホームです。標準保存先はWindowsでは`%LOCALAPPDATA%\Kagayoi\Plumivox\settings.json`（`LOCALAPPDATA`がない場合は`~/AppData/Local/Kagayoi/Plumivox/settings.json`）、macOSでは`~/Library/Application Support/Kagayoi/Plumivox/settings.json`です。セットアップも同じ選択順を使います。
 
-ユーザー名は英数字と `_` の1～15文字です。読取りは APIキーとユーザー名だけで利用できます。投稿には加えて HTTP/HTTPS の有効なプロキシと v2 Cookie が必要です。`getAccount(account, {requirePosting:true})` は投稿設定が不足している場合に拒否します。Cookieの期限やAPIによる受入れはローカルの設定確認だけでは判定できません。
+ユーザー名は英数字と `_` の1～15文字です。読取りはAPIキーとユーザー名だけで利用できます。投稿には加えてHTTP/HTTPSの有効なプロキシとv2 Cookieが必要です。投稿設定が不足している場合は通信前に拒否します。Cookieの期限やAPIによる受入れはローカルの設定確認だけでは判定できません。
 
-`list_accounts` はアカウント名、ユーザー名、読取り・投稿・ログインの準備状態、Cookieの取得元、取得日時だけを返します。取得元は `plumivox_dpapi`、`configuration`、`windows_dpapi`、`null` のいずれかです。APIキー、プロキシ、Cookie、パスワード、2FA秘密鍵、設定ファイルの内容を返しません。エラーも定型のメッセージとコードだけです。内部用のアカウント情報には秘密値を含むため、ツール応答やログへ出さないでください。
+`list_accounts` はアカウント名、ユーザー名、読取り・投稿・ログインの準備状態、Cookieの取得元、取得日時だけを返します。取得元は`plumivox_dpapi`、`plumivox_keychain`、`configuration`、`windows_dpapi`、`null`のいずれかです。APIキー、プロキシ、Cookie、パスワード、2FA秘密鍵、設定ファイルの内容を返しません。エラーも定型のメッセージとコードだけです。内部用のアカウント情報には秘密値を含むため、ツール応答やログへ出さないでください。
 
 ## 既存の Windows DPAPI Cookie
 
@@ -46,11 +46,11 @@ Plumivoxの新しい保存セッションを最優先で読みます。新しい
 | --- | --- |
 | `release_posting` | `%LOCALAPPDATA%\Kagayoi\TwitterApiRelease` |
 | `blog_posting` | `%LOCALAPPDATA%\Kagayoi\TwitterApiBlog` |
-| その他 | `createAccountStore({sessionPaths:{profile_name:'状態ディレクトリの絶対パス'}})` で指定 |
+| その他 | 内部の`AccountStore.session_paths`で状態ディレクトリの絶対パスを指定 |
 
-旧ディレクトリの `SHA256(小文字のuser_name)\session.dpapi` はPowerShell 7 (`pwsh`) で読み取るだけで、上書きしません。セッションの `schema_version` は `2`、`user_name` は設定アカウントと大文字小文字を除き一致、`binding` は `SHA256(api_key + "\n" + proxy)` と一致している必要があります。旧形式、不一致、復号失敗、PowerShellがない環境ではCookieを使用しません。読取りは有効なAPIキーとユーザー名で継続でき、投稿は拒否します。
+旧ディレクトリの`SHA256(小文字のuser_name)\session.dpapi`はWindowsのネイティブDPAPIで読み取るだけで、上書きしません。セッションの`schema_version`は`2`、`user_name`は設定アカウントと大文字小文字を除き一致、`binding`は`SHA256(api_key + "\n" + proxy)`と一致している必要があります。旧形式、不一致、復号失敗ではCookieを使用しません。読取りは有効なAPIキーとユーザー名で継続でき、投稿は拒否します。
 
-子プロセスは読取り専用です。入力は標準入力、復号結果は親プロセスの内部メモリだけで使用し、生エラーを応答へ転載しません。Windows 以外では DPAPI は使用できません。
+復号結果は本体の内部メモリだけで使用し、生エラーを応答へ転載しません。認証更新やDPAPI読取りにPowerShellは不要です。macOSではWindowsのDPAPI保存Cookieを読み込めないため、設定済みCookieを使うか、`login_account`でmacOS用のセッションを作成します。
 
 ## ログインとセッション更新
 
@@ -58,13 +58,20 @@ Plumivoxの新しい保存セッションを最優先で読みます。新しい
 
 `totp_secret` は6桁の認証コードではなく、認証アプリに登録したBase32の秘密鍵です。2FA秘密鍵が不要なアカウントでは省略できます。資格情報は設定正本に置き、会話やMCP引数へ渡しません。
 
-新セッションの保存先は `%LOCALAPPDATA%\Kagayoi\Plumivox\SHA256(account + "\n" + 小文字のuser_name)\session.dpapi`。必要ならリポジトリとCodexユーザーディレクトリの外にある絶対パスを `PLUMIVOX_STATE_DIR` で指定できます。保存ディレクトリは現在のWindowsユーザーだけにアクセスを許可し、CookieはDPAPIで暗号化します。ログイン要求の待機中に対象アカウント・APIキー・プロキシが変わった場合は保存を拒否します。
+保存先はOS別の状態ディレクトリの`SHA256(account + "\n" + 小文字のuser_name)`配下です。
 
-更新前の暗号化セッションは同じディレクトリに一意名の `session-<ID>.backup.dpapi` として保持します。新セッションの利用結果を確認した後、復元に必要な最小世代を残し、不要な世代を清掃してください。保存失敗時の `.pending` も暗号化済みで、原因確認・復元が終わるまで保持します。
+| OS | 標準の状態ディレクトリ | セッションの保護 |
+| --- | --- | --- |
+| Windows | `%LOCALAPPDATA%\Kagayoi\Plumivox` | 本人限定ACLとCurrentUser DPAPI。ファイル名は`session.dpapi`で、従来の保存形式と互換 |
+| macOS | `~/Library/Application Support/Kagayoi/Plumivox` | 本人所有の700ディレクトリ・600ファイルとAES-256-GCM。ファイル名は`session.keychain`。暗号鍵はログイン利用者のKeychainに保存 |
 
-同じ保存先・アカウントの更新はWindowsの名前付きMutexでAPI呼出前から保存完了まで排他し、複数チャットからの同時更新も拒否します。Mutexを所有するPowerShell子プロセスが終了すると、待機中のログインを中断し、その処理から保存しません。本体の置換も所有子プロセスで行い、置換前の失敗では既存セッションを維持します。置換が完了してから成功応答前に終了した場合は更新済みの可能性があり、旧セッションのバックアップを保持します。ログイン・更新だけでは投稿を実行せず、ログイン失敗や投稿失敗後の認証更新で元の要求を自動再送しません。
+状態ディレクトリは`PLUMIVOX_STATE_DIR`、内部起動設定の`state_directory`、OS標準の順に選びます。変更する場合はリポジトリとCodexユーザーディレクトリの外にある絶対パスを指定します。macOSのKeychain項目のサービス名は`com.kagayoi.plumivox.session.aes256gcm.v1`で、正規化した状態ディレクトリの絶対パスから項目を分けます。暗号化ファイルだけを別のMac・利用者・保存先へコピーしても利用できません。Keychainを利用できない場合は平文保存へ切り替えません。ログイン要求の待機中に対象アカウント・APIキー・プロキシが変わった場合は保存を拒否します。
 
-置換前の中止は `AUTH_CANCELLED`、Mutex所有喪失は `AUTH_LOCK_LOST`、保存に使えないCookieは `LOGIN_FAILED` で区別します。置換を指示した後に成功応答を確認できない場合は `AUTH_SAVE_UNCERTAIN` となり、保存内容が更新済みの可能性があります。これらを保存環境の故障として案内せず、保存先・DPAPIなどの障害だけを `SESSION_STORAGE_UNAVAILABLE` とします。
+更新前の暗号化セッションは同じディレクトリに一意名の`session-<ID>.backup.dpapi`（Windows）または`session-<ID>.backup.keychain`（macOS）として保持します。新セッションの利用結果を確認した後、復元に必要な最小世代を残し、不要な世代を清掃してください。保存失敗時の`session-<ID>.pending`も暗号化済みで、原因確認・復元が終わるまで保持します。
+
+同じ保存先・アカウントの更新は、Windowsの名前付きMutex、macOSの`.auth.lock`のファイルロックでAPI呼出前から保存完了まで排他し、複数チャットからの同時更新を拒否します。WindowsではMutexを所有するネイティブスレッドが置換も担当します。ロックの所有確認と保存直前の設定再確認を行い、置換前の失敗では既存セッションを維持します。置換が完了してから成功応答前に終了した場合は更新済みの可能性があり、旧セッションのバックアップを保持します。ログイン・更新だけでは投稿を実行せず、ログイン失敗や投稿失敗後の認証更新で元の要求を自動再送しません。
+
+置換前の中止は`AUTH_CANCELLED`、ロック所有喪失は`AUTH_LOCK_LOST`、保存に使えないCookieは`LOGIN_FAILED`で区別します。置換を指示した後に成功応答を確認できない場合は`AUTH_SAVE_UNCERTAIN`となり、保存内容が更新済みの可能性があります。これらを保存環境の故障として案内せず、保存先・DPAPI・Keychainなどの障害だけを`SESSION_STORAGE_UNAVAILABLE`とします。
 
 ## プロキシの管理方式
 

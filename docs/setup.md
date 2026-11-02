@@ -1,11 +1,11 @@
 # 初めてのセットアップ
 
-Windows PCと、自分で管理できるVPSを使って投稿できるようにします。公開投稿の読取り・検索だけならVPSは不要で、APIキーとXユーザー名だけを[設定](configuration.md)します。
+Windows PCまたはMacと、自分で管理できるVPSを使って投稿できるようにします。公開投稿の読取り・検索だけならVPSは不要で、APIキーとXユーザー名だけを[設定](configuration.md)します。
 
 ```text
 Plumivox → TwitterAPI.io → VPSの認証付きプロキシ
                               ↓ SSH逆トンネル
-                         Windows PC → 自宅回線 → X
+                         PC / Mac → 自宅回線 → X
 ```
 
 PCからVPSへSSH接続するため、自宅ルーターのポート開放は不要です。PCを終了している間は投稿・新規ログインを利用できません。
@@ -14,7 +14,8 @@ PCからVPSへSSH接続するため、自宅ルーターのポート開放は不
 
 | 場所 | 必要なもの |
 | --- | --- |
-| Windows PC | Node.js 22以降、PowerShell 7、Codex、OpenSSHの`ssh`・`scp`・`ssh-keygen` |
+| Windows PC | Windows x64、PowerShell 7、Codex、OpenSSHの`ssh`・`scp`・`ssh-keygen` |
+| Mac | macOS（Apple Silicon・Intel）、Codex、`ssh`・`scp`・`ssh-keygen`。ログインする利用者のKeychainを利用可能なこと |
 | VPS | Ubuntu 22.04以降またはDebian 12以降、systemd、固定の公開IPv4、SSH管理者とsudo権限、有効なUFW |
 | TwitterAPI.io | APIキー。API利用料とVPS料金は各サービスの契約に従います |
 | X | 投稿先のユーザー名、ログイン用メールアドレスとパスワード。2FA利用時はBase32のTOTP秘密鍵 |
@@ -23,22 +24,35 @@ PCからVPSへSSH接続するため、自宅ルーターのポート開放は不
 
 パスワードマネージャーで、プロキシ専用のランダムな32～72文字の半角パスワードを一つ用意します。同じ値をVPSとPCの対話入力で使います。APIキー・Xパスワード・TOTP秘密鍵・プロキシパスワードは会話やコマンド引数へ貼り付けません。
 
-## 1. プラグインと専用SSH鍵を準備する（Windows）
+## 1. プラグインと専用SSH鍵を準備する
 
-PowerShell 7で実行します。取得元はGitHubの最新`main`です。`-ExecutionPolicy Bypass`はこの子プロセスの同梱スクリプトだけを実行可能にし、PCの永続的な実行ポリシーを変更しません。組織のポリシーで禁止されている場合は、その管理者に確認してください。
+WindowsではPowerShell 7で実行します。取得元はGitHubの最新`main`です。ネイティブ実行ファイルの`--setup`は、Windowsでは同梱のPowerShellウィザードを呼びます。子プロセスだけに`-ExecutionPolicy Bypass`を指定し、PCの永続的な実行ポリシーを変更しません。組織のポリシーで禁止されている場合は、その管理者に確認してください。
 
 ```powershell
 codex plugin marketplace add https://github.com/1llum1n4t1s/Plumivox.git --ref main
 $pluginRoot = (codex plugin add plumivox@plumivox-local --json | ConvertFrom-Json).installedPath
-pwsh -NoProfile -ExecutionPolicy Bypass -File (Join-Path $pluginRoot 'setup/Setup-Plumivox.ps1') -PrepareKey
+& (Join-Path $pluginRoot 'dist/plumivox.exe') --setup --prepare-key
 $publicKey = Join-Path $env:LOCALAPPDATA 'Kagayoi/Plumivox/keys/plumivox_ed25519.pub'
+```
+
+macOSではターミナルで実行します。実行ファイルはApple Silicon・Intel共通です。鍵の作成にはmacOSの`ssh-keygen`を使います。
+
+```bash
+codex plugin marketplace add https://github.com/1llum1n4t1s/Plumivox.git --ref main
+codex plugin add plumivox@plumivox-local --json
+# 上の結果のinstalledPathをそのまま指定する
+pluginRoot='/取得結果のinstalledPath'
+"$pluginRoot/dist/plumivox" --setup --prepare-key
+publicKey="$HOME/Library/Application Support/Kagayoi/Plumivox/keys/plumivox_ed25519.pub"
 ```
 
 鍵は利用者だけが読める場所へ保存し、既存の鍵を上書きしません。鍵・設定のアクセス権は本人所有を確認してから制限し、所有者は変更しません。VPSへ送るのは`.pub`の公開鍵だけで、秘密鍵はPCへ残します。
 
+別の鍵の保存先を使う場合は`--private-key-path <絶対パス>`を指定し、後の設定・確認にも同じパスを渡します。秘密鍵の内容やパスフレーズを引数へ渡しません。
+
 `ssh`・`scp`が見つからない場合はWindowsの「オプション機能」で「OpenSSHクライアント」を追加し、ターミナルを開き直します。
 
-## 2. 構築資材をVPSへ送る（Windows）
+## 2. 構築資材をVPSへ送る
 
 `203.0.113.10`を自分のVPSのIPv4に、`ubuntu`を現在使えるSSH管理者名に置き換えます。この管理者と、後で作る中継専用の`plumivox`利用者は別です。SSHポートを変更している場合は`22`も変更します。
 
@@ -49,6 +63,17 @@ $sshPort = 22
 scp -P $sshPort -r (Join-Path $pluginRoot 'setup/vps') "${adminUser}@${vpsHost}:/tmp/plumivox-setup"
 scp -P $sshPort $publicKey "${adminUser}@${vpsHost}:/tmp/plumivox-setup/plumivox_ed25519.pub"
 ssh -p $sshPort "${adminUser}@${vpsHost}"
+```
+
+macOSでは同じ値を使い、次のように転送します。
+
+```bash
+vpsHost='203.0.113.10'
+adminUser='ubuntu'
+sshPort=22
+scp -P "$sshPort" -r "$pluginRoot/setup/vps" "$adminUser@$vpsHost:/tmp/plumivox-setup"
+scp -P "$sshPort" "$publicKey" "$adminUser@$vpsHost:/tmp/plumivox-setup/plumivox_ed25519.pub"
+ssh -p "$sshPort" "$adminUser@$vpsHost"
 ```
 
 初回SSH接続で表示されるホスト鍵指紋は、VPS事業者のコンソールで確認した指紋と照合します。`ssh-keyscan`の結果だけを根拠に承認しません。
@@ -90,25 +115,25 @@ sudo systemctl is-active plumivox-proxy.service
 
 公開ポートなどを変える場合は`--help`を確認し、PC側にも同じ値を設定します。通常の再実行でパスワードを再生成せず、構築後に変更されたファイルの上書きも拒否します。
 
-## 4. アカウントを設定する（Windows）
+## 4. アカウントを設定する
 
 VPSのターミナルから抜け、PowerShell 7で実行します。
 
 ```powershell
-pwsh -NoProfile -ExecutionPolicy Bypass -File (Join-Path $pluginRoot 'setup/Setup-Plumivox.ps1')
+& (Join-Path $pluginRoot 'dist/plumivox.exe') --setup
 ```
 
-アカウント設定名の既定値は`main`です。変更するときは同じコマンドに`-Account blog`などを追加し、確認時にも同じ名前を指定します。
+macOSでは`"$pluginRoot/dist/plumivox" --setup`を実行します。アカウント設定名の既定値は`main`です。変更するときは同じコマンドに`--account blog`などを追加し、確認時にも同じ名前を指定します。
 
-初回登録したアカウントは、MCPの`account`を省略したときの既定としても保存します。既存の有効な既定は保持し、既定なしで複数候補があるときは設定名を選びます。登録時に`-DefaultAccount blog_posting`のように明示することもできます。投稿・検索・ログインで別のアカウントを使う場合は、呼出しの`account`を指定すると優先されます。
+初回登録したアカウントは、MCPの`account`を省略したときの既定としても保存します。既存の有効な既定は保持し、既定なしで複数候補があるときは設定名を選びます。登録時に`--default-account blog_posting`のように明示することもできます。投稿・検索・ログインで別のアカウントを使う場合は、呼出しの`account`を指定すると優先されます。
 
 既存利用者は次のコマンドで既定だけを変更できます。APIキー・Cookie・SSH鍵・中継設定は変更せず、秘密入力や接続確認も行いません。`blog_posting`は登録済みの設定名へ置き換えてください。
 
 ```powershell
-pwsh -NoProfile -ExecutionPolicy Bypass -File (Join-Path $pluginRoot 'setup/Setup-Plumivox.ps1') -SetDefaultAccount blog_posting
+& (Join-Path $pluginRoot 'dist/plumivox.exe') --setup --set-default-account blog_posting
 ```
 
-別の設定ファイルを使っている場合は`-SettingsPath <絶対パス>`も指定します。`PLUMIVOX_DEFAULT_ACCOUNT`を環境変数へ設定している場合は、その値が保存済みの既定より優先されます。
+macOSでは`"$pluginRoot/dist/plumivox" --setup --set-default-account blog_posting`を使います。別の設定ファイルを使っている場合は`--settings-path <絶対パス>`も指定します。`PLUMIVOX_DEFAULT_ACCOUNT`を環境変数へ設定している場合は、その値が保存済みの既定より優先されます。
 
 | 設定する項目 | 入力する値 |
 | --- | --- |
@@ -120,21 +145,23 @@ pwsh -NoProfile -ExecutionPolicy Bypass -File (Join-Path $pluginRoot 'setup/Setu
 | プロキシ利用者・パスワード | 利用者の既定値は`plumivox`。手順3と同じパスワード |
 | 公開・PC・VPS内ポート | 通常は`3128`・`43128`・`43129` |
 
-秘密値は画面に表示しない対話入力で受け取り、利用者だけが読める設定ファイルへ保存します。新規利用者の保存先は`%LOCALAPPDATA%\Kagayoi\Plumivox\settings.json`です。既存の`~/dev/Secret/secrets.json`がある場合はそちらを使い、既存プロファイルを上書きしません。優先順位は[設定](configuration.md)を参照してください。
+秘密値は画面に表示しない対話入力で受け取り、利用者だけが読める設定ファイルへ保存します。新規利用者の保存先はWindowsでは`%LOCALAPPDATA%\Kagayoi\Plumivox\settings.json`、macOSでは`~/Library/Application Support/Kagayoi/Plumivox/settings.json`です。macOSではディレクトリを700、ファイルを600にし、本人所有とリンクを検証します。既存の`~/dev/Secret/secrets.json`がある場合はそちらを使い、既存プロファイルを上書きしません。優先順位は[設定](configuration.md)を参照してください。
 
 既存設定の変更や複数アカウントでの中継共有は[管理プロキシ](managed-proxy.md)に従います。ウィザードは`config.toml`を変更しません。
 
-## 5. 投稿せずに確認する（Windows・Codex）
+## 5. 投稿せずに確認する
 
 まずローカル設定を確認します。VPS接続・API通信・投稿・ログインは行いません。
 
 ```powershell
-pwsh -NoProfile -ExecutionPolicy Bypass -File (Join-Path $pluginRoot 'setup/Setup-Plumivox.ps1') -Check
+& (Join-Path $pluginRoot 'dist/plumivox.exe') --setup --check
 ```
+
+macOSでは`"$pluginRoot/dist/plumivox" --setup --check`を使います。
 
 Codexを再起動し、新しいチャットで「Plumivoxのmainの設定状態を確認して、プロキシを起動して」と依頼します。`list_accounts`で設定が見え、`start_proxy`が`ready`を返せば、PC出口とSSH逆トンネルが起動しています。公開プロキシへの外部到達やTwitterAPI.ioのログイン成功は、この確認だけでは保証しません。
 
-ログインするときは「Plumivoxのmainにログインして」と明示的に依頼します。これはTwitterAPI.ioを利用する操作です。成功するとWindows DPAPIで暗号化したセッションを保存します。投稿は投稿先と文面を指定して依頼します。ログイン確認のために投稿する必要はありません。
+ログインするときは「Plumivoxのmainにログインして」と明示的に依頼します。これはTwitterAPI.ioを利用する操作です。成功するとWindowsはDPAPI、macOSはKeychain内の鍵を使うAES-GCMで暗号化したセッションを保存します。Keychainの利用をmacOSから求められた場合は、Plumivoxの操作であることを確認して応答してください。投稿は投稿先と文面を指定して依頼します。ログイン確認のために投稿する必要はありません。
 
 ## 困ったとき
 

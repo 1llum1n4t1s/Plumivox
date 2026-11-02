@@ -175,10 +175,10 @@ function Invoke-PlumivoxSetup {
     return
   }
   if (-not $setDefault) {
-  $node = Get-Command node -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
-  if (-not $node) { throw 'NODE_REQUIRED' }
-  $version = & $node.Source --version 2>$null
-  if ($LASTEXITCODE -ne 0 -or $version -notmatch '^v(\d+)\.' -or [int]$Matches[1] -lt 22) { throw 'NODE_REQUIRED' }
+  $native = Join-Path (Split-Path $PSScriptRoot -Parent) 'dist/plumivox.exe'
+  if (-not (Test-Path -LiteralPath $native -PathType Leaf)) { throw 'NATIVE_REQUIRED' }
+  $version = & $native --version 2>$null
+  if ($LASTEXITCODE -ne 0 -or $version -notmatch '^plumivox\s+\d+\.') { throw 'NATIVE_REQUIRED' }
   $ssh = Get-Command ssh -CommandType Application -ErrorAction SilentlyContinue
   if (-not $ssh -and -not (Test-Path -LiteralPath (Join-Path $env:WINDIR 'System32/OpenSSH/ssh.exe')) -and -not (Test-Path -LiteralPath (Join-Path $env:ProgramFiles 'Git/usr/bin/ssh.exe'))) { throw 'SSH_REQUIRED' }
   }
@@ -287,7 +287,7 @@ if ($MyInvocation.InvocationName -ne '.') {
       PORT_INVALID = 'ポートには整数を指定してください。SSHは1〜65535、それ以外は1024〜65535です。'
       SSH_KEYGEN_REQUIRED = 'ssh-keygenが見つかりません。WindowsのOpenSSHクライアントまたはGit for Windowsをインストールしてください。'
       SSH_REQUIRED = 'sshが見つかりません。WindowsのOpenSSHクライアントまたはGit for Windowsをインストールしてください。'
-      NODE_REQUIRED = 'Node.js 22以降をインストールし、新しいPowerShellで再実行してください。'
+      NATIVE_REQUIRED = '同梱のPlumivox実行ファイルを確認してください。プラグインを再取得して新しいPowerShellで再実行してください。'
       KEY_MISSING = '専用SSH秘密鍵が見つかりません。最初に-PrepareKeyを実行するか、-PrivateKeyPathで準備済みの鍵を指定してください。'
       KEY_INVALID = 'SSH秘密鍵を読み込めません。専用のパスフレーズなしの鍵を準備し、秘密鍵ファイルを指定してください。'
       KEY_GENERATION_FAILED = '専用SSH鍵を生成できませんでした。保存先の権限とssh-keygenの導入状態を確認してください。既存の鍵は上書きしません。'

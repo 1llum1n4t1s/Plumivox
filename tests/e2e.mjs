@@ -2,17 +2,20 @@ import assert from 'node:assert/strict';
 import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
-import { mkdir, writeFile, realpath, stat, readFile } from 'node:fs/promises';
+import { fileURLToPath } from 'node:url';
+import { mkdir, writeFile, realpath, stat, readFile, copyFile, symlink } from 'node:fs/promises';
+import { writeFileSync } from 'node:fs';
 import { randomUUID, createHash, createHmac } from 'node:crypto';
-import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { isInside } from './path-containment.mjs';
 
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const output = path.resolve(process.env.PLUMIVOX_E2E_OUTPUT_DIR || path.join(os.tmpdir(), 'Codex', 'Plumivox', randomUUID()));
+const nativeFixture = path.resolve(process.env.PLUMIVOX_NATIVE_FIXTURE || path.join(repo, 'target', 'debug', `plumivox-fixture${process.platform === 'win32' ? '.exe' : ''}`));
+const nativeHooks = new WeakMap();
+const sessionFileName = process.platform === 'darwin' ? 'session.keychain' : 'session.dpapi';
+const sessionSource = process.platform === 'darwin' ? 'plumivox_keychain' : 'plumivox_dpapi';
+const output = path.resolve(process.env.PLUMIVOX_E2E_OUTPUT_DIR || path.join(await realpath(os.tmpdir()), 'Codex', 'Plumivox', randomUUID()));
 const forbidden = [repo, path.join(os.homedir(), '.codex'), ...(process.env.CODEX_HOME ? [path.resolve(process.env.CODEX_HOME)] : [])];
 let ancestor = output;
 while (true) { try { await stat(ancestor); break; } catch (error) { if (error.code !== 'ENOENT') throw error; const next = path.dirname(ancestor); if (next === ancestor) throw error; ancestor = next; } }
@@ -52,11 +55,11 @@ mismatchedConfig.twitterapi_io.auth.api_key = 'synthetic-mismatched-api-key';
 await writeFile(mismatchedSecretsPath, JSON.stringify(mismatchedConfig));
 const singleAccountSecretsPath = path.join(output, 'synthetic-single-account-secrets.json');
 await writeFile(singleAccountSecretsPath, JSON.stringify({ twitterapi_io: { auth: syntheticConfig.twitterapi_io.auth } }));
-const ownSessionPath = path.join(stateDirectory, createHash('sha256').update('auth\nauthuser').digest('hex'), 'session.dpapi');
+const ownSessionPath = path.join(stateDirectory, createHash('sha256').update('auth\nauthuser').digest('hex'), sessionFileName);
 const corruptedStateDirectory = path.join(output, 'corrupted-auth-state');
 const corruptedPostingDirectory = path.join(corruptedStateDirectory, createHash('sha256').update('posting\nposter').digest('hex'));
 await mkdir(corruptedPostingDirectory, { recursive: true });
-await writeFile(path.join(corruptedPostingDirectory, 'session.dpapi'), 'deliberately invalid synthetic encrypted session');
+await writeFile(path.join(corruptedPostingDirectory, sessionFileName), 'deliberately invalid synthetic encrypted session');
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/l9sAAAAASUVORK5CYII=', 'base64');
 const orderedImages = Array.from({ length: 4 }, (_, index) => Buffer.concat([png, Buffer.from(`image-order-${index}`)]));
 const orderedImagePaths = orderedImages.map((_, index) => path.join(output, `ordered-${index}.png`));
@@ -272,65 +275,32 @@ const mock = http.createServer(async (req, res) => {
 });
 await new Promise((resolve) => mock.listen(0, '127.0.0.1', resolve));
 const apiBaseUrl = `http://127.0.0.1:${mock.address().port}`;
-const makeTransport = (configPath = secretsPath, sessionRoot = stateDirectory, timeoutMs = 250, preloadPath, fixtureProfile) => new StdioClientTransport({ command: process.execPath, args: [...(preloadPath ? ['--import', pathToFileURL(preloadPath).href] : []), path.join(repo, 'tests/fixture-server.mjs'), apiBaseUrl, configPath, sessionRoot, String(timeoutMs), ...(fixtureProfile ? [fixtureProfile] : [])], cwd: repo, env: Object.fromEntries(Object.entries(process.env).filter(([key, value]) => value !== undefined && !['PLUMIVOX_SECRETS_FILE', 'PLUMIVOX_DEFAULT_ACCOUNT', 'PLUMIVOX_STATE_DIR'].includes(key))), stderr: 'pipe' });
-// G3: 製品へtest flagを加えず、E2E子プロセスの標準入力・保存ackだけを停止する。
+const makeTransport = (configPath = secretsPath, sessionRoot = stateDirectory, timeoutMs = 250, preloadPath, fixtureProfile, environmentAccount, executable = nativeFixture) => {
+  const hookPath = preloadPath || path.join(output, `native-hook-${randomUUID()}.json`);
+  if (preloadPath && !preloadPath.endsWith('.json')) throw new Error('Native fixture requires a JSON hook descriptor');
+  const loseLockPath = `${hookPath}.lose-lock`;
+  if (!preloadPath) { writeFileSync(hookPath, JSON.stringify({ lose_lock_path: loseLockPath })); authGateFiles.push(hookPath, loseLockPath); }
+  const transport = new StdioClientTransport({
+    command: executable,
+    args: [apiBaseUrl, configPath, sessionRoot, String(timeoutMs), ...(fixtureProfile ? [fixtureProfile] : [])],
+    cwd: repo,
+    env: { ...Object.fromEntries(Object.entries(process.env).filter(([key, value]) => value !== undefined && !['PLUMIVOX_SECRETS_FILE', 'PLUMIVOX_DEFAULT_ACCOUNT', 'PLUMIVOX_STATE_DIR', 'PLUMIVOX_TEST_HOOKS'].includes(key))), PLUMIVOX_TEST_HOOKS: hookPath, ...(environmentAccount ? { PLUMIVOX_DEFAULT_ACCOUNT: environmentAccount } : {}) },
+    stderr: 'pipe',
+  });
+  nativeHooks.set(transport, { loseLockPath });
+  return transport;
+};
+// G3: fixture専用featureで暗号化・保存確認の境界を停止し、製品バイナリへtest flagを加えない。
 const authGate = async (mode) => {
   const prefix = path.join(output, `auth-gate-${randomUUID()}`);
-  const preloadPath = `${prefix}.mjs`;
+  const preloadPath = `${prefix}.json`;
   const phasePath = `${prefix}-phase.json`;
   const resumePath = `${prefix}-resume`;
   const resultPath = `${prefix}-result.json`;
   authGateFiles.push(preloadPath, phasePath, resumePath, resultPath);
-  const source = `import childProcess from 'node:child_process';
-import { syncBuiltinESMExports } from 'node:module';
-import { writeFileSync, existsSync } from 'node:fs';
-import { McpServer } from ${JSON.stringify(pathToFileURL(path.join(repo, 'node_modules/@modelcontextprotocol/sdk/dist/esm/server/mcp.js')).href)};
-const mode = ${JSON.stringify(mode)}, phase = ${JSON.stringify(phasePath)}, resume = ${JSON.stringify(resumePath)};
-// SDKは取り消した要求の応答を抑制するため、実ハンドラが返した安全なcodeだけを観測する。
-const registerTool = McpServer.prototype.registerTool;
-McpServer.prototype.registerTool = function(name, config, callback) {
-  return registerTool.call(this, name, config, async (...args) => {
-    const result = await callback(...args);
-    let code = result.structuredContent?.error?.code;
-    if (!code && result.isError) { try { code = JSON.parse(result.content?.find((item) => item.type === 'text')?.text).error?.code; } catch {} }
-    if (name === 'refresh_session' && typeof code === 'string') {
-      writeFileSync(${JSON.stringify(resultPath)}, JSON.stringify({ code }));
-    }
-    return result;
-  });
-};
-const spawn = childProcess.spawn;
-childProcess.spawn = function(command, args, options) {
-  const child = spawn.apply(this, arguments);
-  const index = args?.indexOf('-EncodedCommand');
-  if (command !== 'pwsh' || index < 0) return child;
-  const script = Buffer.from(args[index + 1], 'base64').toString('utf16le');
-  if (mode === 'encrypt' && script.includes("$request.operation -eq 'encrypt'")) {
-    const end = child.stdin.end.bind(child.stdin);
-    child.stdin.end = function(data, ...rest) {
-      let request; try { request = JSON.parse(String(data)); } catch {}
-      if (request?.operation !== 'encrypt') return end(data, ...rest);
-      writeFileSync(phase, JSON.stringify({ phase: 'encrypt', pid: child.pid }));
-      const tick = setInterval(() => { if (existsSync(resume)) { clearInterval(tick); end(data, ...rest); } }, 10);
-      child.once('close', () => clearInterval(tick));
-      return this;
-    };
-  }
-  if (mode === 'saved' && script.includes('[Threading.Mutex]')) {
-    const emit = child.stdout.emit;
-    child.stdout.emit = function(event, data, ...rest) {
-      if (event === 'data' && String(data).trim() === 'saved') {
-        writeFileSync(phase, JSON.stringify({ phase: 'saved', pid: child.pid }));
-        return true;
-      }
-      return emit.call(this, event, data, ...rest);
-    };
-  }
-  return child;
-};
-syncBuiltinESMExports();
-`;
-  await writeFile(preloadPath, source);
+  const loseLockPath = `${preloadPath}.lose-lock`;
+  authGateFiles.push(loseLockPath);
+  await writeFile(preloadPath, JSON.stringify({ gate: mode, phase_path: phasePath, resume_path: resumePath, result_path: resultPath, lose_lock_path: loseLockPath }));
   const gateTransport = makeTransport(secretsPath, stateDirectory, 15000, preloadPath);
   const gateClient = new Client({ name: 'plumivox-auth-boundary-e2e', version: '1.0.0' });
   gateClient.onerror = (error) => protocolErrors.push(safe(error.message));
@@ -340,16 +310,8 @@ syncBuiltinESMExports();
     async wait() { const deadline = Date.now() + 15000; while (Date.now() < deadline) { try { return JSON.parse(await readFile(phasePath, 'utf8')); } catch (error) { if (error.code !== 'ENOENT' && !(error instanceof SyntaxError)) throw error; } await new Promise((resolve) => setTimeout(resolve, 20)); } throw new Error(`Authentication did not reach ${mode} boundary`); },
     async waitResult() { const deadline = Date.now() + 15000; while (Date.now() < deadline) { try { return JSON.parse(await readFile(resultPath, 'utf8')); } catch (error) { if (error.code !== 'ENOENT' && !(error instanceof SyntaxError)) throw error; } await new Promise((resolve) => setTimeout(resolve, 20)); } throw new Error('Authentication handler did not produce a safe error code'); },
     async resume() { await writeFile(resumePath, 'resume'); },
+    async loseLock() { await writeFile(loseLockPath, 'lose'); },
   };
-};
-const verifiedKeeper = async (ownerPid) => {
-  assert.ok(Number.isInteger(ownerPid) && ownerPid > 0);
-  const query = `$ids = @(Get-CimInstance Win32_Process -Filter 'ParentProcessId = ${ownerPid}' | Where-Object { $_.Name -eq 'pwsh.exe' } | ForEach-Object { if ($_.CommandLine -match '-EncodedCommand\\s+(\\S+)') { $scriptText = [Text.Encoding]::Unicode.GetString([Convert]::FromBase64String($Matches[1])); if ($scriptText.Contains('[Threading.Mutex]::new') -and $scriptText.Contains('Plumivox')) { [int]$_.ProcessId } } }); ConvertTo-Json -InputObject $ids -Compress`;
-  const { stdout } = await promisify(execFile)('pwsh', ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', query], { windowsHide: true, timeout: 10000 });
-  const children = JSON.parse(stdout.trim());
-  assert.equal(children.length, 1, 'Exactly one verified mutex keeper must exist');
-  assert.ok(children[0] !== ownerPid && children[0] !== process.pid);
-  return children[0];
 };
 let transport = makeTransport();
 let client = new Client({ name: 'plumivox-e2e', version: '1.0.0' });
@@ -363,7 +325,12 @@ const attachDiagnostics = () => { client.onerror = (error) => protocolErrors.pus
 const restart = async (configPath = secretsPath, sessionRoot = stateDirectory, timeoutMs = 250) => { await client.close(); transport = makeTransport(configPath, sessionRoot, timeoutMs); client = new Client({ name: 'plumivox-e2e', version: '1.0.0' }); attachDiagnostics(); await client.connect(transport); };
 const run = async (name, check) => { if (process.env.PLUMIVOX_E2E_CASE && name !== process.env.PLUMIVOX_E2E_CASE) return; try { await check(); results.push({ name, status: 'pass' }); } catch (error) { results.push({ name, status: 'fail', message: safe(error.message) }); } };
 const call = async (name, args = {}, connection = client, options = {}) => {
-  const result = await connection.callTool({ name, arguments: args }, undefined, { timeout: 30000, ...options });
+  let result;
+  try { result = await connection.callTool({ name, arguments: args }, undefined, { timeout: 30000, ...options }); }
+  catch (error) {
+    if (error.code !== -32602) throw error;
+    result = { isError: true, structuredContent: { error: { code: 'MCP_INVALID_PARAMS', message: 'MCP input validation error' } }, content: [] };
+  }
   const text = result.content?.filter((item) => item.type === 'text').map((item) => item.text).join('\n');
   assert.ok(sensitiveValues.every((secret) => !JSON.stringify(result).includes(secret)), 'Secret leaked in MCP result');
   let data = result.structuredContent;
@@ -426,10 +393,7 @@ try {
   });
   await run('Environment, embedded profile and explicit selection preserve default precedence', async () => {
     for (const [environmentAccount, expected] of [['reading', 'reading'], [undefined, 'posting']]) {
-    const selectedTransport = new StdioClientTransport({ command: process.execPath,
-      args: [path.join(repo, 'tests/fixture-server.mjs'), apiBaseUrl, secretsPath, stateDirectory, '250', 'posting'], cwd: repo,
-      env: { ...Object.fromEntries(Object.entries(process.env).filter(([key, value]) => value !== undefined
-        && !['PLUMIVOX_SECRETS_FILE', 'PLUMIVOX_DEFAULT_ACCOUNT', 'PLUMIVOX_STATE_DIR'].includes(key))), ...(environmentAccount ? { PLUMIVOX_DEFAULT_ACCOUNT: environmentAccount } : {}) }, stderr: 'pipe' });
+    const selectedTransport = makeTransport(secretsPath, stateDirectory, 250, undefined, 'posting', environmentAccount);
     const selectedClient = new Client({ name: 'default-override-e2e', version: '1.0.0' });
     try {
       await writeFile(secretsPath, JSON.stringify({ twitterapi_io: { ...syntheticConfig.twitterapi_io, default_account: 'auth' } }));
@@ -1085,7 +1049,7 @@ try {
   await run('Reused login inspects only its selected account after configuration reread', async () => {
     const prefix = path.join(output, `account-inspection-${randomUUID()}`);
     const configPath = `${prefix}.json`, sessionRoot = `${prefix}-state`;
-    const preloadPath = `${prefix}.mjs`, countsPath = `${prefix}-counts.json`;
+    const preloadPath = `${prefix}-hooks.json`, countsPath = `${prefix}-counts.json`;
     const profiles = Object.fromEntries(['selected', 'other1', 'other2'].map((name) => [name,
       { ...syntheticConfig.twitterapi_io.posting, user_name: name }]));
     const config = { twitterapi_io: { ...profiles, default_account: 'selected' } };
@@ -1093,48 +1057,17 @@ try {
     for (const name of ['other1', 'other2']) {
       const directory = path.join(sessionRoot, createHash('sha256').update(`${name}\n${name}`).digest('hex'));
       await mkdir(directory, { recursive: true });
-      await writeFile(path.join(directory, 'session.dpapi'), 'invalid synthetic encrypted session');
+      await writeFile(path.join(directory, sessionFileName), 'invalid synthetic encrypted session');
     }
     authGateFiles.push(configPath, sessionRoot, preloadPath, countsPath);
-    await writeFile(preloadPath, `import fs from 'node:fs/promises';
-import childProcess from 'node:child_process';
-import { writeFileSync } from 'node:fs';
-import { syncBuiltinESMExports } from 'node:module';
-import { McpServer } from ${JSON.stringify(pathToFileURL(path.join(repo, 'node_modules/@modelcontextprotocol/sdk/dist/esm/server/mcp.js')).href)};
-const counts = { configReads: 0, sessionChecks: 0, sessionReads: 0, decryptSpawns: 0 }, results = [];
-const readFile = fs.readFile, lstat = fs.lstat, spawn = childProcess.spawn;
-fs.readFile = async function(file, ...args) {
-  const value = await readFile.call(this, file, ...args);
-  if (String(file) === ${JSON.stringify(configPath)} && ++counts.configReads === 1) {
-    const changed = JSON.parse(value); changed.twitterapi_io.default_account = 'other1';
-    writeFileSync(file, JSON.stringify(changed));
-  }
-  if (String(file).endsWith('session.dpapi')) counts.sessionReads++;
-  return value;
-};
-fs.lstat = function(file, ...args) { if (String(file).endsWith('session.dpapi')) counts.sessionChecks++; return lstat.call(this, file, ...args); };
-childProcess.spawn = function(command, args, ...rest) {
-  if (command === 'pwsh' && args?.includes('-EncodedCommand')) counts.decryptSpawns++;
-  return spawn.call(this, command, args, ...rest);
-};
-syncBuiltinESMExports();
-const registerTool = McpServer.prototype.registerTool;
-McpServer.prototype.registerTool = function(name, definition, callback) {
-  return registerTool.call(this, name, definition, async (...args) => {
-    const before = { ...counts }, result = await callback(...args);
-    results.push({ name, ...Object.fromEntries(Object.entries(counts).map(([key, value]) => [key, value - before[key]])) });
-    writeFileSync(${JSON.stringify(countsPath)}, JSON.stringify(results));
-    return result;
-  });
-};
-`);
+    await writeFile(preloadPath, JSON.stringify({ counts_path: countsPath, mutate_default_after_first_read: 'other1' }));
     const measuredTransport = makeTransport(configPath, sessionRoot, 250, preloadPath);
     const measuredClient = new Client({ name: 'plumivox-account-inspection-e2e', version: '1.0.0' });
     try {
       await measuredClient.connect(measuredTransport);
       const before = trace.length;
       const reused = await call('login_account', {}, measuredClient);
-      assert.notEqual(reused.result.isError, true);
+      assert.notEqual(reused.result.isError, true, JSON.stringify(reused.data));
       assertLoginMetadata(reused.data, true);
       assert.equal(reused.data.account, 'selected');
       assert.equal(trace.length, before);
@@ -1160,66 +1093,40 @@ McpServer.prototype.registerTool = function(name, definition, callback) {
       ]);
     } finally { await measuredClient.close(); }
   });
-  await run('DPAPI output byte limit preserves UTF8 across child stream chunks', async () => {
+  await run('Native decrypted output byte limit preserves UTF8', async () => {
     const prefix = path.join(output, `session-output-${randomUUID()}`);
     const configPath = `${prefix}.json`, sessionRoot = `${prefix}-state`;
-    const preloadPath = `${prefix}.mjs`, childPath = `${prefix}-child.mjs`;
+    const preloadPath = `${prefix}-hooks.json`;
     const profiles = {};
     for (const [name, offset] of [['below', -1], ['exact', 0], ['over', 1]]) {
       profiles[name] = { ...syntheticConfig.twitterapi_io.posting, user_name: name };
       const directory = path.join(sessionRoot, createHash('sha256').update(`${name}\n${name}`).digest('hex'));
       await mkdir(directory, { recursive: true });
-      await writeFile(path.join(directory, 'session.dpapi'), JSON.stringify({ name, bytes: 2 * 1024 * 1024 + offset }));
+      await writeFile(path.join(directory, sessionFileName), JSON.stringify({ name, bytes: 2 * 1024 * 1024 + offset }));
     }
     await writeFile(configPath, JSON.stringify({ twitterapi_io: profiles }));
-    authGateFiles.push(configPath, sessionRoot, preloadPath, childPath);
-    await writeFile(childPath, `import { once } from 'node:events';
-let input = ''; process.stdin.setEncoding('utf8');
-for await (const chunk of process.stdin) input += chunk;
-const { name, bytes } = JSON.parse(JSON.parse(input).value);
-const session = JSON.stringify({ schema_version: 2, cookie: 'synthetic-🙂あe\\u0301-cookie',
-  binding: ${JSON.stringify(createHash('sha256').update(`${fakeKey}\n${syntheticConfig.twitterapi_io.posting.proxy}`).digest('hex'))},
-  user_name: name, source: 'plumivox_api', acquired_at: '2026-10-21T00:00:00.000Z' });
-const body = Buffer.from(session + ' '.repeat(bytes - Buffer.byteLength(session)));
-const split = body.indexOf(Buffer.from('🙂'));
-for (const chunk of [body.subarray(0, split + 1), body.subarray(split + 1, split + 2), body.subarray(split + 2, split + 3), body.subarray(split + 3, split + 4)]) {
-  process.stdout.write(chunk); await new Promise((resolve) => setTimeout(resolve, 15));
-}
-for (let offset = split + 4; offset < body.length; offset += 16381) {
-  if (!process.stdout.write(body.subarray(offset, offset + 16381))) await once(process.stdout, 'drain');
-  await new Promise(setImmediate);
-}
-`);
-    await writeFile(preloadPath, `import childProcess from 'node:child_process';
-import { syncBuiltinESMExports } from 'node:module';
-const spawn = childProcess.spawn;
-childProcess.spawn = function(command, args, options) {
-  return command === 'pwsh' && args?.includes('-EncodedCommand')
-    ? spawn.call(this, process.execPath, [${JSON.stringify(childPath)}], options)
-    : spawn.apply(this, arguments);
-};
-syncBuiltinESMExports();
-`);
+    authGateFiles.push(configPath, sessionRoot, preloadPath);
+    await writeFile(preloadPath, JSON.stringify({ decrypted_output_fixture: true, binding: createHash('sha256').update(`${fakeKey}\n${syntheticConfig.twitterapi_io.posting.proxy}`).digest('hex') }));
     const boundedTransport = makeTransport(configPath, sessionRoot, 250, preloadPath);
     const boundedClient = new Client({ name: 'plumivox-session-output-e2e', version: '1.0.0' });
     try {
       await boundedClient.connect(boundedTransport);
       const { result, data } = await call('list_accounts', {}, boundedClient);
-      assert.notEqual(result.isError, true);
+      assert.notEqual(result.isError, true, JSON.stringify(data));
       assert.deepEqual(data.accounts.map(({ account, postConfigured, sessionSource }) => ({ account, postConfigured, sessionSource })), [
-        { account: 'below', postConfigured: true, sessionSource: 'plumivox_dpapi' },
-        { account: 'exact', postConfigured: true, sessionSource: 'plumivox_dpapi' },
+        { account: 'below', postConfigured: true, sessionSource },
+        { account: 'exact', postConfigured: true, sessionSource },
         { account: 'over', postConfigured: false, sessionSource: null },
       ]);
     } finally { await boundedClient.close(); }
   });
-  await run('Login saves DPAPI and passes exact Base32 seed once', async () => {
+  await run('Login saves OS-protected session and passes exact Base32 seed once', async () => {
     const before = trace.length;
     const data = await succeeds('login_account', { account: 'auth' });
     assertLoginMetadata(data, false);
     assert.equal(data.account, 'auth');
     assert.equal(data.userName, 'AuthUser');
-    assert.equal(data.sessionSource, 'plumivox_dpapi');
+    assert.equal(data.sessionSource, sessionSource);
     assert.equal(trace.length - before, 1);
     assert.equal(trace.at(-1).path, '/twitter/user_login_v2');
     assert.equal(trace.at(-1).loginPayloadValid, true);
@@ -1227,7 +1134,7 @@ syncBuiltinESMExports();
     assert.deepEqual(trace.at(-1).loginPayloadKeys, ['email', 'password', 'proxy', 'totp_secret', 'user_name']);
     const encrypted = await readFile(ownSessionPath, 'utf8');
     assert.ok(encrypted.length > 100 && !encrypted.trimStart().startsWith('{'));
-    assert.ok(sensitiveValues.every((secret) => !encrypted.includes(secret)), 'DPAPI file exposes plaintext secret');
+    assert.ok(sensitiveValues.every((secret) => !encrypted.includes(secret)), 'OS-protected session file exposes plaintext secret');
     assert.equal(await readFile(secretsPath, 'utf8'), initialSecrets, 'Login rewrote API key configuration');
   });
   await run('Restart reloads encrypted session and reuses without HTTP', async () => {
@@ -1235,7 +1142,7 @@ syncBuiltinESMExports();
     const before = trace.length;
     const data = await succeeds('login_account', { account: 'auth' });
     assertLoginMetadata(data, true);
-    assert.equal(data.sessionSource, 'plumivox_dpapi');
+    assert.equal(data.sessionSource, sessionSource);
     assert.ok(Number.isFinite(Date.parse(data.acquiredAt)));
     assert.equal(trace.length, before);
     const accounts = await succeeds('list_accounts');
@@ -1351,9 +1258,7 @@ syncBuiltinESMExports();
     try {
       const phase = await gate.wait();
       assert.equal(phase.phase, 'encrypt');
-      const keeper = await verifiedKeeper(gate.transport.pid);
-      assert.notEqual(keeper, phase.pid, 'Kill the verified mutex owner rather than the encryption process');
-      process.kill(keeper);
+      await gate.loseLock();
       await gate.resume();
       const result = await pending;
       assert.equal(result.result.isError, true);
@@ -1372,9 +1277,7 @@ syncBuiltinESMExports();
       const phase = await gate.wait();
       assert.equal(phase.phase, 'saved');
       assert.notDeepEqual(await readFile(ownSessionPath), previous);
-      const keeper = await verifiedKeeper(gate.transport.pid);
-      assert.equal(keeper, phase.pid);
-      process.kill(keeper);
+      await gate.loseLock();
       const result = await pending;
       assert.equal(result.result.isError, true);
       assert.equal(result.data.error.code, 'AUTH_SAVE_UNCERTAIN');
@@ -1412,6 +1315,88 @@ syncBuiltinESMExports();
     blockedTransport.stderr?.on('data', (data) => diagnostics.push(String(data)));
     try { await blockedClient.connect(blockedTransport); const result = await call('refresh_session', { account: 'auth' }, blockedClient); assert.equal(result.result.isError, true); assert.equal(result.data.error.code, 'SESSION_STORAGE_UNAVAILABLE'); }
     finally { await blockedClient.close().catch(() => {}); }
+  });
+  await run('Safe parent alias preserves encrypted session and native lock identity', async () => {
+    const realParent = path.join(output, 'safe-session-parent');
+    const aliasParent = path.join(output, 'safe-session-parent-alias');
+    const realState = path.join(realParent, 'state');
+    const aliasState = path.join(aliasParent, 'state');
+    const relativeSession = path.join(createHash('sha256').update('auth\nauthuser').digest('hex'), sessionFileName);
+    const realFile = path.join(realState, relativeSession);
+    const aliasFile = path.join(aliasState, relativeSession);
+    await mkdir(realParent);
+    authGateFiles.push(realParent, aliasParent);
+    const realTransport = makeTransport(singleAccountSecretsPath, realState, 15000);
+    const aliasTransport = makeTransport(singleAccountSecretsPath, aliasState, 15000);
+    const direct = new Client({ name: 'plumivox-real-session-root', version: '1.0.0' });
+    const alias = new Client({ name: 'plumivox-alias-session-root', version: '1.0.0' });
+    for (const stream of [realTransport.stderr, aliasTransport.stderr]) stream?.on('data', (data) => diagnostics.push(String(data)));
+    let pending;
+    let acceptanceTimer;
+    try {
+      await direct.connect(realTransport);
+      const first = await call('login_account', { account: 'auth' }, direct);
+      assert.notEqual(first.result.isError, true, JSON.stringify(first.data));
+      assertLoginMetadata(first.data, false);
+      const previous = await readFile(realFile);
+      await symlink(realParent, aliasParent, process.platform === 'win32' ? 'junction' : 'dir');
+      await alias.connect(aliasTransport);
+      const beforeReuse = trace.length;
+      const reused = await call('login_account', { account: 'auth' }, alias);
+      assert.notEqual(reused.result.isError, true, JSON.stringify(reused.data));
+      assertLoginMetadata(reused.data, true);
+      assert.equal(trace.length, beforeReuse, 'Alias failed to reuse the existing encrypted session');
+      assert.deepEqual(await readFile(aliasFile), previous);
+      scenario = 'interprocess-login';
+      releaseHeldLogin = undefined;
+      const accepted = new Promise((resolve, reject) => { loginAccepted = resolve; acceptanceTimer = setTimeout(() => reject(new Error('Alias refresh did not reach local API')), 8000); });
+      const beforeRefresh = trace.length;
+      pending = call('refresh_session', { account: 'auth' }, alias);
+      pending.catch(() => {});
+      await accepted;
+      const competing = await call('refresh_session', { account: 'auth' }, direct);
+      assert.equal(competing.result.isError, true);
+      assert.equal(competing.data.error.code, 'AUTH_BUSY', 'Real and aliased roots must share one native lock');
+      assert.equal(trace.length - beforeRefresh, 1);
+      releaseHeldLogin();
+      const refreshed = await pending;
+      assert.notEqual(refreshed.result.isError, true, JSON.stringify(refreshed.data));
+      assertLoginMetadata(refreshed.data, false);
+      const replacement = await readFile(realFile);
+      assert.notDeepEqual(replacement, previous);
+      assert.deepEqual(await readFile(aliasFile), replacement);
+    } finally {
+      clearTimeout(acceptanceTimer);
+      loginAccepted = undefined;
+      releaseHeldLogin?.();
+      await pending?.catch(() => {});
+      await Promise.all([direct.close().catch(() => {}), alias.close().catch(() => {})]);
+      releaseHeldLogin = undefined;
+      scenario = 'normal';
+    }
+  });
+  await run('Relocated plugin runtime refuses session storage inside its installation', async () => {
+    const pluginRoot = path.join(output, 'relocated-plugin');
+    const dist = path.join(pluginRoot, 'dist');
+    const relocated = path.join(dist, path.basename(nativeFixture));
+    const forbiddenState = path.join(pluginRoot, 'state');
+    await mkdir(dist, { recursive: true });
+    await copyFile(nativeFixture, relocated);
+    await writeFile(path.join(pluginRoot, 'plugin.json'), '{}');
+    await writeFile(path.join(pluginRoot, 'mcp.json'), '{}');
+    authGateFiles.push(pluginRoot);
+    const relocatedTransport = makeTransport(singleAccountSecretsPath, forbiddenState, 1500, undefined, undefined, undefined, relocated);
+    const connection = new Client({ name: 'plumivox-relocated-runtime', version: '1.0.0' });
+    relocatedTransport.stderr?.on('data', (data) => diagnostics.push(String(data)));
+    try {
+      await connection.connect(relocatedTransport);
+      const before = trace.length;
+      const rejected = await call('login_account', { account: 'auth' }, connection);
+      assert.equal(rejected.result.isError, true);
+      assert.equal(rejected.data.error.code, 'SESSION_STORAGE_UNAVAILABLE');
+      assert.equal(trace.length, before, 'Forbidden session storage must fail before login HTTP');
+      await assert.rejects(stat(forbiddenState), { code: 'ENOENT' });
+    } finally { await connection.close().catch(() => {}); }
   });
   await run('Concurrent same-account refresh refuses second login before HTTP', async () => {
     scenario = 'login-delay';
@@ -1477,10 +1462,14 @@ syncBuiltinESMExports();
       releaseHeldLogin = undefined;
       const before = trace.length;
       const accepted = new Promise((resolve, reject) => { loginAccepted = resolve; acceptanceTimer = setTimeout(() => reject(new Error('Mock did not receive owner login')), 10000); });
-      pending = call('refresh_session', { account: 'auth' }, owner).then(() => 'completed', () => 'closed');
+      pending = call('refresh_session', { account: 'auth' }, owner).then((response) => ({ state: 'completed', ...response }), () => ({ state: 'closed' }));
       await accepted;
       await owner.close();
-      assert.equal(await pending, 'closed');
+      const stopped = await pending;
+      if (stopped.state === 'completed') {
+        assert.equal(stopped.result.isError, true);
+        assert.equal(stopped.data.error.code, 'AUTH_CANCELLED');
+      } else assert.equal(stopped.state, 'closed');
       assert.equal(ownerTransport.pid, null);
       scenario = 'normal';
       const recovered = await call('refresh_session', { account: 'auth' }, contender);
@@ -1520,13 +1509,8 @@ syncBuiltinESMExports();
       await accepted;
       const ownerPid = ownerTransport.pid;
       assert.ok(Number.isInteger(ownerPid) && ownerPid > 0);
-      // 今回起動したMCPの直接子に限定し、Mutexスクリプトを確認してから終了する。
-      const query = `$ids = @(Get-CimInstance Win32_Process -Filter 'ParentProcessId = ${ownerPid}' | Where-Object { $_.Name -eq 'pwsh.exe' } | ForEach-Object { if ($_.CommandLine -match '-EncodedCommand\\s+(\\S+)') { $scriptText = [Text.Encoding]::Unicode.GetString([Convert]::FromBase64String($Matches[1])); if ($scriptText.Contains('[Threading.Mutex]::new') -and $scriptText.Contains('Plumivox')) { [int]$_.ProcessId } } }); ConvertTo-Json -InputObject $ids -Compress`;
-      const { stdout } = await promisify(execFile)('pwsh', ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', query], { windowsHide: true, timeout: 10000 });
-      const children = JSON.parse(stdout.trim());
-      assert.equal(children.length, 1, 'Exactly one verified mutex keeper must exist');
-      assert.ok(children[0] !== ownerPid && children[0] !== process.pid);
-      process.kill(children[0]);
+      // feature専用hookで実際の所有スレッドにOSロックを解放させる。MCP本体は維持する。
+      await writeFile(nativeHooks.get(ownerTransport).loseLockPath, 'lose');
       const lost = await pending;
       assert.equal(lost.result.isError, true);
       assert.equal(lost.data.error.code, 'AUTH_LOCK_LOST');

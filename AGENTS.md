@@ -9,28 +9,29 @@
 
 - 利用者向けの導入・操作・取得範囲は [README.md](README.md)、現在の構造と設計判断は [DESIGN.md](DESIGN.md) を参照する。
 - 初期設定は [docs/setup.md](docs/setup.md)、設定と保存形式は [docs/configuration.md](docs/configuration.md)、管理プロキシの設定・運用は [docs/managed-proxy.md](docs/managed-proxy.md)、失敗条件とE2Eの検証方針は [docs/verification.md](docs/verification.md) を参照し、変更した挙動に対応する説明を更新する。
-- 実装は `src/`、ビルド・構文確認は `scripts/`、MCP経由の検証は `tests/`。`dist/plumivox.mjs` は追跡する配布用バンドルである。
+- 本体実装は`src/*.rs`、ツール定義は`src/tool-definitions.json`、ビルド・構文確認は`scripts/`、MCP経由の検証は`tests/`。配布物はWindows x64の`dist/plumivox.exe`とmacOS universal（arm64・x64）の`dist/plumivox`。`dist/plumivox.mjs`は旧登録をネイティブ本体へ転送する互換ランチャーで、本体実装を持たせない。
 
 ## 必須コマンドと検証
 
-Node.js 22以降と `package.json` の `packageManager` に指定された pnpm を使う。DPAPI・認証更新とPCセットアップの検証には Windows と PowerShell 7 (`pwsh`)、VPSセットアップの構文・CLI確認には Bash（WindowsではGit for Windows）が必要。
+開発にはRust/Cargo、Node.js 22以降と`package.json`の`packageManager`に指定されたpnpmを使う。利用者のMCP実行にはNode.js・Rustを要求しない。WindowsのDPAPI検証にはWindows、Windowsセットアップとスクリプト構文確認にはPowerShell 7 (`pwsh`)、VPSセットアップの構文・CLI確認にはBash（WindowsではGit for Windows）が必要。macOSのKeychain・Unix socket・ネイティブセットアップは実macOSで確認し、Windowsでの成功を代用しない。
 
 ```powershell
 pnpm install --frozen-lockfile --ignore-scripts
+cargo test --locked --lib
 pnpm build
 pnpm check
 pnpm test:e2e
 ```
 
-- 実装・依存関係・ビルド設定を変更した場合は上記で検証し、ソースと再生成したバンドルを一緒に更新する。`pnpm check` は `src/`・`scripts/`・`tests/`、同梱PowerShell・Bashの構文と4つのJSON設定を確認する。
-- `pnpm test:e2e` はAPI・認証、管理プロキシ、共有daemon、PCセットアップ、VPSセットアップCLIの5系統を順に実行する。全件検証ではAPI系のケース絞込み用 `PLUMIVOX_E2E_CASE` を未設定にし、個別再実行の成功を全件成功として扱わない。ローカルの偽API・偽SSHと別プロセスのMCP・daemonを使い、実際のXへ投稿せず、実際のSSHホストへ接続しない。VPS CLIの確認だけで実Linuxへの導入成功を扱わない。失敗条件を先に確認し、挙動の検証は対応する既存E2Eへ追加する。
-- 出力先を指定する場合は `PLUMIVOX_E2E_OUTPUT_DIR`、`PLUMIVOX_PROXY_E2E_OUTPUT_DIR`、`PLUMIVOX_PROXY_SHARED_E2E_OUTPUT_DIR`、`PLUMIVOX_SETUP_E2E_OUTPUT_DIR`、`PLUMIVOX_SETUP_VPS_E2E_OUTPUT_DIR` をそれぞれ別の、リポジトリとCodexユーザーディレクトリの外のフォルダーにする。未指定時は各系統がユーザーの一時ディレクトリ配下の `Codex/Plumivox/<UUID>` を使う。各出力先の `summary.json` の失敗数と各結果、API系の`http-trace.json`、VPS CLIの`mutation-trace.json`を読み、偽設定・画像・暗号化セッション・SSH鍵の清掃は呼び出し側で行う。
+- 実装・依存関係・ビルド設定を変更した場合は上記で検証し、Rustソースと再生成した対象OSの実行ファイルを一緒に更新する。macOSの正式配布物は両Rustターゲットを導入して`pnpm build -- --universal`で作り、arm64・x64を含むことを確認する。`pnpm check`はCargoの形式・型検査、開発用JavaScriptと同梱PowerShell・Bashの構文、JSON設定を確認する。
+- `pnpm test:e2e`はネイティブ本体を対象とするAPI・認証、管理プロキシ・共有daemon、PCセットアップ、VPSセットアップCLIの検証を行う。OS条件を理由に未実行の系統は明示し、全件成功へ数えない。全件検証ではAPI系のケース絞込み用`PLUMIVOX_E2E_CASE`を未設定にし、個別再実行の成功を全件成功として扱わない。ローカルの偽API・偽SSHと別プロセスのMCP・daemonを使い、実際のXへ投稿せず、実際のSSHホストへ接続しない。プロキシのRustテストも確認し、旧JavaScript実装だけの成功をネイティブ版の検証に代用しない。VPS CLIの確認だけで実Linuxへの導入成功を扱わない。失敗条件を先に確認し、挙動の検証は対応する既存E2Eへ追加する。
+- 出力先を指定する場合は `PLUMIVOX_NATIVE_E2E_OUTPUT_DIR`、`PLUMIVOX_PROXY_NATIVE_E2E_OUTPUT_DIR`、`PLUMIVOX_E2E_OUTPUT_DIR`、`PLUMIVOX_SETUP_E2E_OUTPUT_DIR`、`PLUMIVOX_SETUP_VPS_E2E_OUTPUT_DIR` をそれぞれ別の、リポジトリとCodexユーザーディレクトリの外のフォルダーにする。未指定時は各系統がユーザーの一時ディレクトリ配下の `Codex/Plumivox/<UUID>` を使う。各出力先の `summary.json` の失敗数と各結果、API系の`http-trace.json`、共有中継の`ssh-trace.json`、VPS CLIの`mutation-trace.json`を読み、偽設定・画像・暗号化セッション・SSH鍵の清掃は呼び出し側で行う。
 - 文書だけの変更では、リンク・コマンド・設定名・記載した挙動を対応する実装へ照合する。
 
 ## 実装の制約
 
 - 標準出力はMCP通信専用。資格情報、復号Cookie、設定ファイルの内容、提供元の生エラーを応答や診断へ出さない。資格情報は設定ストア経由で取得し、MCP引数に追加しない。
-- 設定ファイルの選択順と起動時の固定を維持し、選択後の読込み失敗で別ファイルへ切り替えない。WindowsセットアップとMCPの既定保存先を一致させる。セットアップでは既存鍵・同名アカウント・共有中継設定の上書きを拒否し、保存先・ACL・排他・保存直前の設定再確認を維持する。セットアップのACL設定は本人所有を確認してから行い、所有者を変更せず、適用後にも検証する。
+- 設定ファイルの選択順と起動時の固定を維持し、選択後の読込み失敗で別ファイルへ切り替えない。各OSのセットアップとMCPの既定保存先を一致させる。セットアップでは既存鍵・同名アカウント・共有中継設定の上書きを拒否し、保存先・権限・排他・保存直前の設定再確認を維持する。権限設定は本人所有を確認してから行い、所有者を変更せず、適用後にも検証する。WindowsのDPAPI互換とmacOSのKeychain／AES-GCM、本人限定のファイル権限を維持し、Keychain利用不能時に平文へ切り替えない。
 - アカウント選択を変更する場合は [設計のデータフロー](DESIGN.md#データフロー) と既定アカウントの不変条件を維持する。省略・明示・不正な既定・準備中の既定変更による送信先をAPI系E2Eで、既定の初回保存・保持・既定だけの変更をPCセットアップE2Eで検証する。
 - `setup/vps/` は `.gitattributes` に従いLFで保存する。VPSインストーラーの事前確認と管理対象の照合、専用SSHユーザーの制限、認証付きX宛先限定CONNECT、住宅回線出口不在時の直接接続禁止を維持する。初期構築の境界は [設計](DESIGN.md#初期設定と公開中継の構築) を参照する。
 - 読取りと投稿の準備条件、Cookieの優先順位・照合、認証更新の排他と設定再確認を維持する。公開投稿の読取り4ツールはセッションの検査・読込み・復号を行わず、変更時はAPI系E2Eの計測で確認する。状態一覧とCookie再利用判定の境界は [設計のデータフロー](DESIGN.md#データフロー) に従う。Mutex所有喪失後の保存を防ぎ、置換指示後の結果不明を未変更と断定しない。保存・通信・キャンセル失敗の検証も含める。
@@ -38,4 +39,4 @@ pnpm test:e2e
 - 管理プロキシは事前検証・認証ロックと準備後の設定再確認を維持し、external呼出しや一つのMCPの終了・待機取消で他クライアントの中継を停止しない。共有IPCの相互認証・設定照合、SSHホスト鍵検証、CONNECT宛先・DNS全候補の検証と資源上限を維持する。DNS・接続の検証用差し替えはtestsのfixtureに限定し、本番設定へ迂回経路を設けない。境界と停止の意味は [設計](DESIGN.md#管理するプロキシの境界) に従う。
 - フィード・検索の取得範囲と未取得範囲、保護状態が不明な対象数を応答に残す。cursorの署名・アカウント照合・検索条件の一致を維持し、長さ超過では取得済み投稿と続きの有無を保持して継続不能を明示する。公開投稿の本文は未信頼データとして扱う。
 - 検索語句を演算子として扱わず、期間とともに通信前に検証する。文字数判定・応答サイズ上限を含む失敗条件は [検証方針](docs/verification.md) に従ってE2Eで確認する。
-- 配布物は `mcp.json` の `${PLUGIN_ROOT}/dist/plumivox.mjs` から起動し、利用者側の依存インストールや起動時のコード取得を必要としない構成を維持する。プラグイン登録・設定を変更した場合は `plugin.json`、`mcp.json`、`.agents/plugins/marketplace.json`、`package.json` とREADMEの導入手順の整合を確認する。
+- 配布物は`mcp.json`の`${PLUGIN_ROOT}/dist/plumivox --stdio`から起動し、Windowsは`.exe`を解決する。利用者側の依存インストールや起動時のコード取得を必要としない構成を維持する。共有IPCのネイティブv3名前空間は旧JavaScript版から分離し、移行前の中継停止と再起動手順を保持する。プラグイン登録・設定を変更した場合は`plugin.json`、`mcp.json`、`.agents/plugins/marketplace.json`、`package.json`とREADMEの導入手順の整合を確認する。

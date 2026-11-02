@@ -1,0 +1,63 @@
+[package]
+name = "plumivox"
+version = "1.0.6"
+edition = "2024"
+license = "MIT"
+publish = false
+default-run = "plumivox"
+autotests = false
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "plumivox"
+path = "src/main.rs"
+
+[[bin]]
+name = "plumivox-fixture"
+path = "tests/native-fixture.rs"
+required-features = ["test-fixture"]
+
+[features]
+test-fixture = []
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+tokio-util = "0.7"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "multipart", "stream"] }
+sha2 = "0.10"
+hmac = "0.12"
+base64 = "0.22"
+hex = "0.4"
+regex = "1"
+chrono = { version = "0.4", features = ["clock"] }
+url = "2"
+unicode-normalization = "0.1"
+unicode-segmentation = "1"
+twitter-text = "0.3.1"
+twitter_text_config = "0.3.1"
+dirs = "6"
+rand = "0.8"
+aes-gcm = "0.10"
+fs2 = "0.4"
+libc = "0.2"
+zeroize = "1"
+russh = { version = "0.65", default-features = false, features = ["ring", "rsa", "flate2"] }
+rpassword = "7"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["test-util"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Security_Cryptography", "Win32_System_Threading", "Win32_System_Memory", "Win32_Storage_FileSystem"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+security-framework = "3"
+
+[profile.release]
+lto = "thin"
+strip = true
+codegen-units = 1

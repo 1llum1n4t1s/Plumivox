@@ -6,6 +6,8 @@ import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { mkdir, writeFile, readFile, realpath, stat } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 
 // 失敗条件: 上書き・不正指紋/ポート/2FA・鍵欠落・保存先リンク/ACL・秘密値漏洩・同時変更・既定の不正指定/無言変更。
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -41,20 +43,71 @@ await test('portable-source-priority-and-frozen-selection', async () => {
   const home = path.join(output, 'home');
   await mkdir(path.join(home, 'dev', 'Secret'), { recursive: true });
   const legacy = path.join(home, 'dev', 'Secret', 'secrets.json');
-  const portable = path.join(local, 'Kagayoi', 'Plumivox', 'settings.json');
+  const portable = process.platform === 'darwin'
+    ? path.join(home, 'Library', 'Application Support', 'Kagayoi', 'Plumivox', 'settings.json')
+    : path.join(local, 'Kagayoi', 'Plumivox', 'settings.json');
+  const explicit = path.join(output, 'explicit-native-settings.json');
+  const document = (account) => JSON.stringify({ twitterapi_io: { [account]: {} } });
   await mkdir(path.dirname(portable), { recursive: true });
-  await writeFile(portable, JSON.stringify({ twitterapi_io: { portable: {} } }));
-  const module = new URL('../src/config.mjs', import.meta.url).href;
-  const run = (code, override = {}) => spawnSync(process.execPath, ['--input-type=module', '-e', `import {resolveSecretsPath,createAccountStore} from ${JSON.stringify(module)}; ${code}`], { encoding: 'utf8', env: { ...process.env, USERPROFILE: home, HOME: home, LOCALAPPDATA: local, PLUMIVOX_SECRETS_FILE: '', ...override } });
-  assert.equal(run('console.log(resolveSecretsPath())').stdout.trim(), portable);
+  await writeFile(portable, document('portable'));
+  await writeFile(explicit, document('explicit'));
+  const suffix = process.platform === 'win32' ? '.exe' : '';
+  const fixture = path.resolve(process.env.PLUMIVOX_NATIVE_FIXTURE || path.join(repo, 'target', 'debug', `plumivox-fixture${suffix}`));
+  const binary = path.resolve(process.env.PLUMIVOX_NATIVE_BINARY || path.join(path.dirname(fixture), `plumivox${suffix}`));
+  const env = {
+    ...Object.fromEntries(Object.entries(process.env).filter(([name, value]) => value !== undefined
+      && !['PLUMIVOX_SECRETS_FILE', 'PLUMIVOX_DEFAULT_ACCOUNT', 'PLUMIVOX_STATE_DIR', 'PLUMIVOX_TEST_HOOKS'].includes(name))),
+    USERPROFILE: home, HOME: home, LOCALAPPDATA: local,
+    PLUMIVOX_STATE_DIR: path.join(output, 'native-selection-state'),
+  };
+  async function connect({ explicitPath, environmentPath } = {}) {
+    const transport = new StdioClientTransport({ command: explicitPath ? fixture : binary,
+      args: explicitPath ? ['http://127.0.0.1:1', explicitPath, env.PLUMIVOX_STATE_DIR, '250'] : [],
+      cwd: repo, env: { ...env, ...(environmentPath ? { PLUMIVOX_SECRETS_FILE: environmentPath } : {}) }, stderr: 'pipe' });
+    const diagnostics = [];
+    transport.stderr?.on('data', (data) => diagnostics.push(String(data)));
+    const client = new Client({ name: 'plumivox-setup-config-e2e', version: '1.0.0' });
+    try { await client.connect(transport); }
+    catch (error) { await transport.close(); throw new Error(`${error.message}\n${diagnostics.join('')}`); }
+    return client;
+  }
+  async function list(client) {
+    const result = await client.callTool({ name: 'list_accounts', arguments: {} });
+    const value = result.structuredContent || JSON.parse(result.content.find((item) => item.type === 'text').text);
+    return { failed: Boolean(result.isError), value };
+  }
+  async function names(options) {
+    const client = await connect(options);
+    try {
+      const result = await list(client);
+      assert.equal(result.failed, false, JSON.stringify(result.value));
+      return result.value.accounts.map((account) => account.account);
+    } finally { await client.close(); }
+  }
+  // 製品のMCP経路で選択先を確認し、起動後に旧正本が現れても選択を固定する。
+  const frozen = await connect();
+  try {
+    assert.deepEqual((await list(frozen)).value.accounts.map((account) => account.account), ['portable']);
+    await writeFile(legacy, document('legacy'));
+    assert.deepEqual((await list(frozen)).value.accounts.map((account) => account.account), ['portable']);
+    // 選択した正本の読込み失敗で、後から現れた有効な設定へ逃げない。
+    await writeFile(portable, 'invalid JSON');
+    const invalid = await list(frozen);
+    assert.equal(invalid.failed, true);
+    assert.equal(invalid.value.error.code, 'CONFIG_UNAVAILABLE');
+  } finally { await frozen.close(); }
+  assert.deepEqual(await names(), ['legacy']);
+  assert.deepEqual(await names({ explicitPath: explicit }), ['explicit']);
+  await writeFile(portable, document('portable'));
+  assert.deepEqual(await names({ explicitPath: explicit, environmentPath: portable }), ['portable']);
+  // 再起動時にも、不正な旧正本を選んだ後で可読な保存先へ切り替えない。
   await writeFile(legacy, 'invalid JSON');
-  assert.equal(run('console.log(resolveSecretsPath())').stdout.trim(), legacy);
-  assert.equal(run(`console.log(resolveSecretsPath(${JSON.stringify(settings)}))`).stdout.trim(), settings);
-  assert.equal(run(`console.log(resolveSecretsPath(${JSON.stringify(settings)}))`, { PLUMIVOX_SECRETS_FILE: portable }).stdout.trim(), portable);
-  const invalid = run(`const store=createAccountStore(); process.env.PLUMIVOX_SECRETS_FILE=${JSON.stringify(portable)}; try { await store.listAccounts(); } catch(e) { console.log(e.code); }`);
-  // 設定ストアの実際の読込みAPIで不正な正本から別ファイルへ逃げない。
-  assert.equal(invalid.status, 0);
-  assert.match(invalid.stdout, /CONFIG_UNAVAILABLE/);
+  const invalidSource = await connect();
+  try {
+    const invalid = await list(invalidSource);
+    assert.equal(invalid.failed, true);
+    assert.equal(invalid.value.error.code, 'CONFIG_UNAVAILABLE');
+  } finally { await invalidSource.close(); }
 });
 
 if (process.platform === 'win32') {
@@ -163,6 +216,15 @@ if (process.platform === 'win32') {
   await test('production-cli-errors-do-not-echo-secret-input', async () => {
     const result = spawnSync('pwsh', ['-NoProfile', '-File', script, '-SettingsPath', settings], { encoding: 'utf8', env: { ...process.env, PLUMIVOX_SECRETS_FILE: '' } });
     assert.equal(result.status, 1); checkNoLeak(result);
+    // ネイティブ入口も実行ポリシーで止まらず、秘密値を表示せずに設定検査へ進む。
+    const fixture = path.resolve(process.env.PLUMIVOX_NATIVE_FIXTURE || path.join(repo, 'target', 'debug', 'plumivox-fixture.exe'));
+    const binary = path.resolve(process.env.PLUMIVOX_NATIVE_BINARY || path.join(path.dirname(fixture), 'plumivox.exe'));
+    const checked = spawnSync(binary, ['--setup', '--check', '--settings-path', path.join(output, 'missing-native-settings.json')],
+      { encoding: 'utf8', env: { ...process.env, LOCALAPPDATA: local, PLUMIVOX_SECRETS_FILE: '', PSExecutionPolicyPreference: 'Restricted' } });
+    assert.equal(checked.status, 1, checked.stdout + checked.stderr);
+    assert.match(checked.stdout, /指定されたアカウント設定がありません/);
+    assert.doesNotMatch(checked.stdout + checked.stderr, /SecurityError|PSSecurityException|UnauthorizedAccess/);
+    checkNoLeak(checked);
   });
   await test('observed-concurrent-settings-change-is-preserved', async () => {
     const target = path.join(output, 'race.json');

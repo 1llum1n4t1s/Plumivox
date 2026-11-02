@@ -4,10 +4,10 @@ TwitterAPI.ioを使い、Xへの投稿、キーワード・期間検索、フォ
 
 ## 必要なもの
 
-- Node.js 22以降。実行用バンドルに依存ライブラリを同梱しています。
-- ログイン・セッション更新はWindowsとPowerShell 7 (`pwsh`) が必要です。
+- Windows x64またはmacOS（Apple Silicon・Intel）。MCP本体はRust製のネイティブ実行ファイルで、Node.jsやRustのインストールは不要です。
+- Windowsの初期設定にはPowerShell 7 (`pwsh`) が必要です。macOSの初期設定は同梱の実行ファイルを使います。
 - TwitterAPI.ioのAPIキー。API利用には同サービスの従量課金が発生します。
-- 投稿には対象アカウントのv2ログインCookieとプロキシ。既存の外部プロキシに加え、WindowsではPlumivox内の住宅回線出口とSSH中継を複数チャットで共有できます。公開中継サーバーの初回準備は必要です。
+- 投稿には対象アカウントのv2ログインCookieとプロキシ。既存の外部プロキシに加え、Windows・macOSではPlumivox内の住宅回線出口とSSH中継を複数チャットで共有できます。公開中継サーバーの初回準備は必要です。
 
 ## インストール
 
@@ -18,7 +18,7 @@ codex plugin marketplace add https://github.com/1llum1n4t1s/Plumivox.git --ref m
 codex plugin add plumivox@plumivox-local
 ```
 
-`plumivox-local` はマーケットプレイスの識別子です。取得元は上記のGitHub URLです。依存ライブラリは同梱されているため、利用者による依存インストールやMCP設定の手動追加は不要です。
+`plumivox-local` はマーケットプレイスの識別子です。取得元は上記のGitHub URLです。Windows用の`dist/plumivox.exe`とmacOS用の`dist/plumivox`（Apple Silicon・Intel共通）を同梱しているため、利用者による依存インストールやMCP設定の手動追加は不要です。
 
 更新するときは `main` の最新状態を取得してインストールし、Codexを再起動して読み込みます。
 
@@ -36,8 +36,8 @@ GitHubを追跡する登録・更新方法は[Codexのプラグイン資料](htt
 上記のGitHub `main`を追うプラグイン登録を残し、MCPだけをToolportへ登録できます。`codex plugin marketplace list`で`plumivox-local`の取得済みルートを確認し、Toolportに次のstdioサーバーを追加します。開発用クローンや版番号付きのインストールキャッシュは指定しません。
 
 - 名前: `plumivox`
-- コマンド: Node.js 22以降の`node`実行ファイル
-- 引数: `<取得済みルート>/dist/plumivox.mjs`、`--stdio`（別々の引数）
+- コマンド: Windowsは`<取得済みルート>/dist/plumivox.exe`、macOSは`<取得済みルート>/dist/plumivox`
+- 引数: `--stdio`
 - 作業ディレクトリ: 利用者のホームディレクトリ
 - 要求タイムアウト: 300000ミリ秒（ログインや中継の準備時間を含む）
 
@@ -50,13 +50,13 @@ enabled = false
 
 Codexを再起動すると直接接続が無効になります。以後の操作はToolportでツールを検索し、返された実ツール名を`toolport_call_tool`へ渡します。APIキー・Cookie・SSH鍵はPlumivoxの既存設定から読み込み、Toolportの引数へ移しません。
 
-更新は上記の`codex plugin marketplace upgrade plumivox-local`で行います。Toolportが実行中のサーバーは読込み済みコードを使うため、更新後にToolportの`plumivox`を無効化・再有効化して、新しいスナップショットを読み込みます。取得済みルートが変わった場合は登録した引数も変更してください。起動時のGit取得や依存インストールは行いません。
+更新は上記の`codex plugin marketplace upgrade plumivox-local`で行います。Toolportが実行中のサーバーは読込み済みコードを使うため、更新後にToolportの`plumivox`を無効化・再有効化して、新しい実行ファイルを読み込みます。取得済みルートが変わった場合は登録したコマンドも変更してください。起動時のGit取得や依存インストールは行いません。
 
 ## 初期設定
 
-初めて使う場合は[セットアップ手順](docs/setup.md)に進んでください。VPSインストーラーとWindowsの設定ウィザードを同梱しています。Codexへ「Plumivoxをセットアップして」と依頼すると、同梱の`setup-plumivox`スキルでも案内できます。
+初めて使う場合は[セットアップ手順](docs/setup.md)に進んでください。VPSインストーラーとWindows・macOSの設定ウィザードを同梱しています。Codexへ「Plumivoxをセットアップして」と依頼すると、同梱の`setup-plumivox`スキルでも案内できます。
 
-設定ファイルはリポジトリ外へ置きます。新規利用者は `%LOCALAPPDATA%\Kagayoi\Plumivox\settings.json`、既存の `~/dev/Secret/secrets.json` がある利用者はそのファイルの `twitterapi_io` を読みます。vava／blblの `release_posting` と `blog_posting` も維持します。別の場所を使う場合は `PLUMIVOX_SECRETS_FILE` を指定します。秘密値を会話やMCPの引数へ渡す必要はありません。
+設定ファイルはリポジトリ外へ置きます。新規利用者はWindowsでは`%LOCALAPPDATA%\Kagayoi\Plumivox\settings.json`、macOSでは`~/Library/Application Support/Kagayoi/Plumivox/settings.json`を使います。既存の`~/dev/Secret/secrets.json`がある利用者は、そのファイルの`twitterapi_io`を読みます。vava／blblの`release_posting`と`blog_posting`も維持します。別の場所を使う場合は`PLUMIVOX_SECRETS_FILE`を指定します。秘密値を会話やMCPの引数へ渡す必要はありません。
 
 選択された設定ファイルを読み込めない場合は、別の設定へ切り替えずエラーになります。保存先を変更した場合はCodexを再起動してください。初回セットアップは既存の鍵・同名アカウント・共有中継設定を上書きしません。既存設定の変更方法は[セットアップ手順](docs/setup.md)を参照してください。
 
@@ -80,7 +80,7 @@ Codexを再起動すると直接接続が無効になります。以後の操作
 
 `account`を省略すると、検索・読取り・投稿・認証で既定アカウントを使います。`list_accounts`の`isDefault`で省略先を確認でき、別のアカウントには`account`で`release_posting`や`blog_posting`などの設定名を明示します。複数登録で既定がない場合は指定を要求し、不正な既定では省略呼出しを拒否します。
 
-初回セットアップは登録先を既定として保存します。既存設定の既定だけを変更するには、同梱の`setup/Setup-Plumivox.ps1 -SetDefaultAccount blog_posting`を使います。詳細は[セットアップ手順](docs/setup.md)と[設定の優先順位](docs/configuration.md)を参照してください。
+初回セットアップは登録先を既定として保存します。既存設定の既定だけを変更するには、同梱の実行ファイルへ`--setup --set-default-account blog_posting`を指定します。詳細は[セットアップ手順](docs/setup.md)と[設定の優先順位](docs/configuration.md)を参照してください。
 
 投稿文字数はURLを23文字、日本語を2文字、Unicode 17までの複合絵文字を1つ2文字として数えます。肌の色が異なる握手なども、[Xの加重文字数の仕様](https://docs.x.com/fundamentals/counting-characters)に合わせて判定します。
 
@@ -136,7 +136,7 @@ API応答が10MiBを超えた場合は受信を打ち切って失敗を返しま
 
 保存Cookieの照合失敗は投稿だけを止めます。公開投稿の読み込み・検索はAPIキーとユーザー名だけを使い、保存Cookieを読み込まずに利用できます。認証済みCookieの取得・更新は[設定手順](docs/configuration.md)を参照してください。
 
-`login_account` は保存Cookieが利用できる形式なら再利用し、X上での有効性を検証したとは報告しません。失効や設定不一致が確認された場合は `refresh_session` を呼びます。新しいCookieはPlumivoxの保存先へWindows DPAPIで暗号化して保存し、失敗した投稿を自動再送しません。
+`login_account` は保存Cookieが利用できる形式なら再利用し、X上での有効性を検証したとは報告しません。失効や設定不一致が確認された場合は `refresh_session` を呼びます。新しいCookieはPlumivoxの保存先へWindowsではDPAPI、macOSではKeychainの鍵で暗号化して保存し、失敗した投稿を自動再送しません。
 
 保存の置換前に中止した場合は `AUTH_CANCELLED`、Mutex所有を失った場合は `AUTH_LOCK_LOST`、保存できないCookieは `LOGIN_FAILED` で返します。保存の置換を指示した後に結果を確認できない場合は `AUTH_SAVE_UNCERTAIN` となり、更新済みの可能性があります。`SESSION_STORAGE_UNAVAILABLE` は保存先やDPAPIなどの保存処理の失敗を表します。
 
