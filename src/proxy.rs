@@ -530,6 +530,83 @@ impl Drop for StopGuard {
         self.0.fetch_sub(1, Ordering::SeqCst);
     }
 }
+
+struct DaemonSpawnError {
+    // 継承フラグ復元に失敗した場合も、bootstrap前の自分の子だけを回収する。
+    child: Option<tokio::process::Child>,
+}
+
+#[cfg(not(windows))]
+fn spawn_daemon_process(
+    command: std::process::Command,
+) -> std::result::Result<tokio::process::Child, DaemonSpawnError> {
+    tokio::process::Command::from(command)
+        .spawn()
+        .map_err(|_| DaemonSpawnError { child: None })
+}
+
+#[cfg(windows)]
+fn spawn_daemon_process(
+    command: std::process::Command,
+) -> std::result::Result<tokio::process::Child, DaemonSpawnError> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Foundation::{
+        GetHandleInformation, HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE, SetHandleInformation,
+    };
+
+    // stdioの継承フラグはプロセス全体の状態なので、daemon生成同士を直列化する。
+    // この同期関数から戻った後にだけ、呼出し元は子のI/Oや終了をawaitする。
+    static SPAWN: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _spawn = SPAWN.lock().map_err(|_| DaemonSpawnError { child: None })?;
+    let mut handles = Vec::new();
+    for handle in [
+        std::io::stdin().as_raw_handle(),
+        std::io::stdout().as_raw_handle(),
+        std::io::stderr().as_raw_handle(),
+    ] {
+        if handle.is_null()
+            || handle == INVALID_HANDLE_VALUE
+            || handles.iter().any(|(seen, _)| *seen == handle)
+        {
+            continue;
+        }
+        let mut flags = 0;
+        if unsafe { GetHandleInformation(handle, &mut flags) } == 0 {
+            return Err(DaemonSpawnError { child: None });
+        }
+        handles.push((handle, flags));
+    }
+    let suppressed = handles.iter().all(|(handle, flags)| {
+        flags & HANDLE_FLAG_INHERIT == 0
+            || unsafe { SetHandleInformation(*handle, HANDLE_FLAG_INHERIT, 0) } != 0
+    });
+    let attempt = if suppressed {
+        Some(tokio::process::Command::from(command).spawn())
+    } else {
+        None
+    };
+    // 一つの復元が失敗しても残るハンドルをすべて復元し、成功として返さない。
+    let mut restored = true;
+    for (handle, flags) in handles {
+        if flags & HANDLE_FLAG_INHERIT != 0
+            && unsafe {
+                SetHandleInformation(handle, HANDLE_FLAG_INHERIT, flags & HANDLE_FLAG_INHERIT)
+            } == 0
+        {
+            restored = false;
+        }
+    }
+    if !restored {
+        return Err(DaemonSpawnError {
+            child: attempt.and_then(std::result::Result::ok),
+        });
+    }
+    match attempt {
+        Some(Ok(child)) => Ok(child),
+        _ => Err(DaemonSpawnError { child: None }),
+    }
+}
+
 async fn spawn_daemon(config: &Value, exited: CancellationToken) -> Result<()> {
     let exe = std::env::current_exe().map_err(|_| {
         exited.cancel();
@@ -558,10 +635,29 @@ async fn spawn_daemon(config: &Value, exited: CancellationToken) -> Result<()> {
             });
         }
     }
-    let mut child = match tokio::process::Command::from(command).spawn() {
+    let mut child = match spawn_daemon_process(command) {
         Ok(c) => c,
-        Err(_) => {
-            exited.cancel();
+        Err(failed) => {
+            if let Some(mut child) = failed.child {
+                drop(child.stdin.take());
+                // 元stdioの復元に失敗した子へ設定や秘密を渡さない。
+                let _killed = child.start_kill();
+                if matches!(
+                    timeout(Duration::from_secs(2), child.wait()).await,
+                    Ok(Ok(_))
+                ) {
+                    exited.cancel();
+                } else {
+                    // 終了を確認できない場合は監視を残し、終了済みと断定しない。
+                    tokio::spawn(async move {
+                        if child.wait().await.is_ok() {
+                            exited.cancel();
+                        }
+                    });
+                }
+            } else {
+                exited.cancel();
+            }
             return Err(error("PROXY_START_FAILED"));
         }
     };

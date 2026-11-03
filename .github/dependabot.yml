@@ -1,5 +1,5 @@
 # 更新方針: 毎週月曜09:00（日本時間）、minor/patchを集約、majorは個別PR。
-# マージ可否は既定ブランチのDependabot auto-mergeが最新CIで判定します。
+# Cargoは両OS配布物の更新が必要なため手動対応し、他のマージ可否は最新CIで判定します。
 version: 2
 updates:
 - package-ecosystem: github-actions
@@ -19,7 +19,7 @@ updates:
       - patch
   commit-message:
     prefix: deps
-- package-ecosystem: npm
+- package-ecosystem: cargo
   directory: /
   schedule:
     interval: weekly

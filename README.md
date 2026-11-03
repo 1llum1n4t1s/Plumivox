@@ -11,7 +11,7 @@ TwitterAPI.ioを使い、Xへの投稿、キーワード・期間検索、フォ
 
 ## インストール
 
-GitHubリポジトリの `main` の最新コミットからインストールします。利用者の開発用クローンは参照せず、タグ・コミットSHA・npmのバージョンには固定しません。
+GitHubリポジトリの `main` の最新コミットからインストールします。利用者の開発用クローンは参照せず、タグ・コミットSHAには固定しません。
 
 ```powershell
 codex plugin marketplace add https://github.com/1llum1n4t1s/Plumivox.git --ref main
@@ -19,6 +19,8 @@ codex plugin add plumivox@plumivox-local
 ```
 
 `plumivox-local` はマーケットプレイスの識別子です。取得元は上記のGitHub URLです。Windows用の`dist/plumivox.exe`とmacOS用の`dist/plumivox`（Apple Silicon・Intel共通）を同梱しているため、利用者による依存インストールやMCP設定の手動追加は不要です。
+
+開発用CIではWindows・macOSで検証した成果物をCloudflare R2へ保存し、配布準備時に受け渡します。[成果物の保存・取得手順](docs/distribution.md)は開発者向けです。プラグイン利用者にR2の設定や資格情報は不要で、インストール・更新は引き続きGitHubの`main`から行います。
 
 更新するときは `main` の最新状態を取得してインストールし、Codexを再起動して読み込みます。
 
@@ -138,8 +140,10 @@ API応答が10MiBを超えた場合は受信を打ち切って失敗を返しま
 
 `login_account` は保存Cookieが利用できる形式なら再利用し、X上での有効性を検証したとは報告しません。失効や設定不一致が確認された場合は `refresh_session` を呼びます。新しいCookieはPlumivoxの保存先へWindowsではDPAPI、macOSではKeychainの鍵で暗号化して保存し、失敗した投稿を自動再送しません。
 
-保存の置換前に中止した場合は `AUTH_CANCELLED`、Mutex所有を失った場合は `AUTH_LOCK_LOST`、保存できないCookieは `LOGIN_FAILED` で返します。保存の置換を指示した後に結果を確認できない場合は `AUTH_SAVE_UNCERTAIN` となり、更新済みの可能性があります。`SESSION_STORAGE_UNAVAILABLE` は保存先やDPAPIなどの保存処理の失敗を表します。
+保存の置換前に中止した場合は `AUTH_CANCELLED`、認証更新の排他を維持できない場合は `AUTH_LOCK_LOST`、保存できないCookieは `LOGIN_FAILED` で返します。保存の置換を指示した後に結果を確認できない場合は `AUTH_SAVE_UNCERTAIN` となり、更新済みの可能性があります。`SESSION_STORAGE_UNAVAILABLE` は保存先や、WindowsのDPAPI・macOSのKeychainなどの保存処理の失敗を表します。
 
 ## 開発・検証
+
+開発・ビルド・テストにもNode.jsは不要です。Rust/Cargoの`cargo xtask build`、`cargo xtask check`、`cargo xtask test-e2e`を使います。旧Nodeランチャーを指定した登録は、上記のネイティブ起動へ変更してください。
 
 [開発者向けのビルド・検証手順](docs/verification.md)、[作業規約](AGENTS.md)、[システム設計](DESIGN.md)を参照してください。

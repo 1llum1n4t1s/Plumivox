@@ -20,7 +20,7 @@
 use crate::error::{AppError, Result};
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use chrono::{DateTime, SecondsFormat};
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit, Mac};
 use regex::Regex;
 use serde_json::{Value, json};
 use sha2::Sha256;
@@ -41,6 +41,18 @@ const SEARCH_PREFIX: &str = "plumivox-search.";
 const MAX_FEED: usize = 100_000;
 const MAX_PROVIDER: usize = 10_000;
 const MAX_SEARCH: usize = 200_000;
+
+// 固定の合成CAとloopback HTTPSを、独立した検証プロセスだけで有効にする。
+#[cfg(feature = "test-fixture")]
+static TLS_FIXTURE: OnceLock<bool> = OnceLock::new();
+
+#[cfg(feature = "test-fixture")]
+pub fn configure_tls_fixture(trust_ca: bool) -> Result<()> {
+    TLS_FIXTURE
+        .set(trust_ca)
+        .map_err(|_| err("INVALID_FIXTURE", "TLS検証モードは設定済みです。"))
+}
+
 fn err(code: &str, message: &str) -> AppError {
     AppError::new(code, message)
 }
@@ -265,11 +277,37 @@ struct Image {
 }
 impl TwitterApiClient {
     pub fn new(api_base_url: String, timeout: Duration, image_timeout: Duration) -> Self {
+        // reqwest 0.13の既定はOSの証明書ストアとAWS-LCへ変わった。
+        // 従来と同じwebpkiのルート・ring・TLS 1.2/1.3をクライアントごとに固定する。
+        let roots = rustls::RootCertStore {
+            roots: webpki_roots::TLS_SERVER_ROOTS.to_vec(),
+        };
+        #[cfg(feature = "test-fixture")]
+        let roots = {
+            let mut roots = roots;
+            if TLS_FIXTURE.get() == Some(&true) {
+                roots
+                    .add(rustls::pki_types::CertificateDer::from(
+                        include_bytes!("../tests/fixtures/tls/ca-cert.der").to_vec(),
+                    ))
+                    .expect("fixed synthetic TLS fixture CA");
+            }
+            roots
+        };
+        let mut tls = rustls::ClientConfig::builder_with_provider(std::sync::Arc::new(
+            rustls::crypto::ring::default_provider(),
+        ))
+        .with_protocol_versions(&[&rustls::version::TLS13, &rustls::version::TLS12])
+        .expect("ring supports the configured TLS 1.2 and TLS 1.3 versions")
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+        tls.alpn_protocols = vec![b"http/1.1".to_vec()];
         Self {
             base: api_base_url,
             timeout,
             image_timeout,
             http: reqwest::Client::builder()
+                .tls_backend_preconfigured(tls)
                 .redirect(reqwest::redirect::Policy::none())
                 .no_proxy()
                 .build(),
@@ -292,11 +330,24 @@ impl TwitterApiClient {
                     "API通信が完了しませんでした。自動再試行はしていません。",
                 )
             })?;
+            #[cfg(not(feature = "test-fixture"))]
+            let tls_fixture_endpoint = false;
+            #[cfg(feature = "test-fixture")]
+            let tls_fixture_endpoint = TLS_FIXTURE.get().is_some()
+                && base.scheme() == "https"
+                && base.host_str() == Some("127.0.0.1")
+                && base.port().is_some()
+                && base.path() == "/"
+                && base.username().is_empty()
+                && base.password().is_none()
+                && base.query().is_none()
+                && base.fragment().is_none();
             if !(base.scheme() == "https"
                 && base.host_str() == Some("api.twitterapi.io")
                 && base.port_or_known_default() == Some(443))
                 && !(base.scheme() == "http"
                     && matches!(base.host_str(), Some("127.0.0.1" | "[::1]" | "::1")))
+                && !tls_fixture_endpoint
             {
                 return Err(err("API_UNAVAILABLE", "API通信先が不正です。"));
             }
@@ -618,22 +669,16 @@ impl TwitterApiClient {
         }
         // The JS comparator puts the later item first when numeric IDs are
         // equal (e.g. "070" and "70"). Preserve that deterministic tie rule.
-        tweets.sort_by(|a, b| {
-            fn timestamp(v: &Value) -> i64 {
-                DateTime::parse_from_rfc3339(string(&v["createdAt"]))
-                    .or_else(|_| DateTime::parse_from_rfc2822(string(&v["createdAt"])))
-                    .or_else(|_| {
-                        DateTime::parse_from_str(string(&v["createdAt"]), "%a %b %d %H:%M:%S %z %Y")
-                    })
-                    .map(|t| t.timestamp_millis())
-                    .unwrap_or(0)
-            }
-            timestamp(b).cmp(&timestamp(a)).then_with(|| {
-                let ai = string(&a["id"]).parse::<u128>().unwrap_or(0);
-                let bi = string(&b["id"]).parse::<u128>().unwrap_or(0);
-                bi.cmp(&ai)
-                    .then_with(|| positions[string(&b["id"])].cmp(&positions[string(&a["id"])]))
-            })
+        tweets.sort_by_cached_key(|tweet| {
+            let time = DateTime::parse_from_rfc3339(string(&tweet["createdAt"]))
+                .or_else(|_| DateTime::parse_from_rfc2822(string(&tweet["createdAt"])))
+                .or_else(|_| {
+                    DateTime::parse_from_str(string(&tweet["createdAt"]), "%a %b %d %H:%M:%S %z %Y")
+                })
+                .map(|t| t.timestamp_millis())
+                .unwrap_or(0);
+            let id = string(&tweet["id"]);
+            std::cmp::Reverse((time, id.parse::<u128>().unwrap_or(0), positions[id]))
         });
         let next = if !pending.is_empty() && !too_long {
             feed_encode(&json!(pending), &coverage, a)
@@ -968,15 +1013,19 @@ fn weighted_text(text: &str) -> Result<usize> {
     for m in matcher.find_iter(&mapped) {
         let start = m.start() / 4;
         let end = m.end() / 4;
-        let emoji = String::from_utf16(&units[start..end]).map_err(|_| invalid())?;
-        if emoji.chars().count() == 1
+        let (scalar_count, emoji_weight) = char::decode_utf16(units[start..end].iter().copied())
+            .try_fold((0usize, 0usize), |(count, total), scalar| {
+                let scalar = scalar.map_err(|_| invalid())?;
+                Ok::<_, AppError>((count + 1, total + character_weight(scalar)))
+            })?;
+        if scalar_count == 1
             || urls
                 .iter()
                 .any(|u| start < (u.end as usize) && end > (u.start as usize))
         {
             continue;
         }
-        weight = weight - emoji.chars().map(character_weight).sum::<usize>() + 2;
+        weight = weight - emoji_weight + 2;
     }
     if !(1..=280).contains(&weight) {
         return Err(invalid());
@@ -1008,6 +1057,11 @@ mod tests {
         let a = json!({"account":"a","userName":"Reader","apiKey":"secret"});
         let c = json!({"scope":"all","keyword":"some keyword","account":"a"});
         let cursor = search_encode("provider", &a, &c, "tweets").unwrap();
+        // Nodeの標準cryptoで生成した既存wire形式の固定値。HMAC/base64更新でも保持する。
+        assert_eq!(
+            cursor,
+            "plumivox-search.eyJ2ZXJzaW9uIjoxLCJraW5kIjoidHdlZXRzIiwiY29uZGl0aW9ucyI6eyJzY29wZSI6ImFsbCIsImtleXdvcmQiOiJzb21lIGtleXdvcmQiLCJhY2NvdW50IjoiYSJ9LCJpbm5lciI6InByb3ZpZGVyIn0.HzPcKxtrchqqcemcwGJAfD_MwCG-XxxmUlI9OvClv9I"
+        );
         assert_eq!(
             search_decode(&json!(cursor), &a, &c, "tweets").unwrap(),
             "provider"

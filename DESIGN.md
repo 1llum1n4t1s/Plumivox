@@ -18,13 +18,16 @@ PlumivoxはTwitterAPI.ioを経由してXへの投稿・認証更新・公開投�
 | `src/proxy_ipc.rs` | 相互HMAC認証IPC。Windowsの名前付きパイプとmacOSのUnix socketを利用する |
 | `src/proxy.rs` | 設定と鍵の検証、russhによるSSHホスト鍵照合・逆転送・再接続、共有daemon・複数チャット・idle終了・取消・停止の制御 |
 | `src/client.rs` / `src/client_emoji.txt` | HTTP通信、応答検証・正規化、画像検証・アップロード、投稿、フィード再構成、検索条件と継続cursor、Unicode 17絵文字の検証 |
-| `Cargo.toml` / `Cargo.lock` / `scripts/build.mjs` | Rust本体の依存と固定、Windows x64およびmacOS universal実行ファイルの配布ビルド |
-| `dist/plumivox.exe` / `dist/plumivox` / `dist/plumivox.mjs` | 正式なネイティブ実行ファイルと、旧Node登録から同じ本体へ転送する小さな互換ランチャー |
-| `tests/e2e.mjs` / `tests/native-e2e.mjs` / `tests/native-fixture.rs` | localhostの偽APIと別プロセスのネイティブMCPを使い、通信内容・回数・失敗時の状態を検証する。失敗注入は`test-fixture`ビルドに限定する |
-| `tests/native-proxy-e2e.mjs`と`src/proxy.rs` / `src/proxy_egress.rs` / `src/proxy_ipc.rs`内のテスト | 偽SSH・echo、認証付きIPCとCONNECT出口の境界をネイティブ実装で検証する |
-| `tests/setup-e2e.mjs` / `tests/setup-vps-e2e.mjs` | 個別保存先、設定ウィザード、鍵の保護、VPS CLIの検証と拒否条件。実VPSへの導入は別途確認が必要 |
+| `Cargo.toml` / `Cargo.lock` / `.cargo/config.toml` / `xtask/` | 本体と開発ツールの依存固定、Windows x64とmacOS universalのビルド、ライセンス生成、検査・E2E実行。Node.jsを使わない |
+| `dist/plumivox.exe` / `dist/plumivox` | 正式なネイティブ実行ファイル |
+| `.github/workflows/distribution.yml` / `xtask/src/r2.rs` | Windows・macOSの検証とビルド、R2への成果物保存・検証付き取得。利用者のMCP実行から独立する |
+| `tests/api_e2e.rs` / `tests/native_e2e.rs` / `tests/tls_e2e.rs` / `tests/support/` / `tests/native-fixture.rs` | Rustの偽HTTP・HTTPS APIと別プロセスのMCPを使い、通信内容・回数・失敗状態を検証する。失敗注入は`test-fixture`ビルドに限定する |
+| `tests/proxy_e2e.rs`と`src/proxy.rs` / `src/proxy_egress.rs` / `src/proxy_ipc.rs`内のテスト | Rustの偽SSH・echo、認証付きIPCとCONNECT出口の境界を検証する |
+| `tests/setup_e2e.rs` / `tests/setup_vps_e2e.rs` | Windows・macOSの設定ウィザード、個別保存先、鍵の保護、VPS CLIの検証と拒否条件。実VPSへの導入は別途確認が必要 |
 
-`mcp.json`は`${PLUGIN_ROOT}/dist/plumivox --stdio`を起動する。Windowsは`.exe`を解決し、macOSはApple SiliconとIntelを含むuniversal実行ファイルを使う。MCP・API・認証保存・共有プロキシの本体はRustであり、Node.jsのインストールや起動時のコード取得を必要としない。`dist/plumivox.mjs`は旧登録のための転送専用で、旧JavaScript本体を実行しない。マーケットプレイスは`.agents/plugins/marketplace.json`、プラグイン情報は`plugin.json`に置く。
+`mcp.json`は`${PLUGIN_ROOT}/dist/plumivox --stdio`を起動する。Windowsは`.exe`を解決し、macOSはApple SiliconとIntelを含むuniversal実行ファイルを使う。本体と開発ツール・E2EはRustで、Node.jsのインストールや起動時のコード取得を必要としない。旧Nodeランチャーは廃止し、旧登録はネイティブ実行ファイルへ変更する。マーケットプレイスは`.agents/plugins/marketplace.json`、プラグイン情報は`plugin.json`に置く。
+
+開発用の成果物は、既定ブランチで手動起動する配布CIが各OSの実行環境で検証してから非公開R2へ保存する。`plumivox/ci/{commit}/{run}/{attempt}/{target}/`に実行ファイル・第三者ライセンスを保存し、サイズとSHA256を含むmanifestを最後に保存する。既存オブジェクトの上書きを拒否し、取得ではidentity・ファイル名・サイズ・SHA256を照合する。R2は配布準備の受け渡しであり、GitHub mainの同梱`dist`を使うプラグインの導入・更新経路は維持する。CIは`dist`を自動コミットせず、latestの差替えや過去成果物の自動削除も行わない。操作・保持方針は [docs/distribution.md](docs/distribution.md) を参照する。
 
 ## 初期設定と公開中継の構築
 
@@ -40,7 +43,7 @@ VPSインストーラーはDebian 12以降／Ubuntu 22.04以降の専用VPSを�
 2. 公開投稿の読取り4ツールは`AccountStore::get_read_account`でAPIキーとユーザー名だけを取得し、セッションの検査・読込み・復号を行わない。読取りをCookieの状態やDPAPI・Keychainに依存させないためである。一方、`list_accounts` と `login_account` のCookie再利用判定は準備状態を返すためセッションを検査する。投稿にはプロキシとCookieも要求する。Cookieが必要な処理ではPlumivox保存セッションを最優先し、保存先が無い場合だけ設定Cookie、旧vava／blblのDPAPI保存を参照する。不正な保存セッションから旧Cookieへ戻らない。
 3. 読取りはAPI応答を必要な投稿フィールドへ正規化する。フィードはフォロー一覧で保護アカウントと判明した対象を除外し、最大200アカウントを20件ずつOR検索する。選択した検索対象の保護状態が不明ならcoverageへ未知数を残す。ページ内で投稿IDを重複除去し、日時降順へ並べる。
    `search_tweets` は語句と期間を検証し、全体検索では直接、フォロー先検索では同じフィード取得処理へ条件を追加して検索する。語句を引用したフレーズとし、タイムゾーン付き日時をUTCのUnix秒へ変換して、フォロー先条件と空白で結合する。
-4. 投稿はtwitter-textによる加重文字数と全画像を通信前に検証する。Unicode 17の複合絵文字はemoji-regexの固定データで認識して重み2へ補正し、URLと単独文字の既存規則を維持する。画像を順にアップロードし、得たメディアIDで投稿APIを1回呼ぶ。成功には数値形式の投稿IDを要求する。
+4. 投稿は加重文字数と全画像を通信前に検証する。本文をNFC正規化し、twitter-textで抽出したURLを23文字、単独文字をv3の重みで数える。Rust版パーサーと新しい複合絵文字の分割が異なるため、Unicode 17の複合絵文字はemoji-regex由来の同梱固定データで認識して重み2へ補正する。画像を順にアップロードし、得たメディアIDで投稿APIを1回呼ぶ。成功には数値形式の投稿IDを要求する。
 5. 認証では `login_account` は利用可能な形式のCookieを再利用し、`refresh_session` は常にログインAPIを呼ぶ。再利用判定でも設定を読み直すが、準備状態の確認とセッション復号は選択済みのアカウントだけを対象にする。更新はプロセス内とプロセス間で排他し、資格情報を再読込みしてログイン前後の変更を検出する。WindowsはDPAPI、macOSはKeychainに保存した鍵のAES-GCMでCookieを暗号化し、一意のpendingファイルを書く。WindowsのMutex所有スレッドまたはmacOSのファイルロックを保持した処理で旧本体のバックアップと本体の置換を行う。ロックの所有を確認し、旧処理からの保存を防ぐ。
 6. MCP成功応答はJSONテキストと `structuredContent`、業務エラーは定型コード・メッセージと `isError` で返す。保存前の取消・所有喪失・不正Cookieと、保存本体の置換指示後の結果不明、保存処理自体の失敗を区別する。入力スキーマ拒否はMCPプロトコル側のエラーとなる。
 
@@ -54,7 +57,7 @@ VPSインストーラーはDebian 12以降／Ubuntu 22.04以降の専用VPSを�
 - **フィードの限界**：公式ホームの再現ではない。検索バッチは順に取得して要求数を制限するが、保護投稿や全フォロー先の網羅、ページ間の全体時系列順は保証しない。フォロー一覧の続きと検索の続きは別cursorで、同時指定を拒否する。提供元または生成cursorが受理上限を超えた場合は、取得済み投稿・提供元の続き有無を維持し、継続不能の理由をcoverageへ返す。opaqueなcursorは切り詰めない。
 - **継続情報の境界**：フィードのcursorはversion 2で検索対象とcoverageをAPIキーのHMACで署名し、アカウントとユーザー名を照合して初回の検索対象を固定する。旧署名なし形式は拒否する。検索用cursorは条件と用途（投稿の続き／フォロー一覧の続き）を同じ方式で署名し、フィード用cursorとの混同や別条件への流用を拒否する。フォロー先検索では署名付きフィードcursorを内包する。APIキー変更で既存cursorは無効になる。署名は改変検知のためであり、内容の暗号化ではない。
 - **配布と検証**：ネイティブ実行ファイルを同梱し、利用者側のNode.js・Rust・`node_modules`を不要にする。Rustソース変更時は対象OSの配布物を再ビルドする。E2EとRustテストは実際のXへの副作用を避けつつMCP・HTTP・OS別の保存とプロキシ境界を検証するが、実サービス上のCookie有効性や投稿成功を証明するものではない。
-- **依存更新の自動化**：`.github/dependabot.yml` はnpm依存とGitHub Actionsを週次で更新し、minor／patchをまとめ、majorは個別PRにする。`dependency-validation.yml` はDependabot PRまたは手動起動でWindows上のインストール・ビルド・構文確認・全E2Eを実行する。`dependabot-auto-merge.yml` は信頼済みの既定ブランチ側でPRコードを実行せず、同一リポジトリのDependabot PRについて依存更新に限定した差分・コミットの署名と作成者・当該headの最新検証成功・他のcheckとstatusを確認する。マージ直前にhead／既定ブランチの変更とマージ可能状態を再確認し、判定不能や未完了では保留して、未検証の更新を取り込まない。
+- **依存更新の自動化**：`.github/dependabot.yml` はCargo依存とGitHub Actionsを週次で更新し、minor／patchをまとめ、majorは個別PRにする。`dependency-validation.yml` はDependabot PRまたは手動起動でWindows上の依存取得・ビルド・構文確認・全E2EをCargoで実行する。Cargoの更新PRはWindows・macOS双方の正式配布物の再生成が必要なため自動マージせず、配布物を含めて手動で統合する。`dependabot-auto-merge.yml` は信頼済みの既定ブランチを取得し、Rustの`cargo xtask dependabot-auto-merge`とGitHub CLIで判定する。PRコードは実行せず、同一リポジトリのその他のDependabot PRについて依存更新に限定した差分・コミットの署名と作成者・当該headの最新検証成功・他のcheckとstatusを確認する。マージ直前にhead／既定ブランチ・作成者・取得元とマージ可能状態を再確認し、判定不能や未完了では保留して、未検証の更新を取り込まない。
 
 ## 管理するプロキシの境界
 
@@ -62,7 +65,7 @@ VPSインストーラーはDebian 12以降／Ubuntu 22.04以降の専用VPSを�
 
 投稿・ログインのAPI要求は従来どおりTwitterAPI.ioへ送り、同サービスが公開プロキシへ接続する。公開口から中継サーバーのloopbackポート、SSH逆転送、PCのloopback限定CONNECT出口を通り、住宅回線からXへ接続する。出口はX/Twitter/Twimgのドメインと443番だけを許可し、DNS全候補に特殊アドレスがあれば拒否する。検証済み公開IPへ直接接続してDNSの再解決を避け、接続数・容量・時間を制限する。
 
-Windowsは設定別の名前付きパイプ、macOSは利用者専用ディレクトリ内のUnix socketへ接続し、未起動なら同じネイティブ実行ファイルを独立daemonとして起動する。macOSではディレクトリ・socketの所有UIDと権限、接続相手のUIDを照合する。ネイティブIPCはv3の独立した名前空間を使い、旧JavaScript daemonと接続しない。SSHと固定ポートの所有を一つに集約して複数チャットで共有する。IPC秘密はSSH鍵ファイルから導出し、設定識別子・クライアントとチャネルのnonce・要求番号・操作・応答内容全体をHMACで結び付けて相互認証する。同じ鍵を使う別設定への転送や過去応答の再利用を拒否する。
+Windowsは設定別の名前付きパイプ、macOSは利用者専用ディレクトリ内のUnix socketへ接続し、未起動なら同じネイティブ実行ファイルを独立daemonとして起動する。Windowsでは起動時に親MCPの標準ハンドルの継承を抑止し、daemonが終了済みMCPの通信パイプを保持しないようにする。macOSではディレクトリ・socketの所有UIDと権限、接続相手のUIDを照合する。ネイティブIPCはv3の独立した名前空間を使い、旧JavaScript daemonと接続しない。SSHと固定ポートの所有を一つに集約して複数チャットで共有する。IPC秘密はSSH鍵ファイルから導出し、設定識別子・クライアントとチャネルのnonce・要求番号・操作・応答内容全体をHMACで結び付けて相互認証する。同じ鍵を使う別設定への転送や過去応答の再利用を拒否する。
 
 SSHの再接続は通信経路だけを復旧し、投稿・ログインは再送しない。停止では最後に利用した設定の共有daemonのsocket、timer、逆転送、ローカル出口を閉じる。生きている自己SSH接続は転送解除応答と切断完了を有限時間だけ待ち、次の起動との競合を抑える。応答がない場合や既に通信が切れている場合は、VPS側のポート解放を保証しない。PCが消失した接続はVPS専用ユーザーの生存確認（15秒間隔・応答なし3回）で検知する。MCP終了ではそのクライアントだけを離脱し、他チャットの中継を維持する。全クライアントが離脱して5分後にdaemonを終了する。ポート競合では別設定の所有者を終了させず固定コードで拒否する。
 

@@ -55,6 +55,14 @@ pub fn configure_fixture_mode(mode: String) {
 
 /// Zodと同じ入力境界。未知のプロパティは実処理に渡さず、秘密入力をエラーに転載しない。
 fn validate(input: &Value, schema: &Value) -> std::result::Result<Value, ()> {
+    validate_with_patterns(input, schema, &mut HashMap::new())
+}
+
+fn validate_with_patterns<'schema>(
+    input: &Value,
+    schema: &'schema Value,
+    patterns: &mut HashMap<&'schema str, regex::Regex>,
+) -> std::result::Result<Value, ()> {
     if let Some(values) = schema["enum"].as_array() {
         if !values.contains(input) {
             return Err(());
@@ -67,7 +75,7 @@ fn validate(input: &Value, schema: &Value) -> std::result::Result<Value, ()> {
             if let Some(properties) = schema["properties"].as_object() {
                 for (key, child) in properties {
                     if let Some(value) = object.get(key) {
-                        result[key] = validate(value, child)?;
+                        result[key] = validate_with_patterns(value, child, patterns)?;
                     } else if let Some(value) = child.get("default") {
                         result[key] = value.clone();
                     } else if schema["required"]
@@ -84,12 +92,16 @@ fn validate(input: &Value, schema: &Value) -> std::result::Result<Value, ()> {
             let text = input.as_str().ok_or(())?;
             let length = text.encode_utf16().count() as u64;
             if let Some(pattern) = schema["pattern"].as_str() {
-                if !regex::RegexBuilder::new(pattern)
-                    .unicode(false)
-                    .build()
-                    .map_err(|_| ())?
-                    .is_match(text)
-                {
+                let compiled = match patterns.entry(pattern) {
+                    std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
+                    std::collections::hash_map::Entry::Vacant(entry) => entry.insert(
+                        regex::RegexBuilder::new(pattern)
+                            .unicode(false)
+                            .build()
+                            .map_err(|_| ())?,
+                    ),
+                };
+                if !compiled.is_match(text) {
                     return Err(());
                 }
             }
@@ -126,7 +138,7 @@ fn validate(input: &Value, schema: &Value) -> std::result::Result<Value, ()> {
             Ok(Value::Array(
                 values
                     .iter()
-                    .map(|value| validate(value, &schema["items"]))
+                    .map(|value| validate_with_patterns(value, &schema["items"], patterns))
                     .collect::<std::result::Result<Vec<_>, _>>()?,
             ))
         }
@@ -547,5 +559,15 @@ mod tests {
                 assert!(validate(&json!({"tweetIds":["١٢٣"]}), &tool["inputSchema"]).is_err());
             }
         }
+        let optional_pattern =
+            json!({"type":"object","properties":{"optional":{"type":"string","pattern":"["}}});
+        assert_eq!(
+            validate(&json!({"unknown":"discard"}), &optional_pattern),
+            Ok(json!({}))
+        );
+        assert!(validate(&json!({"optional":"1"}), &optional_pattern).is_err());
+        let array_pattern = json!({"type":"array","items":{"type":"string","pattern":"["}});
+        assert_eq!(validate(&json!([]), &array_pattern), Ok(json!([])));
+        assert!(validate(&json!(["1"]), &array_pattern).is_err());
     }
 }

@@ -1,0 +1,118 @@
+name: Build distribution artifacts
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    if: github.repository == '1llum1n4t1s/Plumivox' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: windows-x64
+          - os: macos-latest
+            target: macos-universal
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+    env:
+      RUSTUP_TOOLCHAIN: '1.99.1'
+      ARTIFACT_COMMIT: ${{ github.sha }}
+      ARTIFACT_RUN: ${{ github.run_id }}
+      ARTIFACT_ATTEMPT: ${{ github.run_attempt }}
+      ARTIFACT_TARGET: ${{ matrix.target }}
+    steps:
+      - name: Check R2 configuration
+        env:
+          PLUMIVOX_R2_ACCOUNT_ID: ${{ vars.PLUMIVOX_R2_ACCOUNT_ID }}
+          PLUMIVOX_R2_BUCKET: ${{ vars.PLUMIVOX_R2_BUCKET }}
+          R2_CREDENTIALS_CONFIGURED: ${{ secrets.PLUMIVOX_R2_ACCESS_KEY_ID != '' && secrets.PLUMIVOX_R2_SECRET_ACCESS_KEY != '' }}
+        run: |
+          set -euo pipefail
+          [[ "$PLUMIVOX_R2_ACCOUNT_ID" =~ ^[0-9a-fA-F]{32}$ ]] || { echo 'Configure PLUMIVOX_R2_ACCOUNT_ID repository variable' >&2; exit 1; }
+          [[ "$PLUMIVOX_R2_BUCKET" =~ ^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$ ]] || { echo 'Configure PLUMIVOX_R2_BUCKET repository variable' >&2; exit 1; }
+          [[ "$R2_CREDENTIALS_CONFIGURED" == true ]] || { echo 'Configure R2 repository secrets' >&2; exit 1; }
+      - name: Check out exact workflow commit
+        run: |
+          set -euo pipefail
+          [[ "$ARTIFACT_COMMIT" =~ ^[0-9a-f]{40}$ ]] || { echo 'Invalid checkout SHA' >&2; exit 1; }
+          git init .
+          git remote add origin https://github.com/1llum1n4t1s/Plumivox.git
+          git fetch --no-tags --depth=1 origin "$ARTIFACT_COMMIT"
+          git checkout --detach FETCH_HEAD
+          [[ "$(git rev-parse HEAD)" == "$ARTIFACT_COMMIT" ]]
+      - name: Install pinned Rust toolchain
+        run: |
+          set -euo pipefail
+          rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal --component rustfmt
+          if [[ "$ARTIFACT_TARGET" == macos-universal ]]; then
+            rustup target add --toolchain "$RUSTUP_TOOLCHAIN" aarch64-apple-darwin x86_64-apple-darwin
+          fi
+      - name: Prepare dedicated macOS test Keychain
+        if: runner.os == 'macOS'
+        run: |
+          set -euo pipefail
+          umask 077
+          test_root="$(mktemp -d "${TMPDIR%/}/plumivox-ci.XXXXXX")"
+          test_root="$(cd "$test_root" && pwd -P)"
+          keychain="$test_root/test.keychain-db"
+          security default-keychain -d user > "$test_root/default.before"
+          security list-keychains -d user > "$test_root/search.before"
+          printf 'PLUMIVOX_TEST_KEYCHAIN=%s\n' "$keychain" >> "$GITHUB_ENV"
+          password="$(uuidgen)$(uuidgen)"
+          security create-keychain -p "$password" "$keychain"
+          security unlock-keychain -p "$password" "$keychain"
+          unset password
+          security default-keychain -d user > "$test_root/default.after"
+          security list-keychains -d user > "$test_root/search.after"
+          cmp "$test_root/default.before" "$test_root/default.after"
+          cmp "$test_root/search.before" "$test_root/search.after"
+      - name: Fetch locked dependencies
+        run: cargo fetch --locked
+      - name: Build native executable for validation
+        run: cargo xtask build
+      - name: Check sources and development tools
+        run: cargo xtask check
+      - name: Run native and setup E2E tests
+        run: cargo xtask test-e2e
+      - name: Build distribution executable without test fixtures
+        run: |
+          set -euo pipefail
+          if [[ "$ARTIFACT_TARGET" == macos-universal ]]; then
+            cargo xtask build --universal
+            architectures="$(lipo -archs dist/plumivox)"
+            [[ "$architectures" == 'arm64 x86_64' || "$architectures" == 'x86_64 arm64' ]]
+          else
+            cargo xtask build
+          fi
+      - name: Upload immutable artifacts to R2
+        env:
+          PLUMIVOX_R2_ACCOUNT_ID: ${{ vars.PLUMIVOX_R2_ACCOUNT_ID }}
+          PLUMIVOX_R2_BUCKET: ${{ vars.PLUMIVOX_R2_BUCKET }}
+          PLUMIVOX_R2_ACCESS_KEY_ID: ${{ secrets.PLUMIVOX_R2_ACCESS_KEY_ID }}
+          PLUMIVOX_R2_SECRET_ACCESS_KEY: ${{ secrets.PLUMIVOX_R2_SECRET_ACCESS_KEY }}
+        run: |
+          set -euo pipefail
+          cargo xtask artifact-upload --commit "$ARTIFACT_COMMIT" --run "$ARTIFACT_RUN" --attempt "$ARTIFACT_ATTEMPT" --target "$ARTIFACT_TARGET"
+          printf '### R2 artifact identity\n\n```text\ncargo xtask artifact-download --commit %s --run %s --attempt %s --target %s --output <new-directory>\n```\n' "$ARTIFACT_COMMIT" "$ARTIFACT_RUN" "$ARTIFACT_ATTEMPT" "$ARTIFACT_TARGET" >> "$GITHUB_STEP_SUMMARY"
+      - name: Clean up dedicated macOS test Keychain
+        if: always() && runner.os == 'macOS'
+        run: |
+          set -euo pipefail
+          if [[ -n "${PLUMIVOX_TEST_KEYCHAIN:-}" ]]; then
+            test_root="$(dirname "$PLUMIVOX_TEST_KEYCHAIN")"
+            if [[ -f "$PLUMIVOX_TEST_KEYCHAIN" ]]; then
+              security delete-keychain "$PLUMIVOX_TEST_KEYCHAIN"
+            fi
+            security default-keychain -d user > "$test_root/default.cleanup"
+            security list-keychains -d user > "$test_root/search.cleanup"
+            cmp "$test_root/default.before" "$test_root/default.cleanup"
+            cmp "$test_root/search.before" "$test_root/search.cleanup"
+          fi

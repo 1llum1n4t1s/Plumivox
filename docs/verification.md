@@ -2,7 +2,19 @@
 
 実装前に想定する失敗を以下に定義する。利用者経路はMCPクライアントから独立したネイティブサーバープロセスを呼び出すE2Eで検証する。署名・文字数・OSの保存・SSH・IPCなどの境界はRustテストでも確認し、両方の結果を区別する。
 
-macOSの対話セットアップE2EはCommand Line Tools付属の`/usr/bin/python3`で制御TTYを作成する。製品の実行にはPythonを使わない。
+macOSの対話セットアップE2EはRustから`libc::openpty`で制御TTYを作り、入力時のECHO無効化を確認する。PythonやNode.jsは使わない。
+
+手動起動の配布CIはWindowsとmacOSそれぞれで`cargo xtask check`・`cargo xtask test-e2e`を実行し、fixture機能を含まないWindows x64／macOS universal成果物を最後に再ビルドしてR2へ保存する。macOSでは同じジョブ内で専用Keychainを作成・unlockして`PLUMIVOX_TEST_KEYCHAIN`へ渡し、既定Keychain・検索一覧を変更せず、終了時に専用Keychainを削除する。CIの起動・実R2通信は別途実行結果が必要で、ローカルの構文・Rustテストの成功を代用しない。手順は [配布成果物](distribution.md) を参照する。
+
+| R2成果物の失敗条件 | 期待する結果 |
+| --- | --- |
+| identity・target・設定・引数が不正 | 保存・取得を拒否し、資格情報を表示しない |
+| 同じidentityのオブジェクトが存在する | 条件付きPUTで上書きを拒否する |
+| 保存が途中で失敗しmanifestがない | 完成済み成果物として取得できない |
+| manifestのidentity・ファイル名・サイズ・SHA256が不一致 | 検証に失敗し、取得済みとして扱わない |
+| 出力先が既存ディレクトリ | 上書きせず拒否する |
+
+`cargo test --locked --package xtask`でR2の入力・manifest・ハッシュ検証を確認する。実R2の認証・条件付き保存・取得、GitHub-hosted macOSのKeychainとCI全体は、実環境で実行するまで未検証として扱う。
 
 セットアップはWindowsのPowerShell、macOSのネイティブ`--setup`、VPSのBash CLIをそれぞれ対象OSで呼び出して検証する。想定する失敗は次のとおり。
 
@@ -18,7 +30,7 @@ macOSの対話セットアップE2EはCommand Line Tools付属の`/usr/bin/pytho
 | root権限・対応OS・UFW・SSHの準備が不足 | 原因を示して停止し、既存設定を変更しない |
 | VPSのSquid・専用利用者・ポートが競合する | 既存サービスを停止・上書きしない |
 
-`tests/setup-e2e.mjs`は専用鍵の生成とACL、設定の保存・保持・拒否、保存先の選択、ローカル確認を検証する。`tests/setup-vps-e2e.mjs`はBash構文、実CLIのヘルプ・不正入力・権限拒否と変更コマンド未呼出しを検証する。WindowsのGit Bash検証では、Linuxでのパッケージ導入・Squid起動・SSH認証の成功は未検証である。実VPSへの接続・ログイン・投稿はこのE2Eでは行わない。
+`tests/setup_e2e.rs`は専用鍵の生成とACL、設定の保存・保持・拒否、保存先の選択、ローカル確認を検証する。`tests/setup_vps_e2e.rs`はBash構文、実CLIのヘルプ・不正入力・権限拒否と変更コマンド未呼出しを検証する。WindowsのGit Bash検証では、Linuxでのパッケージ導入・Squid起動・SSH認証の成功は未検証である。実VPSへの接続・ログイン・投稿はこのE2Eでは行わない。
 
 | 失敗条件 | 期待する結果 |
 | --- | --- |
@@ -108,8 +120,6 @@ SSH停止では、転送解除の応答まで旧リスナーの解放を遅ら�
 
 `cargo test --locked --lib`はRustのCONNECT出口・DNS検証・SSH転送・ホスト鍵照合・IPC認証の境界を確認します。通信・DNSの差し替えはテスト内だけに置き、配布実行ファイルの環境変数へ検証用の迂回経路を設けません。実際のXや実際のSSHホストへ通信しません。
 
-出力先は `PLUMIVOX_PROXY_E2E_OUTPUT_DIR`、未指定時はユーザーの一時ディレクトリ配下 `Codex/Plumivox/<UUID>` です。`summary.json` と `http-trace.json` に秘密を含まない結果を残します。生成した偽秘密設定とSSH鍵の清掃は呼び出し側が担当します。
-
 ## 共有プロキシdaemonの失敗条件
 
 | 失敗条件 | 期待する結果 |
@@ -123,7 +133,7 @@ SSH停止では、転送解除の応答まで旧リスナーの解放を遅ら�
 | IPC frameを分割・一括・分割の順に受信 | 正規の認証と要求番号を照合し、受信の分割方法にかかわらず同じ応答を返す |
 | 過去challenge・resultの再利用、署名後のstatus改変、同じ秘密鍵を使う別設定scopeのMAC | client/server双方のnonce・channel・requestId・全応答内容・設定contextを照合して拒否。正規の署名済み応答は受理 |
 
-`node tests/native-proxy-e2e.mjs`は二つの別プロセスのネイティブMCP、独立したネイティブdaemon、ループバックの偽SSH・APIで共有ライフサイクルを確認します。先に`cargo build --locked --features test-fixture --bin plumivox-fixture`を実行します。DNS・TCPの製品実装は置き換えません。出力先は`PLUMIVOX_PROXY_NATIVE_E2E_OUTPUT_DIR`またはユーザーの一時ディレクトリ配下`Codex/Plumivox/<UUID>`で、`summary.json`と`ssh-trace.json`を読みます。偽鍵・設定の清掃は呼び出し側が担当します。旧JavaScript版のプロキシE2Eの成功を、ネイティブ版の検証結果には数えません。
+`cargo xtask test-proxy-e2e`と`cargo xtask test-proxy-shared-e2e`は、検証用バイナリのビルドとプロキシのRustテストに続いて、同じプロキシE2Eを実行します。二つの別プロセスのMCP、独立したdaemon、Rustの偽SSH・HTTPサーバーで共有ライフサイクルを確認します。DNS・TCPの製品実装は置き換えません。出力先は`PLUMIVOX_PROXY_NATIVE_E2E_OUTPUT_DIR`またはユーザーの一時ディレクトリ配下`Codex/Plumivox/<UUID>`で、`summary.json`と`ssh-trace.json`を読みます。偽鍵・設定の清掃は呼び出し側が担当します。
 
 ## ビルドと実行
 
@@ -132,21 +142,27 @@ SSH停止では、転送解除の応答まで旧リスナーの解放を遅ら�
 ```powershell
 git clone https://github.com/1llum1n4t1s/Plumivox.git
 cd Plumivox
-pnpm install --frozen-lockfile --ignore-scripts
+cargo fetch --locked
 cargo test --locked --lib
-pnpm build
-pnpm check
-pnpm test:e2e
+cargo xtask build
+cargo xtask check
+cargo xtask test-e2e
 ```
 
-開発にはRust/Cargo、Node.js 22以降、指定版のpnpmが必要です。`pnpm build`はホストOS向けのRust releaseビルドを`dist/`へ配置し、旧登録向けの小さな`dist/plumivox.mjs`互換ランチャーも更新します。Windowsの正式実行物は`dist/plumivox.exe`、macOSは`dist/plumivox`です。利用者のMCP起動は実行ファイルを直接使い、Node.js・Rust・依存インストールや起動時のネットワークからのコード取得を必要としません。
+開発・CIの基準はRust/Cargo 1.99.1です。Windowsの検証にはPowerShell 7の最新安定版を使います。ビルド・ライセンス生成・E2EもRustで実行するため、開発環境にもNode.js・pnpm・npmパッケージは不要です。`cargo xtask build`はホストOS向けのRust releaseビルドを`dist/`へ配置し、`cargo xtask licenses`はCargoの依存と`third-party/emoji-regex/`のライセンスから同梱文書を生成します。Windowsの正式実行物は`dist/plumivox.exe`、macOSは`dist/plumivox`です。利用者はネイティブ実行ファイルを直接使います。旧Nodeランチャーを指す登録の変更は[管理プロキシの移行手順](managed-proxy.md#旧タスクから切り替える)を参照してください。
 
-macOSの正式配布物は、Mac上で両ターゲットを導入して`pnpm build -- --universal`を実行し、`lipo -archs dist/plumivox`で`arm64`と`x86_64`を確認します。Windows x64ビルド、macOS universalビルド、各OSの実動検証を別々に記録します。クロスビルドだけでKeychain・Unix socket・セットアップが動作したとは扱いません。
+macOSの正式配布物は、Mac上で両ターゲットを導入して`cargo xtask build --universal`を実行し、`lipo -archs dist/plumivox`で`arm64`と`x86_64`を確認します。Windows x64ビルド、macOS universalビルド、各OSの実動検証を別々に記録します。クロスビルドだけでKeychain・Unix socket・セットアップが動作したとは扱いません。
 
-`cargo test --locked --lib`はRustのAPI境界・設定・セッション・プロキシテストを実行します。`pnpm test:e2e`はネイティブ本体の追加E2Eと従来のAPI・認証ケースを同じ本体へ通し、対象OSのPCセットアップとVPS CLIも確認します。WindowsのDPAPI・PowerShellセットアップとmacOSのKeychain・Unix権限・セットアップを区別し、未実行・skipを成功へ数えません。
+`cargo test --locked --lib`はRustのAPI境界・設定・セッション・プロキシテストを実行します。`cargo xtask test-e2e`は本体の単体テストとRustの各E2Eを実行し、対象OSのPCセットアップとVPS CLIも確認します。WindowsのDPAPI・PowerShellセットアップとmacOSのKeychain・Unix権限・セットアップを区別し、未実行・skipを成功へ数えません。
+
+`cargo xtask test-setup-e2e`は検証用バイナリをビルドしてから、WindowsではPowerShell、macOSではネイティブのPCセットアップE2Eを実行し、続いてVPSセットアップCLIを確認します。
+
+全件検証には`tests/tls_e2e.rs`も含みます。RustのHTTPS偽APIと別プロセスのMCPを使い、検証CAでの成功、未信頼CAの拒否、ホスト名不一致の拒否を確認します。公開された合成証明書・鍵だけを使い、CA追加とHTTPSループバック許可は検証専用バイナリの明示モードに限定します。配布物の信頼設定や利用者の設定には追加しません。出力先は`PLUMIVOX_TLS_E2E_OUTPUT_DIR`または一時ディレクトリ配下`Codex/Plumivox/<UUID>`で、`summary.json`、`http-trace.json`、`diagnostics.json`を読みます。偽設定は呼び出し側で清掃します。TLSの交渉バージョンは`http-trace.json`の実測値で確認します。
 
 macOSでは同コマンドが`test-fixture`付きのRustテストも実行し、鍵の初期作成ロックを保持した状態で既存セッションを並列復号できることを確認します。SSHなどでログインKeychainの操作が拒否される環境では、本人専用の一時領域に作った検証用Keychainを`PLUMIVOX_TEST_KEYCHAIN`へ指定できます。実Keychain APIを使い、既定Keychain・検索一覧を変更せず、本番実行ファイルはこの環境変数を参照しません。検証後は専用Keychainも清掃します。
 
 E2Eは入力スキーマを拒否する標準MCPエラーと、アプリが返すJSONの業務エラーの両方を確認します。検証結果の `summary.json` と秘密を含まない `http-trace.json` は再現の証拠として保持できます。偽の設定・画像ファイルは検証後に清掃します。
 
-API系の失敗1件だけを再確認するときは、`PLUMIVOX_E2E_CASE`に`summary.json`のケース名を完全一致で指定して`node tests/e2e.mjs`を実行できます。一致するケースがなければ失敗します。既定の全体検証ではこの環境変数を未指定にし、個別再実行の成功を全件成功として扱いません。
+E2E出力先は、本人が管理する信頼できる階層内に指定してください。Windowsでは新規出力先を本人限定の保護DACL付きで作成し、検証中は削除共有を許さないディレクトリハンドルを保持します。保持後にリンク・所有者・DACL・空であることを再確認してから書き込み、既存の親や出力先の権限は変更しません。通常のOS・本人用一時フォルダーの祖先は信頼する前提で、任意の指定先にある共有祖先すべてへの保護を保証するものではありません。
+
+API系の失敗1件だけを再確認するときは、`PLUMIVOX_E2E_CASE`に`summary.json`のケース名を完全一致で指定して`cargo xtask test-api-e2e`を実行できます。一致するケースがなければ失敗します。既定の全体検証ではこの環境変数を未指定にし、個別再実行の成功を全件成功として扱いません。

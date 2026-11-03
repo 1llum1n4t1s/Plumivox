@@ -52,11 +52,11 @@ mod tests {
         let secrets = json!({"twitterapi_io":{"default_account":17,"first":{}}});
         let configs = AccountStore::profiles(&secrets);
         assert_eq!(
-            AccountStore::resolve_name(&secrets, &configs, Some("first".into())).unwrap(),
+            AccountStore::resolve_name(&secrets, configs, Some("first".into())).unwrap(),
             "first"
         );
         assert_eq!(
-            AccountStore::resolve_name(&secrets, &configs, None)
+            AccountStore::resolve_name(&secrets, configs, None)
                 .unwrap_err()
                 .code,
             "ACCOUNT_DEFAULT_INVALID"
@@ -148,7 +148,7 @@ fn login_ready(config: &Value, account: &Value) -> bool {
         && valid_totp(&config["totp_secret"])
 }
 fn hash(value: &str) -> String {
-    format!("{:x}", Sha256::digest(value.as_bytes()))
+    hex::encode(Sha256::digest(value.as_bytes()))
 }
 fn invalid_account() -> AppError {
     error(
@@ -215,14 +215,12 @@ impl AccountStore {
         Ok(value)
     }
 
-    fn profiles(secrets: &Value) -> Map<String, Value> {
-        secrets["twitterapi_io"]
-            .as_object()
-            .unwrap()
-            .iter()
-            .filter(|(name, value)| name.as_str() != "default_account" && value.is_object())
-            .map(|(name, value)| (name.clone(), value.clone()))
-            .collect()
+    fn profiles(secrets: &Value) -> &Map<String, Value> {
+        secrets["twitterapi_io"].as_object().unwrap()
+    }
+
+    fn is_profile(name: &str, value: &Value) -> bool {
+        name != "default_account" && value.is_object()
     }
 
     fn selected_name(
@@ -245,7 +243,11 @@ impl AccountStore {
     ) -> Result<String> {
         if selected.is_none() && secrets["twitterapi_io"].get("default_account").is_some() {
             let default = &secrets["twitterapi_io"]["default_account"];
-            if !nonempty(default) || !configs.contains_key(default.as_str().unwrap_or("")) {
+            if !nonempty(default)
+                || !configs
+                    .get(default.as_str().unwrap_or(""))
+                    .is_some_and(|v| Self::is_profile(default.as_str().unwrap_or(""), v))
+            {
                 return Err(error(
                     "ACCOUNT_DEFAULT_INVALID",
                     "既定アカウントの設定が不正です。default_accountに登録済みのアカウント設定名を指定してください。",
@@ -253,8 +255,15 @@ impl AccountStore {
             }
             selected = default.as_str().map(str::to_owned);
         }
-        if selected.is_none() && configs.len() == 1 {
-            selected = configs.keys().next().cloned();
+        if selected.is_none() {
+            let mut profiles = configs
+                .iter()
+                .filter(|(name, value)| Self::is_profile(name, value));
+            if let Some((name, _)) = profiles.next()
+                && profiles.next().is_none()
+            {
+                selected = Some(name.clone());
+            }
         }
         let selected = selected.filter(|s| !s.is_empty()).ok_or_else(|| {
             error(
@@ -262,7 +271,10 @@ impl AccountStore {
                 "アカウントを指定するか、セットアップで既定アカウントを設定してください。",
             )
         })?;
-        if !configs.contains_key(&selected) {
+        if !configs
+            .get(&selected)
+            .is_some_and(|v| Self::is_profile(&selected, v))
+        {
             return Err(error(
                 "ACCOUNT_UNKNOWN",
                 "指定されたアカウント設定がありません。",
@@ -274,7 +286,7 @@ impl AccountStore {
     async fn select(&self, name: Option<&str>) -> Result<(String, Value, Value)> {
         let secrets = self.document().await?;
         let profiles = Self::profiles(&secrets);
-        let name = self.selected_name(&secrets, &profiles, name)?;
+        let name = self.selected_name(&secrets, profiles, name)?;
         Ok((name.clone(), profiles[&name].clone(), secrets))
     }
 
@@ -371,9 +383,12 @@ impl AccountStore {
     pub async fn list_accounts(&self) -> Result<Value> {
         let secrets = self.document().await?;
         let profiles = Self::profiles(&secrets);
-        let default = self.selected_name(&secrets, &profiles, None).ok();
+        let default = self.selected_name(&secrets, profiles, None).ok();
         let mut accounts = Vec::new();
-        for (name, config) in &profiles {
+        for (name, config) in profiles
+            .iter()
+            .filter(|(name, value)| Self::is_profile(name, value))
+        {
             accounts.push(self.metadata(name, config, default.as_deref()).await);
         }
         Ok(Value::Array(accounts))
@@ -382,7 +397,7 @@ impl AccountStore {
     pub async fn get_account_metadata(&self, name: Option<&str>) -> Result<Value> {
         let (name, config, secrets) = self.select(name).await?;
         let default = self
-            .selected_name(&secrets, &Self::profiles(&secrets), None)
+            .selected_name(&secrets, Self::profiles(&secrets), None)
             .ok();
         Ok(self.metadata(&name, &config, default.as_deref()).await)
     }

@@ -7,6 +7,10 @@ publish = false
 default-run = "plumivox"
 autotests = false
 
+[workspace]
+members = [".", "xtask"]
+resolver = "3"
+
 [lib]
 path = "src/lib.rs"
 
@@ -27,10 +31,12 @@ tokio = { version = "1", features = ["full"] }
 tokio-util = "0.7"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "multipart", "stream"] }
-sha2 = "0.10"
-hmac = "0.12"
-base64 = "0.22"
+reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider", "json", "multipart", "stream"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+webpki-roots = "1"
+sha2 = "0.11"
+hmac = "0.13"
+base64 = "0.23"
 hex = "0.4"
 regex = "1"
 chrono = { version = "0.4", features = ["clock"] }
@@ -39,9 +45,9 @@ unicode-normalization = "0.1"
 unicode-segmentation = "1"
 twitter-text = "0.3.1"
 twitter_text_config = "0.3.1"
-dirs = "6"
-rand = "0.8"
-aes-gcm = "0.10"
+dirs = "7"
+rand = "0.10"
+aes-gcm = "0.11"
 fs2 = "0.4"
 libc = "0.2"
 zeroize = "1"
@@ -50,6 +56,41 @@ rpassword = "7"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["test-util"] }
+anyhow = "1.0.104"
+hyper = { version = "1.12", features = ["server", "http1"] }
+hyper-util = { version = "0.1.21", features = ["tokio"] }
+http-body-util = "0.1"
+tokio-rustls = { version = "0.26.6", default-features = false, features = ["ring", "tls12"] }
+
+[[test]]
+name = "native_e2e"
+path = "tests/native_e2e.rs"
+required-features = ["test-fixture"]
+
+[[test]]
+name = "tls_e2e"
+path = "tests/tls_e2e.rs"
+required-features = ["test-fixture"]
+
+[[test]]
+name = "api_e2e"
+path = "tests/api_e2e.rs"
+required-features = ["test-fixture"]
+
+[[test]]
+name = "proxy_e2e"
+path = "tests/proxy_e2e.rs"
+required-features = ["test-fixture"]
+
+[[test]]
+name = "setup_e2e"
+path = "tests/setup_e2e.rs"
+required-features = ["test-fixture"]
+
+[[test]]
+name = "setup_vps_e2e"
+path = "tests/setup_vps_e2e.rs"
+required-features = ["test-fixture"]
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Security_Cryptography", "Win32_System_Threading", "Win32_System_Memory", "Win32_Storage_FileSystem"] }

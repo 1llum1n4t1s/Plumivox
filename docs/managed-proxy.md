@@ -62,7 +62,7 @@ VPSの専用SSHユーザーには`ClientAliveInterval 15`・`ClientAliveCountMax
 
 ## 旧タスクから切り替える
 
-旧JavaScript版から更新する場合も、更新前のチャットで`stop_proxy`を実行して中継を停止し、Codex／Toolportを再起動してください。旧daemonのIPCはネイティブ版とは別で、旧プロセスがポートを保持したままだと新しい中継は起動できません。公開proxy URLとSSH鍵・中継設定は維持できます。古いNodeの起動登録は、[READMEのToolport設定](../README.md#toolport経由で使う場合)に従ってネイティブ実行ファイルへ変更できます。`dist/plumivox.mjs`の旧登録も互換ランチャーとして同じ本体へ転送しますが、その起動方法を残す間はNode.jsが必要です。
+旧JavaScript版から更新する場合も、更新前のチャットで`stop_proxy`を実行して中継を停止し、Codex／Toolportを再起動してください。旧daemonのIPCはネイティブ版とは別で、旧プロセスがポートを保持したままだと新しい中継は起動できません。公開proxy URLとSSH鍵・中継設定は維持できます。旧Nodeランチャーは廃止しました。`node .../dist/plumivox.mjs`を使う登録は、[READMEのToolport設定](../README.md#toolport経由で使う場合)に従い、Windowsは`dist/plumivox.exe`、macOSは`dist/plumivox`をコマンド、`--stdio`を引数として指定してください。プラグイン経由の現在の登録はネイティブ実行ファイルを直接起動します。
 
 1. GitHubの最新mainを参照してプラグインを更新し、Codexを再起動します。開発クローンをインストール元に変更しません。
 2. 公開proxy URLを保持して中継設定を追加し、旧 `Kagayoi Twitter Home Egress` タスクを停止・無効化します。

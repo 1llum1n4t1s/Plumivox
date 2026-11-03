@@ -1,7 +1,7 @@
 //! Native-only authenticated IPC. The wire namespace is separate from legacy JS daemons.
 use crate::{error::Result, proxy::error};
-use hmac::{Hmac, Mac};
-use rand::RngCore;
+use hmac::{Hmac, KeyInit, Mac};
+use rand::Rng;
 use serde_json::{Value, json};
 use sha2::Sha256;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
@@ -14,7 +14,7 @@ pub(crate) type Secret = Zeroizing<Vec<u8>>;
 
 pub(crate) fn nonce() -> String {
     let mut bytes = [0u8; 32];
-    rand::thread_rng().fill_bytes(&mut bytes);
+    rand::rng().fill_bytes(&mut bytes);
     hex::encode(bytes)
 }
 fn valid_nonce(v: &Value) -> bool {
@@ -39,7 +39,7 @@ fn canonical(v: &Value) -> Value {
         _ => v.clone(),
     }
 }
-pub(crate) fn sign(secret: &[u8], kind: &str, body: &Value) -> String {
+fn message_mac(secret: &[u8], kind: &str, body: &Value) -> Hmac<Sha256> {
     let mut mac = Hmac::<Sha256>::new_from_slice(secret).expect("HMAC accepts any length");
     mac.update(
         &serde_json::to_vec(&canonical(&json!([
@@ -49,22 +49,16 @@ pub(crate) fn sign(secret: &[u8], kind: &str, body: &Value) -> String {
         ])))
         .expect("JSON value"),
     );
-    hex::encode(mac.finalize().into_bytes())
+    mac
+}
+pub(crate) fn sign(secret: &[u8], kind: &str, body: &Value) -> String {
+    hex::encode(message_mac(secret, kind, body).finalize().into_bytes())
 }
 fn verify(secret: &[u8], kind: &str, body: &Value, proof: &Value) -> bool {
     let Some(proof) = proof.as_str().and_then(|s| hex::decode(s).ok()) else {
         return false;
     };
-    let mut mac = Hmac::<Sha256>::new_from_slice(secret).expect("HMAC accepts any length");
-    mac.update(
-        &serde_json::to_vec(&canonical(&json!([
-            "Plumivox native proxy IPC v3",
-            kind,
-            body
-        ])))
-        .expect("JSON value"),
-    );
-    mac.verify_slice(&proof).is_ok()
+    message_mac(secret, kind, body).verify_slice(&proof).is_ok()
 }
 fn exact(v: &Value, keys: &[&str]) -> bool {
     v.as_object()

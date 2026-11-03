@@ -1,7 +1,10 @@
 //! Native session protection. The lock owner thread also performs the final replacement.
+
 use crate::error::{AppError, Result};
 use chrono::{DateTime, SecondsFormat, Utc};
-use rand::RngCore;
+use rand::Rng;
+#[cfg(target_os = "macos")]
+use rand::TryRng;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{
@@ -15,6 +18,38 @@ use tokio_util::sync::CancellationToken;
 use zeroize::Zeroizing;
 
 const MAX_BYTES: u64 = 2 * 1024 * 1024;
+
+// 宣言順を保存形式のJSONキー順として維持し、Cookieの中間Valueを作らない。
+#[derive(serde::Serialize)]
+struct SessionPlain<'a> {
+    schema_version: u8,
+    cookie: &'a str,
+    binding: &'a str,
+    user_name: &'a str,
+    acquired_at: &'a str,
+    source: &'a str,
+}
+
+#[cfg(test)]
+mod serialization_tests {
+    use super::*;
+
+    #[test]
+    fn saved_json_preserves_key_order_types_and_escaping() {
+        let plain = SessionPlain {
+            schema_version: 2,
+            cookie: "a\"\\日本語",
+            binding: "binding",
+            user_name: "Poster",
+            acquired_at: "2026-11-03T00:00:00.000Z",
+            source: "plumivox_api",
+        };
+        assert_eq!(
+            serde_json::to_string(&plain).unwrap(),
+            r#"{"schema_version":2,"cookie":"a\"\\日本語","binding":"binding","user_name":"Poster","acquired_at":"2026-11-03T00:00:00.000Z","source":"plumivox_api"}"#
+        );
+    }
+}
 
 fn failure(code: &str) -> AppError {
     let message = match code {
@@ -278,9 +313,14 @@ impl SessionStorage {
         }
         let acquired_at = Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true);
         let plain = Zeroizing::new(
-            serde_json::to_string(&json!({"schema_version":2,"cookie":cookie,
-            "binding":binding(account)?,"user_name":text(account,"userName")?,
-            "acquired_at":acquired_at,"source":"plumivox_api"}))
+            serde_json::to_string(&SessionPlain {
+                schema_version: 2,
+                cookie,
+                binding: &binding(account)?,
+                user_name: text(account, "userName")?,
+                acquired_at: &acquired_at,
+                source: "plumivox_api",
+            })
             .map_err(|_| storage())?,
         );
         let encrypted = platform::encrypt(plain.as_bytes(), self.root.as_deref())?;
@@ -358,7 +398,7 @@ impl Drop for Pending {
 }
 fn random_id() -> String {
     let mut bytes = [0u8; 16];
-    rand::thread_rng().fill_bytes(&mut bytes);
+    rand::rng().fill_bytes(&mut bytes);
     hex::encode(bytes)
 }
 
@@ -1196,7 +1236,9 @@ mod platform {
                     }
                 }
                 let mut bytes = Zeroizing::new(vec![0u8; 32]);
-                rand::rngs::OsRng.fill_bytes(&mut bytes);
+                rand::rngs::SysRng
+                    .try_fill_bytes(&mut bytes)
+                    .map_err(|_| storage())?;
                 keychain
                     .create(service, &account, &bytes)
                     .map_err(|_| storage())?;
@@ -1222,10 +1264,12 @@ mod platform {
         let key = key(root.ok_or_else(storage)?, false)?;
         let cipher = Aes256Gcm::new_from_slice(&key).map_err(|_| storage())?;
         let mut nonce = [0u8; 12];
-        rand::rngs::OsRng.fill_bytes(&mut nonce);
+        rand::rngs::SysRng
+            .try_fill_bytes(&mut nonce)
+            .map_err(|_| storage())?;
         let ciphertext = cipher
             .encrypt(
-                Nonce::from_slice(&nonce),
+                &Nonce::from(nonce),
                 Payload {
                     msg: plain,
                     aad: b"Plumivox session v1",
@@ -1239,6 +1283,13 @@ mod platform {
     }
     #[cfg(target_os = "macos")]
     pub fn decrypt(encrypted: &[u8], root: Option<&Path>) -> Result<Zeroizing<Vec<u8>>> {
+        decrypt_with_key(encrypted, || key(root.ok_or_else(storage)?, false))
+    }
+    #[cfg(target_os = "macos")]
+    fn decrypt_with_key(
+        encrypted: &[u8],
+        load_key: impl FnOnce() -> Result<Zeroizing<Vec<u8>>>,
+    ) -> Result<Zeroizing<Vec<u8>>> {
         use aes_gcm::{
             Aes256Gcm, KeyInit, Nonce,
             aead::{Aead, Payload},
@@ -1247,14 +1298,15 @@ mod platform {
             .strip_prefix(b"PLUMIVOX-KEYCHAIN-1\n")
             .filter(|b| b.len() >= 28)
             .ok_or_else(storage)?;
-        let key = key(root.ok_or_else(storage)?, false)?;
+        let (nonce, ciphertext) = body.split_at(12);
+        let key = load_key()?;
         let cipher = Aes256Gcm::new_from_slice(&key).map_err(|_| storage())?;
         Ok(Zeroizing::new(
             cipher
                 .decrypt(
-                    Nonce::from_slice(&body[..12]),
+                    &Nonce::try_from(nonce).map_err(|_| storage())?,
                     Payload {
-                        msg: &body[12..],
+                        msg: ciphertext,
                         aad: b"Plumivox session v1",
                     },
                 )
@@ -1274,11 +1326,42 @@ mod platform {
         Err(storage())
     }
 
-    #[cfg(all(test, target_os = "macos", feature = "test-fixture"))]
+    #[cfg(all(test, target_os = "macos"))]
     mod tests {
         use super::*;
+        #[cfg(feature = "test-fixture")]
         use std::os::unix::fs::DirBuilderExt;
 
+        #[test]
+        fn reads_existing_node_session_through_product_decoder() {
+            // Node標準cryptoが生成した既存暗号文と16byte tagをそのまま維持する。
+            let mut encrypted = b"PLUMIVOX-KEYCHAIN-1\n".to_vec();
+            encrypted.extend(0u8..12);
+            encrypted.extend(hex::decode("347bb86fad80b672ee6cf2f3d89a0c04edb1aa4795082c155709429abf0620d16a4779e1658b9fd0992b").unwrap());
+            assert_eq!(
+                decrypt_with_key(&encrypted, || Ok(Zeroizing::new((0u8..32).collect())))
+                    .unwrap()
+                    .as_slice(),
+                b"synthetic-existing-session"
+            );
+            for invalid in [
+                b"invalid-prefix".as_slice(),
+                b"PLUMIVOX-KEYCHAIN-1\nshort".as_slice(),
+            ] {
+                let loaded = std::cell::Cell::new(false);
+                let result = decrypt_with_key(invalid, || {
+                    loaded.set(true);
+                    Err(storage())
+                });
+                assert_eq!(result.unwrap_err().code, "SESSION_STORAGE_UNAVAILABLE");
+                assert!(
+                    !loaded.get(),
+                    "invalid format must be rejected before loading a key"
+                );
+            }
+        }
+
+        #[cfg(feature = "test-fixture")]
         #[test]
         fn existing_key_reads_do_not_contend_with_key_creation_lock() {
             // Use the real OS Keychain backend, including an explicitly selected

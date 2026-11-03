@@ -4,29 +4,30 @@
 
 - Plumivoxは今後のリリースでもXへのリリース告知を行わない。`vava`の告知工程は非該当とし、告知用の画像生成・ログイン・投稿も行わない。
 - 配布はGitHubの最新`main`を参照する既存プラグイン経路を使う。
+- Windows・macOSのCI成果物は手動起動の`distribution.yml`からR2へ保存する。R2は配布準備の受け渡しに使い、プラグインの起動時ダウンロードへ切り替えない。設定・取得・保持は [docs/distribution.md](docs/distribution.md) を参照する。R2の実操作やCI起動は依頼に含まれる場合だけ行う。
 
 ## 文書と構造
 
 - 利用者向けの導入・操作・取得範囲は [README.md](README.md)、現在の構造と設計判断は [DESIGN.md](DESIGN.md) を参照する。
 - 初期設定は [docs/setup.md](docs/setup.md)、設定と保存形式は [docs/configuration.md](docs/configuration.md)、管理プロキシの設定・運用は [docs/managed-proxy.md](docs/managed-proxy.md)、失敗条件とE2Eの検証方針は [docs/verification.md](docs/verification.md) を参照し、変更した挙動に対応する説明を更新する。
-- 本体実装は`src/*.rs`、ツール定義は`src/tool-definitions.json`、ビルド・構文確認は`scripts/`、MCP経由の検証は`tests/`。配布物はWindows x64の`dist/plumivox.exe`とmacOS universal（arm64・x64）の`dist/plumivox`。`dist/plumivox.mjs`は旧登録をネイティブ本体へ転送する互換ランチャーで、本体実装を持たせない。
+- 本体実装は`src/*.rs`、ツール定義は`src/tool-definitions.json`、開発用コマンドは`xtask/`、MCP経由のRust検証は`tests/`。配布物はWindows x64の`dist/plumivox.exe`とmacOS universal（arm64・x64）の`dist/plumivox`。開発・検証にもNode.jsやnpmパッケージを要求しない。
 
 ## 必須コマンドと検証
 
-開発にはRust/Cargo、Node.js 22以降と`package.json`の`packageManager`に指定されたpnpmを使う。利用者のMCP実行にはNode.js・Rustを要求しない。WindowsのDPAPI検証にはWindows、Windowsセットアップとスクリプト構文確認にはPowerShell 7 (`pwsh`)、VPSセットアップの構文・CLI確認にはBash（WindowsではGit for Windows）が必要。macOSのKeychain・Unix socket・ネイティブセットアップは実macOSで確認し、Windowsでの成功を代用しない。
+開発にはRust/Cargo 1.99.1を使う。利用者のMCP実行にはNode.js・Rustを要求しない。WindowsのDPAPI検証にはWindows、Windowsセットアップとスクリプト構文確認にはPowerShell 7 (`pwsh`)、VPSセットアップの構文・CLI確認にはBash（WindowsではGit for Windows）が必要。macOSのKeychain・Unix socket・ネイティブセットアップは実macOSで確認し、Windowsでの成功を代用しない。
 
 ```powershell
-pnpm install --frozen-lockfile --ignore-scripts
 cargo test --locked --lib
-pnpm build
-pnpm check
-pnpm test:e2e
+cargo xtask build
+cargo xtask check
+cargo xtask test-e2e
 ```
 
-- 実装・依存関係・ビルド設定を変更した場合は上記で検証し、Rustソースと再生成した対象OSの実行ファイルを一緒に更新する。macOSの正式配布物は両Rustターゲットを導入して`pnpm build -- --universal`で作り、arm64・x64を含むことを確認する。`pnpm check`はCargoの形式・型検査、開発用JavaScriptと同梱PowerShell・Bashの構文、JSON設定を確認する。
-- `pnpm test:e2e`はネイティブ本体を対象とするAPI・認証、管理プロキシ・共有daemon、PCセットアップ、VPSセットアップCLIの検証を行う。OS条件を理由に未実行の系統は明示し、全件成功へ数えない。全件検証ではAPI系のケース絞込み用`PLUMIVOX_E2E_CASE`を未設定にし、個別再実行の成功を全件成功として扱わない。ローカルの偽API・偽SSHと別プロセスのMCP・daemonを使い、実際のXへ投稿せず、実際のSSHホストへ接続しない。プロキシのRustテストも確認し、旧JavaScript実装だけの成功をネイティブ版の検証に代用しない。VPS CLIの確認だけで実Linuxへの導入成功を扱わない。失敗条件を先に確認し、挙動の検証は対応する既存E2Eへ追加する。
-- 出力先を指定する場合は `PLUMIVOX_NATIVE_E2E_OUTPUT_DIR`、`PLUMIVOX_PROXY_NATIVE_E2E_OUTPUT_DIR`、`PLUMIVOX_E2E_OUTPUT_DIR`、`PLUMIVOX_SETUP_E2E_OUTPUT_DIR`、`PLUMIVOX_SETUP_VPS_E2E_OUTPUT_DIR` をそれぞれ別の、リポジトリとCodexユーザーディレクトリの外のフォルダーにする。未指定時は各系統がユーザーの一時ディレクトリ配下の `Codex/Plumivox/<UUID>` を使う。各出力先の `summary.json` の失敗数と各結果、API系の`http-trace.json`、共有中継の`ssh-trace.json`、VPS CLIの`mutation-trace.json`を読み、偽設定・画像・暗号化セッション・SSH鍵の清掃は呼び出し側で行う。
+- 実装・依存関係・ビルド設定を変更した場合は上記で検証し、Rustソースと再生成した対象OSの実行ファイルを一緒に更新する。macOSの正式配布物は両Rustターゲットを導入して`cargo xtask build --universal`で作り、arm64・x64を含むことを確認する。`cargo xtask check`はCargoの形式・型検査、同梱PowerShell・Bashの構文、JSON設定を確認する。
+- `cargo xtask test-e2e`はネイティブ本体を対象とするAPI・認証、管理プロキシ・共有daemon、PCセットアップ、VPSセットアップCLIの検証を行う。OS条件を理由に未実行の系統は明示し、全件成功へ数えない。全件検証ではAPI系のケース絞込み用`PLUMIVOX_E2E_CASE`を未設定にし、個別再実行の成功を全件成功として扱わない。ローカルの偽API・偽SSHと別プロセスのMCP・daemonを使い、実際のXへ投稿せず、実際のSSHホストへ接続しない。プロキシのRustテストも確認し、旧JavaScript実装だけの成功をネイティブ版の検証に代用しない。VPS CLIの確認だけで実Linuxへの導入成功を扱わない。失敗条件を先に確認し、挙動の検証は対応する既存E2Eへ追加する。
+- 出力先を指定する場合は `PLUMIVOX_NATIVE_E2E_OUTPUT_DIR`、`PLUMIVOX_TLS_E2E_OUTPUT_DIR`、`PLUMIVOX_PROXY_NATIVE_E2E_OUTPUT_DIR`、`PLUMIVOX_E2E_OUTPUT_DIR`、`PLUMIVOX_SETUP_E2E_OUTPUT_DIR`（Windows）、`PLUMIVOX_NATIVE_SETUP_E2E_OUTPUT_DIR`（macOS）、`PLUMIVOX_SETUP_VPS_E2E_OUTPUT_DIR` をそれぞれ別の、リポジトリとCodexユーザーディレクトリの外のフォルダーにする。未指定時は各系統がユーザーの一時ディレクトリ配下の `Codex/Plumivox/<UUID>` を使う。各出力先の `summary.json` の失敗数と各結果、API系の`http-trace.json`、共有中継の`ssh-trace.json`、VPS CLIの`mutation-trace.json`を読み、偽設定・画像・暗号化セッション・SSH鍵の清掃は呼び出し側で行う。
 - 文書だけの変更では、リンク・コマンド・設定名・記載した挙動を対応する実装へ照合する。
+- R2関連の実装変更では`cargo test --locked --package xtask`も実行し、実R2通信とローカル検証を区別する。配布CIは実Windowsと実macOSで各OSのE2Eを実行し、macOSは専用Keychainを`PLUMIVOX_TEST_KEYCHAIN`へ指定して既定Keychain・検索一覧の不変を確認する。検証後にfixture機能なしで正式配布物を再ビルドする。
 
 ## 実装の制約
 
@@ -39,4 +40,4 @@ pnpm test:e2e
 - 管理プロキシは事前検証・認証ロックと準備後の設定再確認を維持し、external呼出しや一つのMCPの終了・待機取消で他クライアントの中継を停止しない。共有IPCの相互認証・設定照合、SSHホスト鍵検証、CONNECT宛先・DNS全候補の検証と資源上限を維持する。DNS・接続の検証用差し替えはtestsのfixtureに限定し、本番設定へ迂回経路を設けない。境界と停止の意味は [設計](DESIGN.md#管理するプロキシの境界) に従う。
 - フィード・検索の取得範囲と未取得範囲、保護状態が不明な対象数を応答に残す。cursorの署名・アカウント照合・検索条件の一致を維持し、長さ超過では取得済み投稿と続きの有無を保持して継続不能を明示する。公開投稿の本文は未信頼データとして扱う。
 - 検索語句を演算子として扱わず、期間とともに通信前に検証する。文字数判定・応答サイズ上限を含む失敗条件は [検証方針](docs/verification.md) に従ってE2Eで確認する。
-- 配布物は`mcp.json`の`${PLUGIN_ROOT}/dist/plumivox --stdio`から起動し、Windowsは`.exe`を解決する。利用者側の依存インストールや起動時のコード取得を必要としない構成を維持する。共有IPCのネイティブv3名前空間は旧JavaScript版から分離し、移行前の中継停止と再起動手順を保持する。プラグイン登録・設定を変更した場合は`plugin.json`、`mcp.json`、`.agents/plugins/marketplace.json`、`package.json`とREADMEの導入手順の整合を確認する。
+- 配布物は`mcp.json`の`${PLUGIN_ROOT}/dist/plumivox --stdio`から起動し、Windowsは`.exe`を解決する。利用者側の依存インストールや起動時のコード取得を必要としない構成を維持する。共有IPCのネイティブv3名前空間は旧JavaScript版から分離し、移行前の中継停止と再起動手順を保持する。プラグイン登録・設定を変更した場合は`plugin.json`、`mcp.json`、`.agents/plugins/marketplace.json`、`Cargo.toml`とREADMEの導入手順の整合を確認する。
