@@ -24,31 +24,11 @@ fn valid_nonce(v: &Value) -> bool {
                 .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
     })
 }
-fn canonical(v: &Value) -> Value {
-    match v {
-        Value::Object(map) => {
-            let mut keys: Vec<_> = map.keys().collect();
-            keys.sort();
-            let mut result = serde_json::Map::new();
-            for key in keys {
-                result.insert(key.clone(), canonical(&map[key]));
-            }
-            Value::Object(result)
-        }
-        Value::Array(values) => Value::Array(values.iter().map(canonical).collect()),
-        _ => v.clone(),
-    }
-}
 fn message_mac(secret: &[u8], kind: &str, body: &Value) -> Hmac<Sha256> {
     let mut mac = Hmac::<Sha256>::new_from_slice(secret).expect("HMAC accepts any length");
-    mac.update(
-        &serde_json::to_vec(&canonical(&json!([
-            "Plumivox native proxy IPC v3",
-            kind,
-            body
-        ])))
-        .expect("JSON value"),
-    );
+    let mut message = json!(["Plumivox native proxy IPC v3", kind, body]);
+    message.sort_all_objects();
+    mac.update(&serde_json::to_vec(&message).expect("JSON value"));
     mac
 }
 pub(crate) fn sign(secret: &[u8], kind: &str, body: &Value) -> String {
@@ -575,6 +555,20 @@ mod tests {
         assert_eq!(read(&mut pipe).await.unwrap(), json!({"one":1}));
         assert_eq!(read(&mut pipe).await.unwrap(), json!({"two":2}));
         writer.await.unwrap();
+    }
+    #[test]
+    fn native_v3_proof_matches_fixed_nested_wire_vector() {
+        // 既存v3のキー辞書順・配列順を固定したUTF-8電文のHMAC-SHA256。
+        // ["Plumivox native proxy IPC v3","request",{"a":{"a":"text","z":null},"z":[{"a":[{"a":1,"b":2},7],"z":false},3]}]
+        let body: Value = serde_json::from_str(
+            r#"{"z":[{"z":false,"a":[{"b":2,"a":1},7]},3],"a":{"z":null,"a":"text"}}"#,
+        )
+        .unwrap();
+        let original = serde_json::to_vec(&body).unwrap();
+        let proof = "4c83efd534cb89a88a80145ec85bee9315087238a59565a1a052caa2663a3254";
+        assert_eq!(sign(&[1; 32], "request", &body), proof);
+        assert!(verify(&[1; 32], "request", &body, &json!(proof)));
+        assert_eq!(serde_json::to_vec(&body).unwrap(), original);
     }
     #[test]
     fn proof_binds_context_and_operation() {

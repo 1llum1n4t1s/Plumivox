@@ -1,4 +1,5 @@
 use super::*;
+use anyhow::Context;
 use std::{sync::atomic::Ordering, time::Duration};
 use tokio::fs;
 
@@ -224,27 +225,35 @@ pub async fn run(h: &mut Harness) -> Result<()> {
             let v = h
                 .ok("post_tweet", json!({"account":"posting","text":text}))
                 .await?;
-            let id = v["tweetId"].as_str().unwrap();
+            let id = v["tweetId"].as_str().context("Missing string tweet ID")?;
+            let url = v["url"].as_str().context("Missing string tweet URL")?;
             ensure!(
                 v["weightedLength"] == length
+                    && !id.is_empty()
                     && id.bytes().all(|b| b.is_ascii_digit())
-                    && v["url"].as_str().unwrap().contains(id)
+                    && url.contains(id)
             );
         });
     }
     case!(h, "Explicit duplicate posts send twice", {
         let before = h.count();
+        let mut ids = Vec::new();
         for _ in 0..2 {
-            h.ok(
-                "post_tweet",
-                json!({"account":"posting","text":"explicit duplicate"}),
-            )
-            .await?;
+            let v = h
+                .ok(
+                    "post_tweet",
+                    json!({"account":"posting","text":"explicit duplicate"}),
+                )
+                .await?;
+            let id = v["tweetId"].as_str().context("Missing string tweet ID")?;
+            ensure!(!id.is_empty());
+            ids.push(id.to_owned());
         }
+        ensure!(ids[0] != ids[1] && h.count() == before + 2);
         ensure!(
             h.trace()[before..]
                 .iter()
-                .filter(|r| r["path"].as_str().unwrap().ends_with("create_tweet_v2"))
+                .filter(|r| r["method"] == "POST" && r["path"] == "/twitter/create_tweet_v2")
                 .count()
                 == 2
         );

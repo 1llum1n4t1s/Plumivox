@@ -1,6 +1,6 @@
 # 配布成果物の保存と取得
 
-開発用の配布CIはWindows x64とmacOS universal（Apple Silicon・Intel）の成果物をCloudflare R2へ保存します。OSごとのビルド・検証結果を配布準備へ渡すための保管先です。利用者向けプラグインはGitHubの最新`main`に同梱した`dist`から起動し、R2の資格情報、Rust、Node.js、Wranglerを要求しません。
+開発用の配布CIはWindows x64、macOS universal（Apple Silicon・Intel）、Linux x86_64・aarch64の静的リンクVPSインストーラーをCloudflare R2へ保存します。OSごとのビルド・検証結果を配布準備へ渡すための保管先です。利用者向けプラグインはGitHubの最新`main`に同梱した`dist`から起動し、VPSインストーラーは同梱した`setup/vps`の実行物を使います。R2の資格情報、Rust、Node.js、Wrangler、起動時ダウンロードは要求しません。
 
 ## 管理者の設定
 
@@ -24,7 +24,20 @@ GitHub Actionsの「Build distribution artifacts」を既定ブランチから�
 3. fixture機能なしで正式成果物を再ビルド。macOSはarm64とx86_64の両ターゲットからuniversalを作り、両アーキテクチャを確認。
 4. `cargo xtask artifact-upload`で成果物をR2へ保存。
 
-保存先は`plumivox/ci/{commit}/{run}/{attempt}/{target}/`です。targetは`windows-x64`または`macos-universal`。実行ファイル（`plumivox.exe`または`plumivox`）と`THIRD-PARTY-LICENSES.txt`を保存し、identity・サイズ・SHA256を含む`manifest.json`を最後に保存します。条件付きPUTで既存オブジェクトへの再書込みを拒否します。途中で失敗した場合は同じidentityへ追記して直さず、GitHubの再実行で増えるattemptを使います。
+Linuxはx86_64とaarch64それぞれのnative runnerを使います。`sshd`・`ssh-keygen`を導入し、`cargo xtask ci-vps-test`でインストーラーのunit・CLIテストと実sshdを使うignoredテストを明示実行します。不足ツールはskipせず失敗させます。続いて各CPUのmuslターゲットをrust-lld・self-containedでビルドし、ELF64のCPU、動的ローダー・共有ライブラリ依存がないことと、生成した実行物の起動を確認してR2へ保存します。これは実VPSへの導入やsystemd・UFWの適用確認を代用しません。
+
+Linux開発端末での単独ビルドは、対象のRust muslターゲットを導入したうえで`cargo xtask build-vps x86_64`または`cargo xtask build-vps aarch64`を使います。Cargoが返した実行物を検証して`setup/vps`へコピーするため、独自の`CARGO_TARGET_DIR`も使用できます。
+
+保存先は`plumivox/ci/{commit}/{run}/{attempt}/{target}/`です。各targetの実行ファイルと`THIRD-PARTY-LICENSES.txt`の2件を保存し、identity・サイズ・SHA256を含む`manifest.json`を最後に保存します。
+
+| target | 実行ファイル | 同梱先 |
+| --- | --- | --- |
+| `windows-x64` | `plumivox.exe` | `dist` |
+| `macos-universal` | `plumivox` | `dist` |
+| `vps-linux-x86_64` | `plumivox-vps-setup-x86_64` | `setup/vps` |
+| `vps-linux-aarch64` | `plumivox-vps-setup-aarch64` | `setup/vps` |
+
+ライセンスの入力・同梱先は全targetで`dist`です。ファイル名と入力先は固定し、manifestに任意の相対パスを許可しません。条件付きPUTで既存オブジェクトへの再書込みを拒否します。途中で失敗した場合は同じidentityへ追記して直さず、GitHubの再実行で増えるattemptを使います。
 
 ## 検証して取得する
 
@@ -35,13 +48,15 @@ GitHub Actionsの「Build distribution artifacts」を既定ブランチから�
 ```powershell
 cargo xtask artifact-download --commit <commit> --run <run> --attempt <attempt> --target windows-x64 --output D:\Artifacts\Plumivox\<run>-<attempt>-windows
 cargo xtask artifact-download --commit <commit> --run <run> --attempt <attempt> --target macos-universal --output D:\Artifacts\Plumivox\<run>-<attempt>-macos
+cargo xtask artifact-download --commit <commit> --run <run> --attempt <attempt> --target vps-linux-x86_64 --output D:\Artifacts\Plumivox\<run>-<attempt>-vps-x86_64
+cargo xtask artifact-download --commit <commit> --run <run> --attempt <attempt> --target vps-linux-aarch64 --output D:\Artifacts\Plumivox\<run>-<attempt>-vps-aarch64
 ```
 
 取得先は未存在のディレクトリにし、その親フォルダーは先に用意します。取得時はmanifestのidentity・ファイル名・サイズ・SHA256を検証します。SHA256は保存内容との一致確認で、独立したコード署名ではありません。失敗時は出力を配布に使わず、原因を確認してください。macOS上の取得では実行権限も設定します。
 
 保存先には本人が管理する信頼できる階層を使います。Windowsは出力先とファイルを本人限定の権限で作り、ディレクトリハンドルを保持します。Unixは親の所有者・書込み権限・リンクを検査し、出力先を700で作成して、開いた同じファイルハンドルで実行権限を設定します。Unixの拡張ACLと、同一ユーザーによる悪意ある並行変更までは検査・防止しません。
 
-取得成功だけではプラグインへ反映されません。配布準備では対象commitと各OSのCI結果を確認し、取得した実行ファイルとライセンスをリポジトリの`dist`へ反映してレビューします。コミット・pushは別の明示依頼に従い、利用者はGitHub mainの更新後に通常のプラグイン更新を行います。バージョン更新やリリース告知はこのCIに含めません。
+取得成功だけではプラグインへ反映されません。配布準備では対象commitと各OS・CPUのCI結果を確認し、取得した実行ファイルを上表の同梱先へ、ライセンスを`dist`へ反映してレビューします。同じcommitのライセンス内容が全targetで一致することも確認します。コミット・pushは別の明示依頼に従い、利用者はGitHub mainの更新後に通常のプラグイン更新を行います。バージョン更新やリリース告知はこのCIに含めません。
 
 ## 保持と検証範囲
 

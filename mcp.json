@@ -3,7 +3,7 @@
   "mcpServers": {
     "plumivox": {
       "type": "stdio",
-      "command": "${PLUGIN_ROOT}/dist/plumivox",
+      "command": "./dist/plumivox",
       "args": ["--stdio"],
       "cwd": "${PLUGIN_ROOT}"
     }

@@ -31,22 +31,70 @@ jobs:
       (github.event_name != 'check_run' || github.event.check_run.app.slug != 'github-actions')
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    steps:
-      # 信頼済み既定ブランチのみを取得し、PRのコードは実行しない。
-      - name: Check out trusted default branch
+    defaults:
+      run:
         shell: bash
-        env:
-          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+    steps:
+      # checkout前はrunner付属stable rustcだけを使用する。以降は1.99.1へ固定。
+      - name: Compile native checkout bootstrap
+        shell: rustc +stable --edition=2021 --crate-name plumivox_ci_bootstrap -o plumivox-ci-bootstrap.exe {0}
         run: |
-          set -euo pipefail
-          [[ -n "$DEFAULT_BRANCH" ]] || { echo 'Missing default branch' >&2; exit 1; }
-          git check-ref-format "refs/heads/$DEFAULT_BRANCH"
-          git init .
-          git remote add origin https://github.com/1llum1n4t1s/Plumivox.git
-          git fetch --no-tags --depth=1 origin "refs/heads/$DEFAULT_BRANCH"
-          git checkout --detach FETCH_HEAD
+          use std::{env, error::Error, fs, process::Command};
+          type Result = std::result::Result<(), Box<dyn Error>>;
+          fn run(args: &[&str]) -> Result {
+              if !Command::new("git").args(args).status()?.success() {
+                  return Err("Git checkout failed".into());
+              }
+              Ok(())
+          }
+          fn main() -> Result {
+              let script = fs::read_to_string(env::args().nth(1).ok_or("Missing command")?)?;
+              if script.trim() != "checkout" { return Err("Invalid bootstrap command".into()); }
+              if env::var("CHECK_R2").as_deref() == Ok("true") {
+                  let account = env::var("PLUMIVOX_R2_ACCOUNT_ID")?;
+                  let bucket = env::var("PLUMIVOX_R2_BUCKET")?;
+                  if account.len() != 32 || !account.bytes().all(|b| b.is_ascii_hexdigit())
+                      || !(3..=63).contains(&bucket.len())
+                      || !bucket.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+                      || bucket.starts_with('-') || bucket.ends_with('-')
+                      || env::var("R2_CREDENTIALS_CONFIGURED").as_deref() != Ok("true") {
+                      return Err("Configure R2 repository variables and secrets".into());
+                  }
+              }
+              let exact = env::var("CHECKOUT_MODE").as_deref() == Ok("exact");
+              let reference = if exact {
+                  let sha = env::var("CHECKOUT_SHA")?;
+                  if sha.len() != 40 || !sha.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)) {
+                      return Err("Invalid checkout SHA".into());
+                  }
+                  sha
+              } else {
+                  let branch = env::var("DEFAULT_BRANCH")?;
+                  if branch.is_empty() { return Err("Missing default branch".into()); }
+                  let reference = format!("refs/heads/{branch}");
+                  run(&["check-ref-format", &reference])?;
+                  reference
+              };
+              run(&["init", "."])?;
+              run(&["remote", "add", "origin", "https://github.com/1llum1n4t1s/Plumivox.git"])?;
+              run(&["fetch", "--no-tags", "--depth=1", "origin", &reference])?;
+              run(&["checkout", "--detach", "FETCH_HEAD"])?;
+              if exact {
+                  let head = Command::new("git").args(["rev-parse", "HEAD"]).output()?;
+                  if !head.status.success() || String::from_utf8(head.stdout)?.trim() != reference {
+                      return Err("Checkout SHA mismatch".into());
+                  }
+              }
+              Ok(())
+          }
+      - name: Check out trusted workflow source
+        shell: rustup run stable ./plumivox-ci-bootstrap.exe {0}
+        env:
+          CHECKOUT_MODE: default
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: checkout
       - name: Install pinned Rust toolchain
-        run: rustup toolchain install 1.99.1 --profile minimal
+        run: rustup toolchain install 1.99.1 --profile minimal --component rustfmt
       - name: Verify CI and merge Dependabot updates
         env:
           RUSTUP_TOOLCHAIN: '1.99.1'

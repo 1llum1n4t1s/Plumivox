@@ -262,7 +262,7 @@ impl SessionStorage {
                         Ok(command) => command,
                         Err(_) => break,
                     };
-                    let command = match command {
+                    let mut command = match command {
                         LockCommand::Commit(command) => command,
                         LockCommand::Release => return,
                     };
@@ -278,6 +278,12 @@ impl SessionStorage {
                     {
                         thread_lost.cancel();
                     }
+                    // Commitには暗号文の全量書込み・sync完了後だけ到達する。
+                    // 取消と所有喪失以外の保存失敗では復旧用の実体を残す。
+                    command.staging.retain = result
+                        .as_ref()
+                        .err()
+                        .is_some_and(|e| e.code != "AUTH_CANCELLED" && e.code != "AUTH_LOCK_LOST");
                     let _ = command.reply.send(result);
                 }
             })
@@ -345,11 +351,41 @@ impl SessionStorage {
         }
         let staging = directory.join(format!("session-{}.pending", random_id()));
         let mut file = new_private_file(&staging)?;
-        let pending = Pending(staging);
-        file.write_all(&encrypted)
+        let pending = Pending {
+            path: staging,
+            retain: false,
+        };
+        let middle = encrypted.len() / 2;
+        file.write_all(&encrypted[..middle])
+            .map_err(|_| storage())?;
+        #[cfg(feature = "test-fixture")]
+        {
+            let result = crate::test_support::boundary("writing", &cancel).await;
+            if result
+                .as_ref()
+                .err()
+                .is_some_and(|e| e.code == "AUTH_LOCK_LOST")
+            {
+                lease.inner.lost.cancelled().await;
+            }
+            result?;
+        }
+        file.write_all(&encrypted[middle..])
             .and_then(|_| file.sync_all())
             .map_err(|_| storage())?;
         drop(file);
+        #[cfg(feature = "test-fixture")]
+        {
+            let result = crate::test_support::boundary("staged", &cancel).await;
+            if result
+                .as_ref()
+                .err()
+                .is_some_and(|e| e.code == "AUTH_LOCK_LOST")
+            {
+                lease.inner.lost.cancelled().await;
+            }
+            result?;
+        }
         let (reply, response) = oneshot::channel();
         lease.assert_owned()?;
         if cancel.is_cancelled() {
@@ -388,11 +424,14 @@ impl SessionStorage {
     }
 }
 
-struct Pending(PathBuf);
+struct Pending {
+    path: PathBuf,
+    retain: bool,
+}
 impl Drop for Pending {
     fn drop(&mut self) {
-        if !self.0.as_os_str().is_empty() {
-            let _ = fs::remove_file(&self.0);
+        if !self.retain {
+            let _ = fs::remove_file(&self.path);
         }
     }
 }
@@ -404,13 +443,13 @@ fn random_id() -> String {
 
 fn commit(directory: &Path, command: &Commit, guard: &platform::Lock) -> Result<()> {
     validate_directory(directory)?;
-    if command.staging.0.parent() != Some(directory)
+    if command.staging.path.parent() != Some(directory)
         || command.destination != directory.join(platform::FILE_NAME)
     {
         return Err(storage());
     }
     validate_optional_file(&command.destination)?;
-    validate_optional_file(&command.staging.0)?;
+    validate_optional_file(&command.staging.path)?;
     // Keep an encrypted backup, matching the existing Windows session writer.
     if command.destination.exists() {
         let previous = bounded_read(&command.destination)?;
@@ -420,15 +459,21 @@ fn commit(directory: &Path, command: &Commit, guard: &platform::Lock) -> Result<
             platform::BACKUP_SUFFIX
         ));
         let mut file = new_private_file(&backup)?;
+        let mut temporary = Pending {
+            path: backup,
+            retain: false,
+        };
         file.write_all(&previous)
             .and_then(|_| file.sync_all())
             .map_err(|_| storage())?;
+        drop(file);
+        temporary.retain = true;
     }
     if command.cancel.is_cancelled() {
         return Err(failure("AUTH_CANCELLED"));
     }
     guard.assert_owned()?;
-    platform::replace(&command.staging.0, &command.destination)?;
+    platform::replace(&command.staging.path, &command.destination)?;
     // A cancellation or durability failure after rename cannot promise unchanged state.
     if command.cancel.is_cancelled() {
         return Err(failure("AUTH_SAVE_UNCERTAIN"));
@@ -722,6 +767,10 @@ mod platform {
     fn wide(value: impl AsRef<OsStr>) -> Vec<u16> {
         value.as_ref().encode_wide().chain(Some(0)).collect()
     }
+    // 内部のMutex名・署名の正規化は維持し、Win32境界だけ拡張絶対パスにする。
+    fn file_path(path: &Path) -> Result<Vec<u16>> {
+        Ok(wide(fs::canonicalize(path).map_err(|_| storage())?))
+    }
     struct Handle(HANDLE);
     impl Drop for Handle {
         fn drop(&mut self) {
@@ -769,7 +818,7 @@ mod platform {
             let mut owner = null_mut();
             let mut descriptor = null_mut();
             if GetNamedSecurityInfoW(
-                wide(path).as_ptr(),
+                file_path(path)?.as_ptr(),
                 SE_FILE_OBJECT,
                 OWNER_SECURITY_INFORMATION,
                 &mut owner,
@@ -827,7 +876,7 @@ mod platform {
                 return Err(storage());
             }
             if SetNamedSecurityInfoW(
-                wide(path).as_ptr(),
+                file_path(path)?.as_ptr(),
                 SE_FILE_OBJECT,
                 DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
                 null_mut(),
@@ -843,7 +892,7 @@ mod platform {
             let mut actual = null_mut();
             let mut actual_dacl = null_mut();
             if GetNamedSecurityInfoW(
-                wide(path).as_ptr(),
+                file_path(path)?.as_ptr(),
                 SE_FILE_OBJECT,
                 DACL_SECURITY_INFORMATION,
                 null_mut(),
@@ -1004,14 +1053,18 @@ mod platform {
         }
     }
     pub fn replace(staging: &Path, destination: &Path) -> Result<()> {
+        let staging = file_path(staging)?;
+        let destination = fs::canonicalize(destination.parent().ok_or_else(storage)?)
+            .map_err(|_| storage())?
+            .join(destination.file_name().ok_or_else(storage)?);
+        let destination = wide(destination);
         unsafe {
             if MoveFileExW(
-                wide(staging).as_ptr(),
-                wide(destination).as_ptr(),
+                staging.as_ptr(),
+                destination.as_ptr(),
                 MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
             ) == 0
             {
-                // A filesystem failure at the replacement boundary can have uncertain outcome.
                 return Err(failure("AUTH_SAVE_UNCERTAIN"));
             }
         }

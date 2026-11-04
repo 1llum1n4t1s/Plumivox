@@ -545,11 +545,27 @@ pub fn state(value: &Value) -> &str {
         .unwrap_or("")
 }
 pub async fn rejected_tunnel(port: u16) -> Result<()> {
+    rejected_tunnel_parts(port, &[b"CONNECT localhost:443 HTTP/1.1\r\n\r\n"], false).await
+}
+pub async fn rejected_tunnel_parts(port: u16, parts: &[&[u8]], eof: bool) -> Result<()> {
     timeout(Duration::from_secs(3), async {
         let mut socket = TcpStream::connect(("127.0.0.1", port)).await?;
-        socket
-            .write_all(b"CONNECT localhost:443 HTTP/1.1\r\n\r\n")
-            .await?;
+        for (index, part) in parts.iter().enumerate() {
+            socket.write_all(part).await?;
+            if index + 1 < parts.len() || eof {
+                // 次の断片やEOFを送る前に、未完ヘッダーが拒否されていないことを確認する。
+                let mut byte = [0];
+                ensure!(
+                    timeout(Duration::from_millis(100), socket.read(&mut byte))
+                        .await
+                        .is_err(),
+                    "Reverse CONNECT answered before the header boundary or EOF"
+                );
+            }
+        }
+        if eof {
+            socket.shutdown().await?;
+        }
         let mut response = Vec::new();
         let mut bytes = [0; 256];
         while !response.windows(4).any(|v| v == b"\r\n\r\n") {

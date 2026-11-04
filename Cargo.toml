@@ -8,7 +8,7 @@ default-run = "plumivox"
 autotests = false
 
 [workspace]
-members = [".", "xtask"]
+members = [".", "xtask", "vps-installer"]
 resolver = "3"
 
 [lib]
@@ -51,7 +51,7 @@ aes-gcm = "0.11"
 fs2 = "0.4"
 libc = "0.2"
 zeroize = "1"
-russh = { version = "0.65", default-features = false, features = ["ring", "rsa", "flate2"] }
+russh = { version = "0.65.1", default-features = false, features = ["ring", "rsa", "flate2"] }
 rpassword = "7"
 
 [dev-dependencies]
@@ -93,7 +93,7 @@ path = "tests/setup_vps_e2e.rs"
 required-features = ["test-fixture"]
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Security_Cryptography", "Win32_System_Threading", "Win32_System_Memory", "Win32_Storage_FileSystem"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Globalization", "Win32_Security", "Win32_Security_Authorization", "Win32_Security_Cryptography", "Win32_System_Console", "Win32_System_Threading", "Win32_System_Memory", "Win32_Storage_FileSystem"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 security-framework = "3"

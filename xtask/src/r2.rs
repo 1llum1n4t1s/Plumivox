@@ -46,7 +46,9 @@ impl Identity {
             match self.target.as_str() {
                 "windows-x64" => "plumivox.exe",
                 "macos-universal" => "plumivox",
-                _ => return Err("targetはwindows-x64またはmacos-universalです".into()),
+                "vps-linux-x86_64" => "plumivox-vps-setup-x86_64",
+                "vps-linux-aarch64" => "plumivox-vps-setup-aarch64",
+                _ => return Err("targetが許可された配布対象ではありません".into()),
             },
             "THIRD-PARTY-LICENSES.txt",
         ])
@@ -56,6 +58,14 @@ impl Identity {
             "plumivox/ci/{}/{}/{}/{}/",
             self.commit, self.run, self.attempt, self.target
         )
+    }
+
+    fn source(&self, repository: &Path, name: &str) -> std::path::PathBuf {
+        if self.target.starts_with("vps-linux-") && name != "THIRD-PARTY-LICENSES.txt" {
+            repository.join("setup/vps").join(name)
+        } else {
+            repository.join("dist").join(name)
+        }
     }
 }
 
@@ -296,7 +306,7 @@ pub fn execute(args: &[String]) -> Result {
 }
 
 fn transfer(identity: &Identity, store: &Store, output: Option<&Path>) -> Result {
-    transfer_from(identity, store, output, &root().join("dist"))
+    transfer_from(identity, store, output, &root())
 }
 
 fn create_output(output: &Path) -> Result<(std::path::PathBuf, Vec<fs::File>)> {
@@ -415,7 +425,7 @@ fn write_artifact(directory: &Path, name: &str, data: &[u8]) -> Result {
     #[cfg(windows)]
     windows_private::validate(&file, true)?;
     #[cfg(unix)]
-    if name == "plumivox" {
+    if name == "plumivox" || crate::VPS_BINARIES.iter().any(|entry| entry.1 == name) {
         set_executable(&file)?;
     }
     file.rewind()?;
@@ -687,7 +697,12 @@ fn set_executable(file: &fs::File) -> Result {
     Ok(())
 }
 
-fn transfer_from(identity: &Identity, store: &Store, output: Option<&Path>, dist: &Path) -> Result {
+fn transfer_from(
+    identity: &Identity,
+    store: &Store,
+    output: Option<&Path>,
+    repository: &Path,
+) -> Result {
     let prefix = identity.prefix();
     if let Some(output) = output {
         let bytes = store.request(&format!("{prefix}manifest.json"), None, None, MAX_MANIFEST)?;
@@ -719,7 +734,7 @@ fn transfer_from(identity: &Identity, store: &Store, output: Option<&Path>, dist
             files: Vec::new(),
         };
         for name in identity.names()? {
-            let path = dist.join(name);
+            let path = identity.source(repository, name);
             let meta = fs::symlink_metadata(&path)?;
             if !meta.file_type().is_file() || meta.len() == 0 || meta.len() > MAX_FILE as u64 {
                 return Err("配布成果物が通常ファイルではないかサイズが不正です".into());
@@ -733,7 +748,12 @@ fn transfer_from(identity: &Identity, store: &Store, output: Option<&Path>, dist
         }
         for entry in &m.files {
             let key = format!("{prefix}{}", entry.name);
-            store.request(&key, Some(&dist.join(&entry.name)), None, MAX_MANIFEST)?;
+            store.request(
+                &key,
+                Some(&identity.source(repository, &entry.name)),
+                None,
+                MAX_MANIFEST,
+            )?;
             verify(
                 entry,
                 &store.request(&key, None, None, entry.size as usize)?,
@@ -776,7 +796,11 @@ mod tests {
         }
     }
     fn fixture() -> (Identity, Vec<u8>, Vec<Vec<u8>>) {
-        let id = identity();
+        fixture_for("windows-x64")
+    }
+    fn fixture_for(target: &str) -> (Identity, Vec<u8>, Vec<Vec<u8>>) {
+        let mut id = identity();
+        id.target = target.into();
         let files = vec![
             b"native binary fixture".to_vec(),
             b"license fixture".to_vec(),
@@ -882,6 +906,106 @@ mod tests {
         root
     }
     #[test]
+    fn all_targets_keep_two_files_and_fixed_sources() {
+        for (target, binary, source_directory) in [
+            ("windows-x64", "plumivox.exe", "dist"),
+            ("macos-universal", "plumivox", "dist"),
+            ("vps-linux-x86_64", "plumivox-vps-setup-x86_64", "setup/vps"),
+            (
+                "vps-linux-aarch64",
+                "plumivox-vps-setup-aarch64",
+                "setup/vps",
+            ),
+        ] {
+            let (id, m, files) = fixture_for(target);
+            id.validate().unwrap();
+            assert_eq!(id.names().unwrap(), [binary, "THIRD-PARTY-LICENSES.txt"]);
+            let repository = Path::new("repository");
+            assert_eq!(
+                id.source(repository, binary),
+                repository.join(source_directory).join(binary)
+            );
+            assert_eq!(
+                id.source(repository, "THIRD-PARTY-LICENSES.txt"),
+                repository.join("dist/THIRD-PARTY-LICENSES.txt")
+            );
+            let output = directory(&format!("all-targets-{target}")).join("new");
+            let (store, handle) = server(vec![
+                ("200 OK", m),
+                ("200 OK", files[0].clone()),
+                ("200 OK", files[1].clone()),
+            ]);
+            transfer(&id, &store, Some(&output)).unwrap();
+            assert_eq!(fs::read(output.join(binary)).unwrap(), files[0]);
+            #[cfg(unix)]
+            if target != "windows-x64" {
+                use std::os::unix::fs::PermissionsExt;
+                assert_eq!(
+                    fs::metadata(output.join(binary))
+                        .unwrap()
+                        .permissions()
+                        .mode()
+                        & 0o777,
+                    0o755
+                );
+            }
+            assert!(
+                String::from_utf8_lossy(&handle.join().unwrap()[0])
+                    .starts_with(&format!("GET /{}manifest.json ", id.prefix()))
+            );
+        }
+    }
+
+    #[test]
+    fn vps_upload_reads_fixed_binary_and_license_and_rejects_other_arch_manifest() {
+        for target in ["vps-linux-x86_64", "vps-linux-aarch64"] {
+            let (id, m, files) = fixture_for(target);
+            let repository = directory(target);
+            fs::create_dir_all(repository.join("setup/vps")).unwrap();
+            fs::create_dir(repository.join("dist")).unwrap();
+            for (name, data) in id.names().unwrap().iter().zip(&files) {
+                fs::write(id.source(&repository, name), data).unwrap();
+            }
+            let (store, handle) = server(vec![
+                ("200 OK", vec![]),
+                ("200 OK", files[0].clone()),
+                ("200 OK", vec![]),
+                ("200 OK", files[1].clone()),
+                ("200 OK", vec![]),
+                ("200 OK", m.clone()),
+            ]);
+            transfer_from(&id, &store, None, &repository).unwrap();
+            let requests = handle.join().unwrap();
+            for index in [0, 2, 4] {
+                assert!(
+                    String::from_utf8_lossy(&requests[index])
+                        .to_ascii_lowercase()
+                        .contains("if-none-match: *")
+                );
+            }
+            assert!(requests[4].ends_with(&m));
+            let mut value: serde_json::Value = serde_json::from_slice(&m).unwrap();
+            for wrong in ["../plumivox-vps-setup-x86_64", "plumivox.exe", "unexpected"] {
+                value["files"][0]["name"] = wrong.into();
+                assert!(manifest(&serde_json::to_vec(&value).unwrap(), &id).is_err());
+            }
+            let mut other = id.clone();
+            other.target = if target.ends_with("x86_64") {
+                "vps-linux-aarch64"
+            } else {
+                "vps-linux-x86_64"
+            }
+            .into();
+            assert!(manifest(&m, &other).is_err());
+            let (store, handle) = server(vec![("200 OK", m), ("200 OK", b"corrupt".to_vec())]);
+            let output = repository.join("rejected");
+            assert!(transfer(&id, &store, Some(&output)).is_err());
+            assert!(!output.exists());
+            handle.join().unwrap();
+        }
+    }
+
+    #[test]
     fn native_curl_download_checks_signature_and_files() {
         let (id, m, files) = fixture();
         let (store, handle) = server(vec![
@@ -922,8 +1046,9 @@ mod tests {
     fn upload_publishes_manifest_only_after_both_files_are_verified() {
         let (id, m, files) = fixture();
         let dist = directory("publish");
+        fs::create_dir(dist.join("dist")).unwrap();
         for (name, data) in id.names().unwrap().iter().zip(&files) {
-            fs::write(dist.join(name), data).unwrap();
+            fs::write(id.source(&dist, name), data).unwrap();
         }
         let (store, handle) = server(vec![
             ("200 OK", vec![]),
@@ -945,8 +1070,9 @@ mod tests {
     fn failed_upload_does_not_publish_manifest() {
         let (id, _, files) = fixture();
         let dist = directory("failed-publish");
+        fs::create_dir(dist.join("dist")).unwrap();
         for (name, data) in id.names().unwrap().iter().zip(&files) {
-            fs::write(dist.join(name), data).unwrap();
+            fs::write(id.source(&dist, name), data).unwrap();
         }
         let (store, handle) = server(vec![("200 OK", vec![]), ("200 OK", b"bad".to_vec())]);
         assert!(transfer_from(&id, &store, None, &dist).is_err());

@@ -183,28 +183,33 @@ where
     }
 }
 
-async fn tunnel(client: &mut TcpStream) -> io::Result<()> {
-    let prepared = timeout(Duration::from_secs(15), async {
-        let mut header = Vec::with_capacity(8192);
-        let boundary;
-        loop {
-            let mut part = [0; 1024];
-            let n = client.read(&mut part).await?;
-            if n == 0 {
-                return Err(io::ErrorKind::UnexpectedEof.into());
-            }
-            header.extend_from_slice(&part[..n]);
-            if let Some(i) = header.windows(4).position(|x| x == b"\r\n\r\n") {
-                boundary = i + 4;
-                break;
-            }
-            if header.len() >= 8192 {
+async fn read_header<R: AsyncRead + Unpin>(client: &mut R) -> io::Result<(Vec<u8>, usize)> {
+    let mut header = Vec::with_capacity(8192);
+    loop {
+        let mut part = [0; 1024];
+        let n = client.read(&mut part).await?;
+        if n == 0 {
+            return Err(io::ErrorKind::UnexpectedEof.into());
+        }
+        // 新しい終端は、直前の読込み末尾3バイト以降にしか現れない。
+        let start = header.len().saturating_sub(3);
+        header.extend_from_slice(&part[..n]);
+        if let Some(i) = header[start..].windows(4).position(|x| x == b"\r\n\r\n") {
+            let boundary = start + i + 4;
+            if boundary > 8192 {
                 return Err(io::ErrorKind::InvalidData.into());
             }
+            return Ok((header, boundary));
         }
-        if boundary > 8192 {
+        if header.len() >= 8192 {
             return Err(io::ErrorKind::InvalidData.into());
         }
+    }
+}
+
+async fn tunnel(client: &mut TcpStream) -> io::Result<()> {
+    let prepared = timeout(Duration::from_secs(15), async {
+        let (header, boundary) = read_header(client).await?;
         let host = target(&header[..boundary]).ok_or(io::ErrorKind::PermissionDenied)?;
         let mut head = header[boundary..].to_vec();
         let connecting = async {
@@ -275,6 +280,60 @@ impl Drop for ActiveConnection {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn fragmented_header_keeps_first_delimiter_and_early_payload() {
+        let header = b"CONNECT x.com:443 HTTP/1.1\r\nHost: x.com:443\r\n\r\n";
+        let payload = b"tls\0payload\r\n\r\nmore";
+        for split in header.len() - 3..header.len() {
+            let mut remaining = header[split..].to_vec();
+            remaining.extend_from_slice(payload);
+            let mut client =
+                std::io::Cursor::new(&header[..split]).chain(std::io::Cursor::new(remaining));
+            let (actual, boundary) = read_header(&mut client).await.unwrap();
+            assert_eq!(boundary, header.len());
+            assert_eq!(&actual[..boundary], header);
+            let mut forwarded = actual[boundary..].to_vec();
+            client.read_to_end(&mut forwarded).await.unwrap();
+            assert_eq!(forwarded, payload);
+        }
+        let (mut source, mut client) = tokio::io::duplex(1);
+        let writer = tokio::spawn(async move { source.write_all(header).await.unwrap() });
+        let (actual, boundary) = read_header(&mut client).await.unwrap();
+        assert_eq!(boundary, header.len());
+        assert_eq!(actual, header);
+        writer.await.unwrap();
+    }
+    #[tokio::test]
+    async fn header_limit_applies_to_first_delimiter_not_early_payload() {
+        let payload = b"early\0tls\r\n\r\n";
+        for boundary in [8191, 8192, 8193] {
+            let mut bytes = vec![b'x'; boundary - 4];
+            bytes.extend_from_slice(b"\r\n\r\n");
+            bytes.extend_from_slice(payload);
+            // 終端の途中で分割し、上限を越えて先読みしたペイロードも確認する。
+            let mut client = std::io::Cursor::new(&bytes[..boundary - 2])
+                .chain(std::io::Cursor::new(&bytes[boundary - 2..]));
+            let result = read_header(&mut client).await;
+            if boundary > 8192 {
+                assert_eq!(result.unwrap_err().kind(), io::ErrorKind::InvalidData);
+            } else {
+                let (actual, end) = result.unwrap();
+                assert_eq!(end, boundary);
+                assert_eq!(actual, bytes);
+                assert_eq!(&actual[end..], payload);
+            }
+        }
+        let mut unterminated = std::io::Cursor::new(vec![b'x'; 8192]);
+        assert_eq!(
+            read_header(&mut unterminated).await.unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
+        let mut truncated = std::io::Cursor::new(b"CONNECT x.com:443 HTTP/1.1\r\n\r");
+        assert_eq!(
+            read_header(&mut truncated).await.unwrap_err().kind(),
+            io::ErrorKind::UnexpectedEof
+        );
+    }
     #[test]
     fn every_dns_candidate_must_be_public_and_bounded() {
         let public = "8.8.8.8:443".parse().unwrap();

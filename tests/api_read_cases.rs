@@ -16,25 +16,209 @@ fn issued_feed_cursor(h: &Harness) -> Result<String> {
 }
 
 #[cfg(windows)]
-async fn windows_acl_evidence(script: String) -> Result<Value> {
-    let script = format!("$ErrorActionPreference='Stop'\n{script}");
-    let bytes = script
-        .encode_utf16()
-        .flat_map(u16::to_le_bytes)
-        .collect::<Vec<_>>();
-    let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
-    let output = tokio::process::Command::new("pwsh")
-        .args(["-NoProfile", "-NonInteractive", "-EncodedCommand", &encoded])
-        .stdin(std::process::Stdio::null())
-        .kill_on_drop(true)
-        .output()
-        .await?;
-    ensure!(
-        output.status.success(),
-        "Synthetic Windows ACL operation failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    Ok(serde_json::from_slice(&output.stdout)?)
+fn windows_acl_evidence(path: &std::path::Path, add_shared: bool) -> Result<Value> {
+    use std::{
+        fs::OpenOptions,
+        os::windows::{
+            fs::{MetadataExt, OpenOptionsExt},
+            io::AsRawHandle,
+        },
+        ptr::{null, null_mut},
+    };
+    use windows_sys::Win32::{
+        Foundation::{CloseHandle, HANDLE, LocalFree},
+        Security::{Authorization::*, *},
+        Storage::FileSystem::{
+            FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_READ_ATTRIBUTES,
+            FILE_SHARE_READ, FILE_SHARE_WRITE, READ_CONTROL, WRITE_DAC,
+        },
+        System::Threading::{GetCurrentProcess, OpenProcessToken},
+    };
+    struct Local(*mut core::ffi::c_void);
+    impl Drop for Local {
+        fn drop(&mut self) {
+            unsafe {
+                LocalFree(self.0);
+            }
+        }
+    }
+    struct Handle(HANDLE);
+    impl Drop for Handle {
+        fn drop(&mut self) {
+            unsafe {
+                CloseHandle(self.0);
+            }
+        }
+    }
+
+    unsafe {
+        let mut token = null_mut();
+        ensure!(
+            OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) != 0,
+            "Cannot inspect synthetic fixture user"
+        );
+        let token = Handle(token);
+        let mut size = 0;
+        GetTokenInformation(token.0, TokenUser, null_mut(), 0, &mut size);
+        ensure!(
+            size > 0 && size <= 65536,
+            "Invalid synthetic fixture user information"
+        );
+        let mut user = vec![0usize; (size as usize).div_ceil(std::mem::size_of::<usize>())];
+        ensure!(
+            GetTokenInformation(
+                token.0,
+                TokenUser,
+                user.as_mut_ptr().cast(),
+                size,
+                &mut size
+            ) != 0,
+            "Cannot inspect synthetic fixture user"
+        );
+        let sid = (*user.as_ptr().cast::<TOKEN_USER>()).User.Sid;
+        // Suiteが保持する専用fixtureだけを開き、削除共有なしの同一handleで所有者確認・変更・再検査する。
+        let file = OpenOptions::new()
+            .access_mode(
+                READ_CONTROL | FILE_READ_ATTRIBUTES | if add_shared { WRITE_DAC } else { 0 },
+            )
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS)
+            .open(path)?;
+        let metadata = file.metadata()?;
+        ensure!(
+            metadata.is_dir() && metadata.file_attributes() & 0x400 == 0,
+            "Synthetic ACL fixture must be a real directory"
+        );
+        let mut owner = null_mut();
+        let mut dacl = null_mut();
+        let mut original = null_mut();
+        let information =
+            OWNER_SECURITY_INFORMATION | GROUP_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION;
+        ensure!(
+            GetSecurityInfo(
+                file.as_raw_handle(),
+                SE_FILE_OBJECT,
+                information,
+                &mut owner,
+                null_mut(),
+                &mut dacl,
+                null_mut(),
+                &mut original
+            ) == 0,
+            "Cannot inspect synthetic fixture security"
+        );
+        let _original = Local(original);
+        ensure!(
+            !owner.is_null() && EqualSid(owner, sid) != 0,
+            "Synthetic directory owner differs from current user"
+        );
+        ensure!(!dacl.is_null(), "Synthetic fixture DACL is unrestricted");
+        if add_shared {
+            let everyone_text = "S-1-1-0".encode_utf16().chain(Some(0)).collect::<Vec<_>>();
+            let mut everyone = null_mut();
+            ensure!(
+                ConvertStringSidToSidW(everyone_text.as_ptr(), &mut everyone) != 0,
+                "Cannot prepare synthetic sharing principal"
+            );
+            let _everyone = Local(everyone);
+            let entry = EXPLICIT_ACCESS_W {
+                // FileSystemRights.Modify | DeleteSubdirectoriesAndFiles | Synchronize。
+                grfAccessPermissions: 0x0013_01ff,
+                grfAccessMode: GRANT_ACCESS,
+                grfInheritance: OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE,
+                Trustee: TRUSTEE_W {
+                    pMultipleTrustee: null_mut(),
+                    MultipleTrusteeOperation: NO_MULTIPLE_TRUSTEE,
+                    TrusteeForm: TRUSTEE_IS_SID,
+                    TrusteeType: TRUSTEE_IS_WELL_KNOWN_GROUP,
+                    ptstrName: everyone.cast(),
+                },
+            };
+            let mut amended = null_mut();
+            ensure!(
+                SetEntriesInAclW(1, &entry, dacl, &mut amended) == 0,
+                "Cannot prepare synthetic sharing ACE"
+            );
+            let _amended = Local(amended.cast());
+            ensure!(
+                SetSecurityInfo(
+                    file.as_raw_handle(),
+                    SE_FILE_OBJECT,
+                    DACL_SECURITY_INFORMATION,
+                    null_mut(),
+                    null_mut(),
+                    amended,
+                    null()
+                ) == 0,
+                "Cannot install synthetic sharing ACE"
+            );
+        }
+        let mut actual = null_mut();
+        ensure!(
+            GetSecurityInfo(
+                file.as_raw_handle(),
+                SE_FILE_OBJECT,
+                information,
+                &mut owner,
+                null_mut(),
+                &mut dacl,
+                null_mut(),
+                &mut actual
+            ) == 0,
+            "Cannot inspect resulting synthetic ACL"
+        );
+        let _actual = Local(actual);
+        ensure!(
+            !owner.is_null() && !dacl.is_null(),
+            "Synthetic fixture security is unavailable"
+        );
+        let mut sddl = null_mut();
+        ensure!(
+            ConvertSecurityDescriptorToStringSecurityDescriptorW(
+                actual,
+                1,
+                information,
+                &mut sddl,
+                null_mut()
+            ) != 0,
+            "Cannot record synthetic ACL evidence"
+        );
+        let _sddl = Local(sddl.cast());
+        let mut len = 0;
+        while *sddl.add(len) != 0 {
+            len += 1;
+        }
+        let sddl = String::from_utf16(std::slice::from_raw_parts(sddl, len))?;
+        let mut control = 0;
+        let mut revision = 0;
+        ensure!(
+            GetSecurityDescriptorControl(actual, &mut control, &mut revision) != 0,
+            "Cannot inspect synthetic ACL protection"
+        );
+        let mut shared = false;
+        let mut delete_child = false;
+        let mut only_owner = (*dacl).AceCount == 1;
+        for index in 0..u32::from((*dacl).AceCount) {
+            let mut ace = null_mut();
+            ensure!(
+                GetAce(dacl, index, &mut ace) != 0,
+                "Cannot inspect synthetic ACL entry"
+            );
+            let allowed = &*ace.cast::<ACCESS_ALLOWED_ACE>();
+            let principal = (&allowed.SidStart as *const u32).cast_mut().cast();
+            only_owner &= allowed.Header.AceType == 0
+                && EqualSid(principal, sid) != 0
+                && allowed.Mask & 0x001f_01ff == 0x001f_01ff;
+            if allowed.Header.AceType == 0 && IsWellKnownSid(principal, WinWorldSid) != 0 {
+                shared |= allowed.Mask & 0x0003_01bf == 0x0003_01bf;
+                delete_child |= allowed.Mask & 0x40 != 0;
+            }
+        }
+        Ok(
+            json!({"sddl":sddl, "shared":shared,"deleteChild":delete_child,
+            "ownerMatches":EqualSid(owner,sid)!=0,"protected":control & SE_DACL_PROTECTED != 0,"onlyOwner":only_owner}),
+        )
+    }
 }
 
 pub async fn basics(h: &mut Harness) -> Result<()> {
@@ -108,22 +292,9 @@ pub async fn basics(h: &mut Harness) -> Result<()> {
                 )?;
                 ensure!(std::fs::read_dir(&shared)?.next().is_none());
                 drop(_initial);
-                let quoted_shared = format!("'{}'", shared.to_string_lossy().replace('\'', "''"));
                 // 全祖先がprivateの専用空dirだけに合成の共有ACEを追加する。
                 // 所有者を先に照合し、所有者の変更や既存ACLの修復は行わない。
-                let before = windows_acl_evidence(format!(r#"
-$path={quoted_shared}
-$user=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value
-$acl=Get-Acl -LiteralPath $path
-if($acl.GetOwner([Security.Principal.SecurityIdentifier]).Value -ne $user){{throw 'Synthetic directory owner differs from current user'}}
-$rule=[Security.AccessControl.FileSystemAccessRule]::new([Security.Principal.SecurityIdentifier]::new('S-1-1-0'),([Security.AccessControl.FileSystemRights]::Modify -bor [Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles),([Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [Security.AccessControl.InheritanceFlags]::ObjectInherit),[Security.AccessControl.PropagationFlags]::None,[Security.AccessControl.AccessControlType]::Allow)
-[void]$acl.AddAccessRule($rule)
-[IO.FileSystemAclExtensions]::SetAccessControl([IO.DirectoryInfo]::new($path),$acl)
-$acl=Get-Acl -LiteralPath $path
-$shared=@($acl.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier])|Where-Object {{$_.IdentityReference.Value -eq 'S-1-1-0' -and $_.AccessControlType -eq [Security.AccessControl.AccessControlType]::Allow -and ($_.FileSystemRights -band [Security.AccessControl.FileSystemRights]::Modify) -eq [Security.AccessControl.FileSystemRights]::Modify}}).Count -gt 0
-$deleteChild=@($acl.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier])|Where-Object {{$_.IdentityReference.Value -eq 'S-1-1-0' -and $_.AccessControlType -eq [Security.AccessControl.AccessControlType]::Allow -and ($_.FileSystemRights -band [Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles) -ne 0}}).Count -gt 0
-[pscustomobject]@{{sddl=$acl.Sddl;shared=$shared;deleteChild=$deleteChild;ownerMatches=($acl.GetOwner([Security.Principal.SecurityIdentifier]).Value -eq $user)}}|ConvertTo-Json -Compress
-"#)).await?;
+                let before = windows_acl_evidence(&shared, true)?;
                 ensure!(
                     before["ownerMatches"] == true
                         && before["shared"] == true
@@ -141,7 +312,7 @@ $deleteChild=@($acl.GetAccessRules($true,$true,[Security.Principal.SecurityIdent
                         && rejected.to_string().contains("shared"),
                     "Shared directory was not rejected at its DACL boundary: {rejected}"
                 );
-                let after=windows_acl_evidence(format!("$acl=Get-Acl -LiteralPath {quoted_shared}\n[pscustomobject]@{{sddl=$acl.Sddl}}|ConvertTo-Json -Compress")).await?;
+                let after = windows_acl_evidence(&shared, false)?;
                 ensure!(
                     after["sddl"] == before["sddl"],
                     "Rejected shared directory DACL was modified"
@@ -155,14 +326,7 @@ $deleteChild=@($acl.GetAccessRules($true,$true,[Security.Principal.SecurityIdent
                     child.clone(),
                     "synthetic-windows-new-private-child",
                 )?;
-                let quoted_child = format!("'{}'", child.to_string_lossy().replace('\'', "''"));
-                let child_acl=windows_acl_evidence(format!(r#"
-$user=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value
-$acl=Get-Acl -LiteralPath {quoted_child}
-$rules=@($acl.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier]))
-$onlyOwner=$rules.Count -eq 1 -and $rules[0].IdentityReference.Value -eq $user -and $rules[0].AccessControlType -eq [Security.AccessControl.AccessControlType]::Allow -and ($rules[0].FileSystemRights -band [Security.AccessControl.FileSystemRights]::FullControl) -eq [Security.AccessControl.FileSystemRights]::FullControl
-[pscustomobject]@{{ownerMatches=($acl.GetOwner([Security.Principal.SecurityIdentifier]).Value -eq $user);protected=$acl.AreAccessRulesProtected;onlyOwner=$onlyOwner;parentSddl=(Get-Acl -LiteralPath {quoted_shared}).Sddl}}|ConvertTo-Json -Compress
-"#)).await?;
+                let child_acl = windows_acl_evidence(&child, false)?;
                 ensure!(
                     child_acl["ownerMatches"] == true
                         && child_acl["protected"] == true
@@ -170,7 +334,7 @@ $onlyOwner=$rules.Count -eq 1 -and $rules[0].IdentityReference.Value -eq $user -
                     "New Windows evidence directory did not receive a protected owner-only DACL"
                 );
                 ensure!(
-                    child_acl["parentSddl"] == before["sddl"],
+                    windows_acl_evidence(&shared, false)?["sddl"] == before["sddl"],
                     "Creating a private child modified its shared parent DACL"
                 );
                 accepted.write_json("synthetic.json", &json!({"synthetic":true}))?;
@@ -637,7 +801,7 @@ pub async fn feed_search(h: &mut Harness) -> Result<()> {
     h.state.scenario("normal");
     case!(
         h,
-        "Following selection scans late duplicates and preserves selected unknown counts",
+        "Following selection aggregates protection before selecting and preserves cursor snapshots",
         {
             h.state.scenario("following-selection");
             for (name, args) in [
@@ -657,14 +821,15 @@ pub async fn feed_search(h: &mut Harness) -> Result<()> {
                 ensure!(
                     v["coverage"]["accounts"] == 20
                         && v["coverage"]["protectedAccountsExcluded"] == 3
-                        && v["coverage"]["protectionStatusUnknownAccounts"] == 17
+                        && v["coverage"]["protectionStatusUnknownAccounts"] == 16
                 );
                 let trace = h.trace();
                 let q = trace[before + 1]["query"]["query"].as_str().unwrap();
                 ensure!(
                     q.contains("from:firstunknown")
                         && q.contains("from:knownfirst")
-                        && !q.contains("pastlimit")
+                        && q.contains("from:pastlimit")
+                        && !q.contains("from:chosen0")
                         && !q.contains("from:private")
                 );
                 let requests = trace[before..]
@@ -679,10 +844,203 @@ pub async fn feed_search(h: &mut Harness) -> Result<()> {
                     .collect::<Vec<_>>();
                 let expected = [
                     vec!["firstunknown".to_owned(), "knownfirst".to_owned()],
-                    (0..18).map(|i| format!("chosen{i}")).collect(),
+                    (1..18).map(|i| format!("chosen{i}")).collect(),
+                    vec!["pastlimit".to_owned()],
                 ]
                 .concat();
                 ensure!(names == expected, "Selected account order/limit changed");
+                // 続きはフォロー一覧を再取得せず、初回の対象と判定を使う。
+                h.state.scenario("normal");
+                let before = h.count();
+                let next = h
+                    .ok(
+                        name,
+                        merge(
+                            json!({"account":"reading","maxAccounts":20,"cursor":v["nextCursor"]}),
+                            if name == "search_tweets" {
+                                json!({"scope":"following","keyword":"needle phrase"})
+                            } else {
+                                json!({})
+                            },
+                        ),
+                    )
+                    .await?;
+                ensure!(
+                    next["coverage"]["accounts"] == 20
+                        && next["coverage"]["protectedAccountsExcluded"] == 3
+                        && next["coverage"]["protectionStatusUnknownAccounts"] == 16
+                        && next["coverage"]["followingPage"] == "first"
+                );
+                let trace = h.trace();
+                ensure!(trace.len() == before + 1);
+                ensure!(trace[before]["query"]["query"].as_str().unwrap() == q);
+                ensure!(trace[before]["query"]["cursor"] == "search-next");
+                h.state.scenario("following-selection");
+                let before = h.count();
+                let page = h.ok(name, merge(
+                    json!({"account":"reading","maxAccounts":20,"followingCursor":v["coverage"]["followingNextCursor"]}),
+                    if name == "search_tweets" { json!({"scope":"following","keyword":"needle phrase"}) } else { json!({}) },
+                )).await?;
+                ensure!(
+                    page["coverage"]["followingPage"] == "continuation"
+                        && page["coverage"]["accounts"] == 2
+                        && page["coverage"]["protectedAccountsExcluded"] == 2
+                        && page["coverage"]["protectionStatusUnknownAccounts"] == 1
+                        && page["coverage"]["followingHasNextPage"] == false
+                );
+                let trace = h.trace();
+                ensure!(
+                    trace.len() == before + 2
+                        && trace[before]["path"] == "/twitter/user/followings"
+                        && trace[before]["query"]["cursor"] == "selection-next"
+                );
+                let names = regex::Regex::new(r"from:([a-z0-9_]+)")
+                    .unwrap()
+                    .captures_iter(trace[before + 1]["query"]["query"].as_str().unwrap())
+                    .map(|c| c[1].to_owned())
+                    .collect::<Vec<_>>();
+                ensure!(names == ["nextpublic", "nextother"]);
+            }
+        }
+    );
+    case!(
+        h,
+        "Following coverage distinguishes duplicate rows from unsearched unique accounts",
+        {
+            for scenario in [
+                "following-duplicates-only",
+                "following-duplicates-stale",
+                "following-duplicates-stale-long",
+                "following-account-limit",
+                "following-account-limit-with-cursor",
+            ] {
+                for (name, args) in [
+                    ("get_following_feed", json!({})),
+                    (
+                        "search_tweets",
+                        json!({"scope":"following","keyword":"needle phrase"}),
+                    ),
+                ] {
+                    h.state.scenario(scenario);
+                    let before = h.count();
+                    let first = h
+                        .ok(
+                            name,
+                            merge(json!({"account":"reading","maxAccounts":20}), args.clone()),
+                        )
+                        .await?;
+                    let limited = !scenario.starts_with("following-duplicates");
+                    ensure!(first["coverage"]["accounts"] == if limited { 20 } else { 1 });
+                    ensure!(
+                        first["coverage"]["followingHasNextPage"] == limited
+                            && first["coverage"]["followingContinuationAvailable"] == false
+                            && first["coverage"]["followingNextCursor"].is_null()
+                            && first["coverage"]["followingContinuationUnavailableReason"]
+                                == if limited {
+                                    json!("account_limit")
+                                } else {
+                                    Value::Null
+                                }
+                    );
+                    if name == "get_following_feed" {
+                        ensure!(first["coverage"]["completeFollowingList"] == !limited);
+                    }
+                    let trace = h.trace();
+                    ensure!(trace.len() == before + 2);
+                    let names = regex::Regex::new(r"from:([a-z0-9_]+)")
+                        .unwrap()
+                        .captures_iter(trace[before + 1]["query"]["query"].as_str().unwrap())
+                        .map(|c| c[1].to_owned())
+                        .collect::<Vec<_>>();
+                    let expected = if limited {
+                        (0..20).map(|i| format!("public{i}")).collect::<Vec<_>>()
+                    } else {
+                        vec!["onlypublic".to_owned()]
+                    };
+                    ensure!(names == expected);
+                    h.state.scenario("normal");
+                    let before = h.count();
+                    let next = h.ok(name, merge(json!({"account":"reading","maxAccounts":20,"cursor":first["nextCursor"]}), args)).await?;
+                    ensure!(
+                        h.count() == before + 1
+                            && next["coverage"]["followingHasNextPage"] == limited
+                            && next["coverage"]["followingContinuationAvailable"] == false
+                            && next["coverage"]["followingNextCursor"].is_null()
+                            && next["coverage"]["followingContinuationUnavailableReason"]
+                                == first["coverage"]["followingContinuationUnavailableReason"]
+                    );
+                }
+            }
+            h.state.scenario("following-missing-cursor");
+            let feed = h
+                .ok(
+                    "get_following_feed",
+                    json!({"account":"reading","maxAccounts":20}),
+                )
+                .await?;
+            ensure!(
+                feed["coverage"]["followingHasNextPage"] == true
+                    && feed["coverage"]["followingNextCursor"].is_null()
+                    && feed["coverage"]["followingContinuationAvailable"] == false
+                    && feed["coverage"]["followingContinuationUnavailableReason"].is_null()
+            );
+            let failure = h.fail("search_tweets", json!({"account":"reading","scope":"following","keyword":"needle phrase","maxAccounts":20}), false).await?;
+            ensure!(failure["error"]["code"] == "INVALID_RESPONSE");
+        }
+    );
+    case!(
+        h,
+        "More than 200 unique protected accounts preserve feed and search continuation",
+        {
+            for (name, args) in [
+                ("get_following_feed", json!({})),
+                (
+                    "search_tweets",
+                    json!({"scope":"following","keyword":"needle phrase"}),
+                ),
+            ] {
+                h.state.scenario("following-many-protected");
+                let v = h
+                    .ok(
+                        name,
+                        merge(json!({"account":"reading","maxAccounts":20}), args.clone()),
+                    )
+                    .await?;
+                ensure!(
+                    v["coverage"]["accounts"] == 20
+                        && v["coverage"]["protectedAccountsExcluded"] == 201
+                        && v["coverage"]["protectionStatusUnknownAccounts"] == 0
+                        && v["nextCursor"].is_string()
+                );
+                h.state.scenario("normal");
+                let before = h.count();
+                let next = h
+                    .ok(
+                        name,
+                        merge(
+                            json!({"account":"reading","maxAccounts":20,"cursor":v["nextCursor"]}),
+                            args,
+                        ),
+                    )
+                    .await?;
+                ensure!(
+                    next["coverage"]["accounts"] == 20
+                        && next["coverage"]["protectedAccountsExcluded"] == 201
+                        && next["coverage"]["protectionStatusUnknownAccounts"] == 0
+                );
+                let trace = h.trace();
+                ensure!(
+                    trace.len() == before + 1
+                        && trace[before]["path"] == "/twitter/tweet/advanced_search"
+                        && trace[before]["query"]["query"]
+                            .as_str()
+                            .unwrap()
+                            .contains("from:public0")
+                        && !trace[before]["query"]["query"]
+                            .as_str()
+                            .unwrap()
+                            .contains("private")
+                );
             }
         }
     );
@@ -815,6 +1173,7 @@ pub async fn feed_search(h: &mut Harness) -> Result<()> {
             expected["coverage"]["accounts"] = json!(20);
             expected["coverage"]["followingHasNextPage"] = json!(true);
             expected["coverage"]["protectedAccountsExcluded"] = json!(1);
+            expected["coverage"]["followingContinuationUnavailableReason"] = json!("account_limit");
             ensure!(
                 first["nextCursor"] == signed("plumivox-feed.", &expected),
                 "Previously issued feed wire format changed"
@@ -1210,6 +1569,32 @@ async fn prepare_search_cursor(h: &mut Harness, kind: &str) -> Result<String> {
     Ok(s)
 }
 async fn search_cases(h: &mut Harness) -> Result<()> {
+    case!(
+        h,
+        "Search keyword preserves untrimmed UTF-16 boundary before HTTP",
+        {
+            h.state.scenario("normal");
+            let keyword = "😀".repeat(256);
+            let before = h.count();
+            h.ok(
+                "search_tweets",
+                json!({"account":"reading","keyword":keyword}),
+            )
+            .await?;
+            ensure!(h.count() == before + 1);
+            for keyword in ["😀".repeat(257), format!(" {}", "😀".repeat(256))] {
+                let error = h
+                    .fail(
+                        "search_tweets",
+                        json!({"account":"reading","keyword":keyword}),
+                        true,
+                    )
+                    .await?;
+                // HarnessはJSON-RPC -32602だけをこのコードへ変換する。
+                ensure!(error["error"]["code"] == "MCP_INVALID_PARAMS");
+            }
+        }
+    );
     case!(h, "Search global phrase and UTC period reach provider", {
         h.state.scenario("search-normal");
         let before = h.count();

@@ -3,10 +3,22 @@ use crate::session::{SessionLease, SessionStorage, read_legacy_protected_cookie}
 use regex::Regex;
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
-use std::{collections::HashMap, path::PathBuf};
+use std::{collections::HashMap, path::PathBuf, sync::LazyLock};
+use tokio::io::AsyncReadExt;
 use tokio_util::sync::CancellationToken;
 
 const MAX_BYTES: usize = 2 * 1024 * 1024;
+static USER_NAME: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\A[A-Za-z0-9_]{1,15}\z").unwrap());
+static TOTP_SECRET: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\A[A-Za-z2-7]+={0,6}\z").unwrap());
+static TOTP_CODE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\A[0-9]{6}\z").unwrap());
+static SSH_HOST: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\A[A-Za-z0-9._:\[\]-]{1,253}\z").unwrap());
+static SSH_USER: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\A[A-Za-z0-9._-]{1,64}\z").unwrap());
+static HOST_KEY: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\ASHA256:[A-Za-z0-9+/]{43}\z").unwrap());
 
 /// 起動時に正本を固定し、読込みに失敗しても別の設定へ切り替えない。
 pub fn resolve_secrets_path(explicit: Option<PathBuf>) -> PathBuf {
@@ -101,20 +113,16 @@ fn error(code: &str, message: &str) -> AppError {
 fn nonempty(value: &Value) -> bool {
     value.as_str().is_some_and(|s| !s.trim().is_empty())
 }
-fn matches(pattern: &str, value: &Value) -> bool {
-    value
-        .as_str()
-        .is_some_and(|s| Regex::new(pattern).unwrap().is_match(s))
+fn matches(pattern: &LazyLock<Regex>, value: &Value) -> bool {
+    value.as_str().is_some_and(|s| pattern.is_match(s))
 }
 fn valid_user(value: &Value) -> bool {
-    matches(r"\A[A-Za-z0-9_]{1,15}\z", value)
+    matches(&USER_NAME, value)
 }
 fn valid_totp(value: &Value) -> bool {
     value.is_null()
         || value.as_str().is_some_and(|s| {
-            s.trim().is_empty()
-                || (Regex::new(r"\A[A-Za-z2-7]+={0,6}\z").unwrap().is_match(s)
-                    && !Regex::new(r"\A[0-9]{6}\z").unwrap().is_match(s))
+            s.trim().is_empty() || (TOTP_SECRET.is_match(s) && !TOTP_CODE.is_match(s))
         })
 }
 fn valid_proxy(value: &Value) -> bool {
@@ -194,13 +202,16 @@ impl AccountStore {
             )
         };
         // 読込み前にもサイズを確認し、異常な設定で巨大な領域を確保しない。
-        let metadata = tokio::fs::metadata(&self.source)
+        let file = tokio::fs::File::open(&self.source)
             .await
             .map_err(|_| unavailable())?;
+        let metadata = file.metadata().await.map_err(|_| unavailable())?;
         if metadata.len() > MAX_BYTES as u64 {
             return Err(unavailable());
         }
-        let bytes = tokio::fs::read(&self.source)
+        let mut bytes = Vec::new();
+        file.take(MAX_BYTES as u64 + 1)
+            .read_to_end(&mut bytes)
             .await
             .map_err(|_| unavailable())?;
         if bytes.len() > MAX_BYTES {
@@ -497,13 +508,13 @@ impl AccountStore {
         let remote_port = port("remote_port", 43129, 1024);
         if !relay.is_object()
             || !valid_proxy(&config["proxy"])
-            || !matches(r"\A[A-Za-z0-9._:\[\]-]{1,253}\z", &relay["ssh_host"])
-            || !matches(r"\A[A-Za-z0-9._-]{1,64}\z", &relay["ssh_user"])
+            || !matches(&SSH_HOST, &relay["ssh_host"])
+            || !matches(&SSH_USER, &relay["ssh_user"])
             || !nonempty(&relay["private_key_file"])
             || !relay["private_key_file"].as_str().is_some_and(|p| {
                 PathBuf::from(p).is_absolute() && !p.chars().any(|c| c <= '\u{1f}')
             })
-            || !matches(r"\ASHA256:[A-Za-z0-9+/]{43}\z", &relay["host_key_sha256"])
+            || !matches(&HOST_KEY, &relay["host_key_sha256"])
             || ssh_port.is_none()
             || local_port.is_none()
             || remote_port.is_none()

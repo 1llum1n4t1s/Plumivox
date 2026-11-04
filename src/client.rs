@@ -162,9 +162,7 @@ fn feed_decode(cursor: &str, account: &Value) -> Result<(Vec<Value>, Value)> {
         || !c.is_object()
         || !c["followingHasNextPage"].is_boolean()
         || !c["accounts"].as_u64().is_some_and(|n| n <= 200)
-        || !c["protectedAccountsExcluded"]
-            .as_u64()
-            .is_some_and(|n| n <= 200)
+        || c["protectedAccountsExcluded"].as_u64().is_none()
         || !c["protectionStatusUnknownAccounts"]
             .as_u64()
             .is_some_and(|n| n <= c["accounts"].as_u64().unwrap_or(0))
@@ -186,7 +184,7 @@ fn feed_decode(cursor: &str, account: &Value) -> Result<(Vec<Value>, Value)> {
         "protectedAccountsExcluded":c["protectedAccountsExcluded"],"protectionStatusUnknownAccounts":c["protectionStatusUnknownAccounts"],
         "followingPage":if c["followingPage"]=="continuation"{"continuation"}else{"first"},
         "followingContinuationAvailable":c["followingContinuationAvailable"]==true,
-        "followingContinuationUnavailableReason":if c["followingContinuationUnavailableReason"]=="cursor_too_long"{json!("cursor_too_long")}else{Value::Null}});
+        "followingContinuationUnavailableReason":if matches!(string(&c["followingContinuationUnavailableReason"]), "cursor_too_long" | "account_limit"){c["followingContinuationUnavailableReason"].clone()}else{Value::Null}});
     Ok((batches.clone(), coverage))
 }
 fn search_limit(c: &Value, kind: &str) -> usize {
@@ -583,34 +581,42 @@ impl TwitterApiClient {
             let users = v["followings"]
                 .as_array()
                 .ok_or_else(|| err("INVALID_RESPONSE", "フォロー先一覧を確認できません。"))?;
-            let mut protected = 0;
-            let mut selected = HashSet::new();
-            let mut unknown = HashSet::new();
-            let mut names = Vec::new();
+            let mut protection = HashMap::<String, u8>::new();
+            let mut order = Vec::new();
             for user in users {
-                if user["isProtected"] == true || user["protected"] == true {
-                    protected += 1;
-                    continue;
-                }
                 let name = string(&user["userName"]);
                 if !username(name) {
                     continue;
                 }
                 let name = name.to_ascii_lowercase();
-                if names.len() < max && selected.insert(name.clone()) {
-                    names.push(name.clone());
-                    unknown.insert(name.clone());
-                }
-                if user["isProtected"] == false || user["protected"] == false {
-                    unknown.remove(&name);
-                }
+                // 同名の全行を集約し、保護 > 公開 > 不明の順で判定する。
+                let status = if user["isProtected"] == true || user["protected"] == true {
+                    2
+                } else if user["isProtected"] == false || user["protected"] == false {
+                    1
+                } else {
+                    0
+                };
+                let current = protection.entry(name.clone()).or_insert_with(|| {
+                    order.push(name);
+                    0
+                });
+                *current = (*current).max(status);
             }
-            let has = v["has_next_page"] == true || users.len() > max;
+            let protected = protection.values().filter(|&&status| status == 2).count();
+            let account_limit = order.len() - protected > max;
+            let names = order
+                .into_iter()
+                .filter(|name| protection[name] != 2)
+                .take(max)
+                .collect::<Vec<_>>();
+            let unknown = names.iter().filter(|name| protection[*name] == 0).count();
+            let has = v["has_next_page"] == true || account_limit;
             let raw = string(&v["next_cursor"]);
             let too_long = len(raw) > MAX_PROVIDER;
-            let c = json!({"accounts":names.len(),"followingHasNextPage":has,"followingNextCursor":if !raw.is_empty() && !too_long{json!(raw)}else{Value::Null},
-                "protectedAccountsExcluded":protected,"protectionStatusUnknownAccounts":unknown.len(),"followingPage":if following.is_empty(){"first"}else{"continuation"},
-                "followingContinuationAvailable":has && !raw.is_empty() && !too_long,"followingContinuationUnavailableReason":if too_long{json!("cursor_too_long")}else{Value::Null}});
+            let c = json!({"accounts":names.len(),"followingHasNextPage":has,"followingNextCursor":if has && !account_limit && !raw.is_empty() && !too_long{json!(raw)}else{Value::Null},
+                "protectedAccountsExcluded":protected,"protectionStatusUnknownAccounts":unknown,"followingPage":if following.is_empty(){"first"}else{"continuation"},
+                "followingContinuationAvailable":has && !account_limit && !raw.is_empty() && !too_long,"followingContinuationUnavailableReason":if account_limit{json!("account_limit")}else if has && too_long{json!("cursor_too_long")}else{Value::Null}});
             (
                 names
                     .chunks(20)

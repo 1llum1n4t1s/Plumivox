@@ -8,8 +8,17 @@ fn fail(code: &str) -> AppError {
             "同名アカウントまたは共有中継設定が存在します。既存設定は上書きしません。"
         }
         "SETTINGS_CHANGED" => "入力中に設定が変更されました。設定を確認して再実行してください。",
+        "SETTINGS_SAVE_UNCERTAIN" => {
+            "設定の保存結果を確認できませんでした。正本と同じフォルダーの.plumivox-*.tmpを確認し、今回の未使用ファイルと本人が確認できたものだけを退避してから再実行してください。"
+        }
+        "SETTINGS_TEMP_RETAINED" => {
+            "今回の一時設定ファイルを回収できませんでした。正本と同じフォルダーの.plumivox-*.tmpを確認し、今回の未使用ファイルと本人が確認できたものだけを退避してから再実行してください。"
+        }
         "SETUP_BUSY" => "同じ保存先のセットアップが実行中です。完了後に再実行してください。",
         "KEY_EXISTS" => "専用SSH鍵が既に存在します。上書きしません。",
+        "KEY_GENERATION_INCOMPLETE" => {
+            "鍵の生成先にファイルが残った状態で処理に失敗しました。指定した秘密鍵と.pubを確認し、本人が今回の未使用・未完了ファイルと確認できたものだけを退避してから再実行してください。自動削除・上書きはしません。"
+        }
         "ACL_UNSAFE" => "保存先は本人所有で、他の利用者がアクセスできない権限にしてください。",
         "DEFAULT_ACCOUNT_INVALID" => {
             "既定アカウントには登録済みのアカウント設定名を指定してください。"
@@ -92,59 +101,9 @@ impl Options {
 
 pub async fn run(args: &[String]) -> Result<()> {
     let options = Options::parse(args)?;
-    #[cfg(target_os = "macos")]
+    #[cfg(any(windows, target_os = "macos"))]
     {
         native::run(options).await
-    }
-    #[cfg(windows)]
-    {
-        let _ = options;
-        let executable = std::env::current_exe().map_err(|_| fail("SETUP_UNAVAILABLE"))?;
-        let script = executable
-            .ancestors()
-            .map(|p| p.join("setup/Setup-Plumivox.ps1"))
-            .find(|p| p.is_file())
-            .ok_or_else(|| fail("SETUP_UNAVAILABLE"))?;
-        let mut command = tokio::process::Command::new("pwsh");
-        command
-            .arg("-NoProfile")
-            .arg("-ExecutionPolicy")
-            .arg("Bypass")
-            .arg("-File")
-            .arg(script);
-        let mut i = 0;
-        while i < args.len() {
-            let mapped = match args[i].as_str() {
-                "--setup" => {
-                    i += 1;
-                    continue;
-                }
-                "--prepare-key" => "-PrepareKey",
-                "--check" => "-Check",
-                "--settings-path" => "-SettingsPath",
-                "--private-key-path" => "-PrivateKeyPath",
-                "--account" => "-Account",
-                "--default-account" => "-DefaultAccount",
-                "--set-default-account" => "-SetDefaultAccount",
-                _ => return Err(fail("MODE_INVALID")),
-            };
-            command.arg(mapped);
-            if !matches!(args[i].as_str(), "--prepare-key" | "--check") {
-                i += 1;
-                command.arg(&args[i]);
-            }
-            i += 1;
-        }
-        if command
-            .status()
-            .await
-            .map_err(|_| fail("SETUP_UNAVAILABLE"))?
-            .success()
-        {
-            Ok(())
-        } else {
-            Err(fail("SETUP_FAILED"))
-        }
     }
     #[cfg(not(any(windows, target_os = "macos")))]
     {
@@ -153,18 +112,34 @@ pub async fn run(args: &[String]) -> Result<()> {
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(windows)]
+#[path = "setup_windows.rs"]
+mod windows;
+
+#[cfg(any(windows, target_os = "macos"))]
 mod native {
+    #[cfg(windows)]
+    use super::windows::{lock, path_ok, private};
     use super::*;
+    #[cfg(target_os = "macos")]
     use fs2::FileExt;
     use serde_json::{Value, json};
+    #[cfg(target_os = "macos")]
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
+    #[cfg(target_os = "macos")]
+    use std::path::Component;
     use std::{
-        fs::{self, File, OpenOptions},
+        fs,
         io::{self, Write},
-        os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
-        path::{Component, Path},
+        path::Path,
+    };
+    #[cfg(target_os = "macos")]
+    use std::{
+        fs::{File, OpenOptions},
+        io::Read,
     };
 
+    #[cfg(target_os = "macos")]
     fn path_ok(path: &Path) -> Result<()> {
         if !path.is_absolute() || path.components().any(|c| matches!(c, Component::ParentDir)) {
             return Err(fail("PATH_INVALID"));
@@ -200,6 +175,7 @@ mod native {
         }
         Ok(())
     }
+    #[cfg(target_os = "macos")]
     fn private(path: &Path, directory: bool) -> Result<()> {
         path_ok(path)?;
         let meta = fs::symlink_metadata(path).map_err(|_| fail("ACL_UNSAFE"))?;
@@ -212,6 +188,7 @@ mod native {
         }
         Ok(())
     }
+    #[cfg(target_os = "macos")]
     fn directory(path: &Path) -> Result<()> {
         path_ok(path)?;
         if path.exists() {
@@ -228,23 +205,50 @@ mod native {
         private(path, true)
     }
     fn snapshot(path: &Path) -> Result<Option<Vec<u8>>> {
-        path_ok(path)?;
-        match fs::symlink_metadata(path) {
-            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
-            Err(_) => Err(fail("SETTINGS_INVALID")),
-            Ok(meta) => {
-                if !meta.is_file() || meta.len() > 2097152 {
-                    return Err(fail("SETTINGS_INVALID"));
+        read_snapshot(path, true)
+    }
+    #[cfg(windows)]
+    fn writable_snapshot(path: &Path) -> Result<Option<Vec<u8>>> {
+        read_snapshot(path, false)
+    }
+    fn read_snapshot(path: &Path, private_required: bool) -> Result<Option<Vec<u8>>> {
+        #[cfg(windows)]
+        {
+            return super::windows::snapshot(path, private_required);
+        }
+        #[cfg(target_os = "macos")]
+        {
+            path_ok(path)?;
+            match fs::symlink_metadata(path) {
+                Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
+                Err(_) => Err(fail("SETTINGS_INVALID")),
+                Ok(meta) => {
+                    if !meta.is_file() || meta.len() > 2097152 {
+                        return Err(fail("SETTINGS_INVALID"));
+                    }
+                    let _ = private_required;
+                    private(path, false)?;
+                    let file = File::open(path).map_err(|_| fail("SETTINGS_INVALID"))?;
+                    if !file
+                        .metadata()
+                        .map_err(|_| fail("SETTINGS_INVALID"))?
+                        .is_file()
+                    {
+                        return Err(fail("SETTINGS_INVALID"));
+                    }
+                    let mut bytes = Vec::new();
+                    file.take(2097153)
+                        .read_to_end(&mut bytes)
+                        .map_err(|_| fail("SETTINGS_INVALID"))?;
+                    if bytes.len() > 2097152 {
+                        return Err(fail("SETTINGS_INVALID"));
+                    }
+                    Ok(Some(bytes))
                 }
-                private(path, false)?;
-                let bytes = fs::read(path).map_err(|_| fail("SETTINGS_INVALID"))?;
-                if bytes.len() > 2097152 {
-                    return Err(fail("SETTINGS_INVALID"));
-                }
-                Ok(Some(bytes))
             }
         }
     }
+    #[cfg(target_os = "macos")]
     fn lock(path: &Path) -> Result<File> {
         let parent = path.parent().ok_or_else(|| fail("PATH_INVALID"))?;
         directory(parent)?;
@@ -254,23 +258,22 @@ mod native {
             .ok_or_else(|| fail("PATH_INVALID"))?;
         let lock_path = parent.join(format!(".{name}.plumivox-setup.lock"));
         path_ok(&lock_path)?;
-        if lock_path.exists() {
+        let exists = lock_path.exists();
+        if exists {
             private(&lock_path, false)?;
         }
-        let file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .mode(0o600)
-            .custom_flags(libc::O_NOFOLLOW)
-            .open(&lock_path)
-            .map_err(|_| fail("ACL_UNSAFE"))?;
+        let mut options = OpenOptions::new();
+        options.read(true).write(true).create(true).truncate(false);
+        #[cfg(target_os = "macos")]
+        options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
+        let file = options.open(&lock_path).map_err(|_| fail("ACL_UNSAFE"))?;
         private(&lock_path, false)?;
         file.try_lock_exclusive().map_err(|_| fail("SETUP_BUSY"))?;
         Ok(file)
     }
+    #[cfg(target_os = "macos")]
     struct Staging(PathBuf);
+    #[cfg(target_os = "macos")]
     impl Drop for Staging {
         fn drop(&mut self) {
             let _ = fs::remove_file(&self.0);
@@ -278,32 +281,91 @@ mod native {
     }
     fn save(path: &Path, original: &Option<Vec<u8>>, doc: &Value) -> Result<()> {
         let parent = path.parent().ok_or_else(|| fail("PATH_INVALID"))?;
+        #[cfg(windows)]
+        let _parents = super::windows::guard_parent(path, true)?;
+        #[cfg(target_os = "macos")]
         private(parent, true)?;
-        let staging =
-            Staging(parent.join(format!(".plumivox-{:032x}.tmp", rand::random::<u128>())));
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .custom_flags(libc::O_NOFOLLOW)
-            .open(&staging.0)
+        let staging_path = parent.join(format!(".plumivox-{:032x}.tmp", rand::random::<u128>()));
+        #[cfg(target_os = "macos")]
+        let _staging = Staging(staging_path.clone());
+        #[cfg(target_os = "macos")]
+        let mut options = OpenOptions::new();
+        #[cfg(target_os = "macos")]
+        options.write(true).create_new(true);
+        #[cfg(target_os = "macos")]
+        options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
+        #[cfg(target_os = "macos")]
+        let mut file = options
+            .open(&staging_path)
             .map_err(|_| fail("SETTINGS_INVALID"))?;
-        let bytes = serde_json::to_vec_pretty(doc).map_err(|_| fail("SETTINGS_INVALID"))?;
-        if bytes.len() > 2097152 {
-            return Err(fail("SETTINGS_INVALID"));
+        #[cfg(windows)]
+        let mut file = super::windows::staging(&staging_path)?;
+        let result = (|| {
+            let bytes = serde_json::to_vec_pretty(doc).map_err(|_| fail("SETTINGS_INVALID"))?;
+            if bytes.len() > 2097152 {
+                return Err(fail("SETTINGS_INVALID"));
+            }
+            file.write_all(&bytes)
+                .and_then(|_| file.sync_all())
+                .map_err(|_| fail("SETTINGS_INVALID"))?;
+            #[cfg(target_os = "macos")]
+            private(&staging_path, false)?;
+            #[cfg(windows)]
+            super::windows::verify_staging(&file)?;
+            #[cfg(windows)]
+            let current = writable_snapshot(path)?;
+            #[cfg(target_os = "macos")]
+            let current = snapshot(path)?;
+            if current != *original {
+                return Err(fail("SETTINGS_CHANGED"));
+            }
+            #[cfg(windows)]
+            super::windows::publish(&mut file, path, original.is_some())?;
+            #[cfg(target_os = "macos")]
+            {
+                drop(file);
+                replace(&staging_path, path, original.is_some())?;
+            }
+            #[cfg(target_os = "macos")]
+            File::open(parent)
+                .and_then(|f| f.sync_all())
+                .map_err(|_| fail("SETTINGS_INVALID"))?;
+            Ok(())
+        })();
+        #[cfg(windows)]
+        {
+            file.finish(result)
         }
-        file.write_all(&bytes)
-            .and_then(|_| file.sync_all())
-            .map_err(|_| fail("SETTINGS_INVALID"))?;
-        private(&staging.0, false)?;
-        if snapshot(path)? != *original {
-            return Err(fail("SETTINGS_CHANGED"));
+        #[cfg(target_os = "macos")]
+        {
+            result
         }
-        fs::rename(&staging.0, path).map_err(|_| fail("SETTINGS_INVALID"))?;
-        File::open(parent)
-            .and_then(|f| f.sync_all())
-            .map_err(|_| fail("SETTINGS_INVALID"))?;
-        Ok(())
+    }
+    #[cfg(target_os = "macos")]
+    fn replace(staging: &Path, destination: &Path, replace_existing: bool) -> Result<()> {
+        if replace_existing {
+            fs::rename(staging, destination).map_err(|_| fail("SETTINGS_INVALID"))
+        } else {
+            use std::{ffi::CString, os::unix::ffi::OsStrExt};
+            let source =
+                CString::new(staging.as_os_str().as_bytes()).map_err(|_| fail("PATH_INVALID"))?;
+            let destination = CString::new(destination.as_os_str().as_bytes())
+                .map_err(|_| fail("PATH_INVALID"))?;
+            // 宛先の初回作成と一時名の除去を一度で行い、既存ファイルを置換しない。
+            // RENAME_EXCL未対応のファイルシステムでは安全に失敗する。
+            if unsafe { libc::renamex_np(source.as_ptr(), destination.as_ptr(), libc::RENAME_EXCL) }
+                == 0
+            {
+                Ok(())
+            } else {
+                let error = io::Error::last_os_error();
+                Err(fail(if error.kind() == io::ErrorKind::AlreadyExists {
+                    "SETTINGS_CHANGED"
+                } else {
+                    "SETTINGS_INVALID"
+                }))
+            }
+        }
     }
     fn ask(prompt: &str, default: &str) -> Result<String> {
         print!(
@@ -331,6 +393,9 @@ mod native {
         })
     }
     fn secret(prompt: &str, optional: bool) -> Result<String> {
+        #[cfg(windows)]
+        let value = super::windows::secret(prompt)?;
+        #[cfg(target_os = "macos")]
         let value = rpassword::prompt_password(format!("{prompt}: "))
             .map_err(|_| fail("INPUT_REQUIRED"))?;
         if !optional && value.trim().is_empty() {
@@ -351,7 +416,7 @@ mod native {
     async fn keygen(args: &[&str]) -> Result<()> {
         let result = tokio::time::timeout(
             std::time::Duration::from_secs(30),
-            tokio::process::Command::new("ssh-keygen")
+            tokio::process::Command::new(keygen_executable())
                 .args(args)
                 .kill_on_drop(true)
                 .output(),
@@ -364,9 +429,30 @@ mod native {
         }
         Ok(())
     }
+    fn keygen_executable() -> PathBuf {
+        #[cfg(windows)]
+        for (variable, suffix) in [
+            ("WINDIR", "System32/OpenSSH/ssh-keygen.exe"),
+            ("ProgramFiles", "Git/usr/bin/ssh-keygen.exe"),
+        ] {
+            if let Some(root) = std::env::var_os(variable) {
+                let path = PathBuf::from(root).join(suffix);
+                if path.is_file() {
+                    return path;
+                }
+            }
+        }
+        PathBuf::from("ssh-keygen")
+    }
     async fn validate_key(key: &Path) -> Result<()> {
+        #[cfg(target_os = "macos")]
         private(key.parent().ok_or_else(|| fail("PATH_INVALID"))?, true)?;
+        #[cfg(target_os = "macos")]
         private(key, false)?;
+        #[cfg(windows)]
+        let _parents = super::windows::guard_parent(key, false)?;
+        #[cfg(windows)]
+        let _key = super::windows::read_file(key, true)?;
         keygen(&[
             "-y",
             "-P",
@@ -383,38 +469,61 @@ mod native {
             key.to_str().ok_or_else(|| fail("PATH_INVALID"))?
         ));
         path_ok(&public)?;
+        #[cfg(windows)]
+        if let Some(parent) = key.parent().filter(|p| p.exists()) {
+            private(parent, true)?;
+        }
         let _lock = lock(key)?;
+        #[cfg(windows)]
+        let _parents = super::windows::guard_parent(key, true)?;
         if key.exists() || public.exists() {
             return Err(fail("KEY_EXISTS"));
         }
-        keygen(&[
-            "-q",
-            "-t",
-            "ed25519",
-            "-N",
-            "",
-            "-C",
-            "plumivox",
-            "-f",
-            key.to_str().unwrap(),
-        ])
-        .await?;
-        private(key, false)?;
-        // ssh-keygenの公開鍵は秘密を含まないが、保存先と合わせて制限する。
-        let metadata = fs::symlink_metadata(&public).map_err(|_| fail("SSH_KEYGEN_REQUIRED"))?;
-        if metadata.uid() != unsafe { libc::geteuid() } || !metadata.is_file() {
-            return Err(fail("ACL_UNSAFE"));
+        let generated = async {
+            keygen(&[
+                "-q",
+                "-t",
+                "ed25519",
+                "-N",
+                "",
+                "-C",
+                "plumivox",
+                "-f",
+                key.to_str().unwrap(),
+            ])
+            .await?;
+            #[cfg(windows)]
+            super::windows::protect(key)?;
+            private(key, false)?;
+            // ssh-keygenの公開鍵は秘密を含まないが、保存先と合わせて制限する。
+            #[cfg(target_os = "macos")]
+            let metadata =
+                fs::symlink_metadata(&public).map_err(|_| fail("SSH_KEYGEN_REQUIRED"))?;
+            #[cfg(target_os = "macos")]
+            if metadata.uid() != unsafe { libc::geteuid() } || !metadata.is_file() {
+                return Err(fail("ACL_UNSAFE"));
+            }
+            #[cfg(target_os = "macos")]
+            fs::set_permissions(&public, fs::Permissions::from_mode(0o600))
+                .map_err(|_| fail("ACL_UNSAFE"))?;
+            #[cfg(windows)]
+            super::windows::protect(&public)?;
+            private(&public, false)?;
+            println!(
+                "VPS側に登録する公開鍵:\n{}",
+                fs::read_to_string(&public)
+                    .map_err(|_| fail("SSH_KEYGEN_REQUIRED"))?
+                    .trim()
+            );
+            Ok(())
         }
-        fs::set_permissions(&public, fs::Permissions::from_mode(0o600))
-            .map_err(|_| fail("ACL_UNSAFE"))?;
-        private(&public, false)?;
-        println!(
-            "VPS側に登録する公開鍵:\n{}",
-            fs::read_to_string(public)
-                .map_err(|_| fail("SSH_KEYGEN_REQUIRED"))?
-                .trim()
-        );
-        Ok(())
+        .await;
+        if generated.is_err()
+            && (fs::symlink_metadata(key).is_ok() || fs::symlink_metadata(&public).is_ok())
+        {
+            return Err(fail("KEY_GENERATION_INCOMPLETE"));
+        }
+        generated
     }
     fn names(doc: &Value) -> Vec<String> {
         doc["twitterapi_io"]
@@ -430,7 +539,11 @@ mod native {
 
     pub async fn run(o: Options) -> Result<()> {
         let settings = crate::config::resolve_secrets_path(o.settings);
+        #[cfg(target_os = "macos")]
         let home = dirs::home_dir().ok_or_else(|| fail("PATH_INVALID"))?;
+        #[cfg(windows)]
+        let key = o.key.unwrap_or_else(super::windows::default_key);
+        #[cfg(target_os = "macos")]
         let key = o.key.unwrap_or_else(|| {
             home.join("Library/Application Support/Kagayoi/Plumivox/keys/plumivox_ed25519")
         });
@@ -439,6 +552,13 @@ mod native {
         }
         path_ok(&settings)?;
         let _lock = lock(&settings)?;
+        #[cfg(windows)]
+        let original = if o.check {
+            snapshot(&settings)?
+        } else {
+            writable_snapshot(&settings)?
+        };
+        #[cfg(target_os = "macos")]
         let original = snapshot(&settings)?;
         let mut doc: Value = match &original {
             Some(b) => serde_json::from_slice(b).map_err(|_| fail("SETTINGS_INVALID"))?,
@@ -564,7 +684,7 @@ mod native {
         Ok(())
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, target_os = "macos"))]
     mod tests {
         use super::*;
 
@@ -592,6 +712,39 @@ mod native {
                     let _ = fs::remove_dir_all(&self.0);
                 }
             }
+        }
+
+        #[test]
+        fn initial_publish_preserves_concurrent_destination_and_publishes_when_absent() {
+            let area = Area::new();
+            let staging = area.0.join("staging.json");
+            let destination = area.0.join("settings.json");
+            fs::write(&staging, b"new settings").unwrap();
+            fs::write(&destination, b"concurrent settings").unwrap();
+            assert_eq!(
+                replace(&staging, &destination, false).unwrap_err().code,
+                "SETTINGS_CHANGED"
+            );
+            assert_eq!(fs::read(&destination).unwrap(), b"concurrent settings");
+            assert_eq!(fs::read(&staging).unwrap(), b"new settings");
+            let absent = area.0.join("absent.json");
+            replace(&staging, &absent, false).unwrap();
+            assert_eq!(fs::read(absent).unwrap(), b"new settings");
+            assert!(!staging.exists());
+        }
+
+        #[test]
+        fn snapshot_accepts_exact_byte_limit_and_rejects_one_extra_byte() {
+            let area = Area::new();
+            let path = area.0.join("settings.json");
+            save(&path, &None, &json!({})).unwrap();
+            let bytes = vec![b' '; 2097152];
+            fs::write(&path, &bytes).unwrap();
+            assert_eq!(snapshot(&path).unwrap().unwrap().len(), bytes.len());
+            let mut file = OpenOptions::new().append(true).open(&path).unwrap();
+            file.write_all(b" ").unwrap();
+            drop(file);
+            assert_eq!(snapshot(&path).unwrap_err().code, "SETTINGS_INVALID");
         }
 
         #[test]

@@ -300,8 +300,7 @@ impl Suite {
         } else {
             #[cfg(windows)]
             let root = {
-                // WindowsのverbatimパスはPowerShellのスクリプト実行に渡さない。
-                // 正規化した実体との照合はnew_at内で別途行う。
+                // 元のパス表記を保ち、正規化した実体との照合はnew_at内で行う。
                 let root = std::env::temp_dir();
                 ensure!(root.is_absolute(), "Test temp directory must be absolute");
                 root

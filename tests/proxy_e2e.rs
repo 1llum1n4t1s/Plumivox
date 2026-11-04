@@ -3,7 +3,10 @@ mod support;
 
 use anyhow::{Context, ensure};
 use base64::{Engine, engine::general_purpose::STANDARD_NO_PAD};
-use proxy_support::{Harness, Mode, active_is, gate_count, rejected_tunnel, release_gate, state};
+use proxy_support::{
+    Harness, Mode, active_is, gate_count, rejected_tunnel, rejected_tunnel_parts, release_gate,
+    state,
+};
 use serde_json::{Value, json};
 use std::{fs, io::Write, sync::atomic::Ordering, time::Duration};
 use support::{Result, Suite, free_port, wait_until};
@@ -115,6 +118,41 @@ async fn native_shared_proxy_e2e() -> Result<()> {
             Ok(())
         }
     );
+    case!(
+        "fragmented CONNECT completes through shared daemon and residential filter",
+        {
+            let b = second.context("Primary MCP was not started")?;
+            // 各終端位置の分割を実SSH転送で送り、最後の断片で初めて403になる。
+            for suffix in [1, 2, 3] {
+                let header = b"CONNECT localhost:443 HTTP/1.1\r\n\r\n";
+                let split = header.len() - suffix;
+                rejected_tunnel_parts(primary.remote, &[&header[..split], &header[split..]], false)
+                    .await?;
+            }
+            ensure!(
+                state(&h.success(b, "get_proxy_status", json!({})).await?) == "ready"
+                    && h.ssh.active() == 1,
+                "Fragmented CONNECT disturbed shared forwarding"
+            );
+            Ok(())
+        }
+    );
+    case!("CONNECT rejects an unterminated header at 8192 bytes", {
+        let mut header = b"CONNECT localhost:443 HTTP/1.1\r\nX-Padding: ".to_vec();
+        header.resize(8192, b'x');
+        // 8191バイトでは待機し、上限到達で終端を待たずに拒否する。
+        rejected_tunnel_parts(primary.remote, &[&header[..8191], &header[8191..]], false).await?;
+        Ok(())
+    });
+    case!("CONNECT rejects EOF before its header delimiter", {
+        rejected_tunnel_parts(
+            primary.remote,
+            &[b"CONNECT localhost:443 HTTP/1.1\r\n\r"],
+            true,
+        )
+        .await?;
+        Ok(())
+    });
     case!(
         "SSH disconnect reconnects transport without another MCP start",
         {

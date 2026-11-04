@@ -261,33 +261,6 @@ async fn native_stdio_contract() -> Result<()> {
             }
         );
     }
-    for (name, text, len) in [
-        ("Japanese", "あ".repeat(140), 280),
-        ("Family emoji", "👨‍👩‍👧‍👦".into(), 2),
-        (
-            "URL",
-            format!("https://example.com/{}", "a".repeat(300)),
-            23,
-        ),
-    ] {
-        case!(format!("{name} weighted text"), {
-            let data = call!("post_tweet", json!({"account":"posting","text":text}));
-            ensure!(
-                data["weightedLength"] == len
-                    && data["tweetId"]
-                        .as_str()
-                        .is_some_and(|s| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit()))
-            );
-            Ok(())
-        });
-    }
-    case!("Explicit repeated posts each sent once", {
-        let n = state.lock().unwrap().trace.len();
-        let one = call!("post_tweet", json!({"account":"posting","text":"same"}));
-        let two = call!("post_tweet", json!({"account":"posting","text":"same"}));
-        ensure!(one["tweetId"] != two["tweetId"] && state.lock().unwrap().trace.len() == n + 2);
-        Ok(())
-    });
     for (name, mode, expected, fail) in [
         (
             "Image upload precedes one post",
@@ -352,12 +325,6 @@ async fn native_stdio_contract() -> Result<()> {
             json!({"account":"reading","keyword":"changed","cursor":first["nextCursor"]}),
             true,
             true
-        );
-        Ok(())
-    });
-    case!("Login reuses cookies without network", {
-        ensure!(
-            call!("login_account", json!({"account":"posting"}), false, true)["reused"] == true
         );
         Ok(())
     });

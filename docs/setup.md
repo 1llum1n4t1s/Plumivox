@@ -14,7 +14,7 @@ PCからVPSへSSH接続するため、自宅ルーターのポート開放は不
 
 | 場所 | 必要なもの |
 | --- | --- |
-| Windows PC | Windows x64、PowerShell 7、Codex、OpenSSHの`ssh`・`scp`・`ssh-keygen` |
+| Windows PC | Windows x64、Codex、OpenSSHの`ssh`・`scp`・`ssh-keygen` |
 | Mac | macOS（Apple Silicon・Intel）、Codex、`ssh`・`scp`・`ssh-keygen`。ログインする利用者のKeychainを利用可能なこと |
 | VPS | Ubuntu 22.04以降またはDebian 12以降、systemd、固定の公開IPv4、SSH管理者とsudo権限、有効なUFW |
 | TwitterAPI.io | APIキー。API利用料とVPS料金は各サービスの契約に従います |
@@ -26,7 +26,7 @@ PCからVPSへSSH接続するため、自宅ルーターのポート開放は不
 
 ## 1. プラグインと専用SSH鍵を準備する
 
-WindowsではPowerShell 7で実行します。取得元はGitHubの最新`main`です。ネイティブ実行ファイルの`--setup`は、Windowsでは同梱のPowerShellウィザードを呼びます。子プロセスだけに`-ExecutionPolicy Bypass`を指定し、PCの永続的な実行ポリシーを変更しません。組織のポリシーで禁止されている場合は、その管理者に確認してください。
+取得元はGitHubの最新`main`です。Windows・macOSとも、同梱の実行ファイルの`--setup`が端末の対話入力を処理します。WindowsのPowerShell 7は不要です。次のWindows向けコマンド例はPowerShellで実行します。
 
 ```powershell
 codex plugin marketplace add https://github.com/1llum1n4t1s/Plumivox.git --ref main
@@ -56,12 +56,20 @@ publicKey="$HOME/Library/Application Support/Kagayoi/Plumivox/keys/plumivox_ed25
 
 `203.0.113.10`を自分のVPSのIPv4に、`ubuntu`を現在使えるSSH管理者名に置き換えます。この管理者と、後で作る中継専用の`plumivox`利用者は別です。SSHポートを変更している場合は`22`も変更します。
 
+転送先は、管理者本人のリモート`$HOME`配下に新規作成します。ホームとその親階層は本人以外に書込みを許さず、リンク経由でないことを先に確認してください。以下の`plumivox-setup-1`が既に存在する場合は停止します。既存のものを削除・再利用せず、未使用の別名を選んで以下の全箇所を揃えてください。新規作成・転送のいずれかが失敗したら、次の操作へ進みません。
+
+公開鍵と、Bash版で使う`squid.conf.in`・`plumivox-proxy.service`は、sudoを呼び出す本人またはrootが所有し、第三者が書込みできない、リンクでない通常ファイルにします。親階層も本人またはrootの管理下に置きます。別の利用者が用意した共有資材をそのまま使わず、今回の転送先に本人が転送してください。インストーラーは入力の参照先・読取り中の変更を確認して内容を固定するため、確認・導入中は資材と公開鍵を編集・差替えしません。
+
 ```powershell
 $vpsHost = '203.0.113.10'
 $adminUser = 'ubuntu'
 $sshPort = 22
-scp -P $sshPort -r (Join-Path $pluginRoot 'setup/vps') "${adminUser}@${vpsHost}:/tmp/plumivox-setup"
-scp -P $sshPort $publicKey "${adminUser}@${vpsHost}:/tmp/plumivox-setup/plumivox_ed25519.pub"
+ssh -p $sshPort "${adminUser}@${vpsHost}" 'umask 077; mkdir -m 700 -- "$HOME/plumivox-setup-1" && mkdir -m 700 -- "$HOME/plumivox-setup-1/assets"'
+if ($LASTEXITCODE -ne 0) { throw '新規転送先を作成できません。既存先は再利用せず、別名を選んでください。' }
+scp -P $sshPort -r (Join-Path $pluginRoot 'setup/vps') "${adminUser}@${vpsHost}:plumivox-setup-1/assets/"
+if ($LASTEXITCODE -ne 0) { throw '資材の転送に失敗しました。導入へ進まないでください。' }
+scp -P $sshPort $publicKey "${adminUser}@${vpsHost}:plumivox-setup-1/plumivox_ed25519.pub"
+if ($LASTEXITCODE -ne 0) { throw '公開鍵の転送に失敗しました。導入へ進まないでください。' }
 ssh -p $sshPort "${adminUser}@${vpsHost}"
 ```
 
@@ -71,9 +79,13 @@ macOSでは同じ値を使い、次のように転送します。
 vpsHost='203.0.113.10'
 adminUser='ubuntu'
 sshPort=22
-scp -P "$sshPort" -r "$pluginRoot/setup/vps" "$adminUser@$vpsHost:/tmp/plumivox-setup"
-scp -P "$sshPort" "$publicKey" "$adminUser@$vpsHost:/tmp/plumivox-setup/plumivox_ed25519.pub"
-ssh -p "$sshPort" "$adminUser@$vpsHost"
+if ssh -p "$sshPort" "$adminUser@$vpsHost" 'umask 077; mkdir -m 700 -- "$HOME/plumivox-setup-1" && mkdir -m 700 -- "$HOME/plumivox-setup-1/assets"'; then
+  scp -P "$sshPort" -r "$pluginRoot/setup/vps" "$adminUser@$vpsHost:plumivox-setup-1/assets/" &&
+  scp -P "$sshPort" "$publicKey" "$adminUser@$vpsHost:plumivox-setup-1/plumivox_ed25519.pub" &&
+  ssh -p "$sshPort" "$adminUser@$vpsHost"
+else
+  printf '%s\n' '新規転送先を作成できません。既存先は再利用せず、別名を選んでください。'
+fi
 ```
 
 初回SSH接続で表示されるホスト鍵指紋は、VPS事業者のコンソールで確認した指紋と照合します。`ssh-keyscan`の結果だけを根拠に承認しません。
@@ -94,17 +106,51 @@ sudo ufw allow 22/tcp
 sudo ufw enable
 ```
 
-まず変更しない事前確認を実行し、合格したらインストールします。
+sudoの前に、転送先が本人所有で本人以外に書込みを許さないこと、リンクでないこと、資材が`assets/vps/`直下、公開鍵がその親の新規転送先直下にあることを確認します。想定外の古いファイルやディレクトリ構造なら実行せず停止してください。
 
 ```bash
-sudo bash /tmp/plumivox-setup/install.sh \
-  --public-key-file /tmp/plumivox-setup/plumivox_ed25519.pub --check
-
-sudo bash /tmp/plumivox-setup/install.sh \
-  --public-key-file /tmp/plumivox-setup/plumivox_ed25519.pub
+setupRoot="$HOME/plumivox-setup-1"
+uname -m
+ls -ld "$HOME" "$setupRoot" "$setupRoot/assets" "$setupRoot/assets/vps"
+ls -l "$setupRoot/assets/vps/" "$setupRoot/plumivox_ed25519.pub"
 ```
 
+確認したVPSのCPUに合う静的ネイティブ実行ファイルを選び、変更しない事前確認を実行します。x86_64・aarch64ではRust版を使います。実行ファイルを使うため、VPSへのRust導入は不要です。
+
+```bash
+case "$(uname -m)" in
+  x86_64) installer=("$setupRoot/assets/vps/plumivox-vps-setup-x86_64") ;;
+  aarch64) installer=("$setupRoot/assets/vps/plumivox-vps-setup-aarch64") ;;
+  *) installer=(bash "$setupRoot/assets/vps/install.sh") ;;
+esac
+if [ "${installer[0]}" = bash ] || chmod u+x "${installer[0]}"; then
+  if sudo "${installer[@]}" \
+    --public-key-file "$setupRoot/plumivox_ed25519.pub" --check; then
+    sudo "${installer[@]}" \
+      --public-key-file "$setupRoot/plumivox_ed25519.pub"
+  else
+    printf '%s\n' '事前確認に失敗しました。導入せず、原因を確認してください。'
+  fi
+else
+  printf '%s\n' '実行権限を設定できません。導入せず、資材を確認してください。'
+fi
+```
+
+他のCPUでは、上の選択で同梱の`install.sh`をBash互換経路として使います。どちらも同じ引数で事前確認と導入を行います。Rust版の安全確認を回避する目的でBash版へ切り替えないでください。
+
 用意したプロキシパスワードを秘密入力で渡します。インストーラーはSquid、認証情報、中継専用SSH利用者、systemdサービスを設定し、UFWには公開プロキシのポートだけを追加します。専用SSH利用者は中継だけに使い、管理者のSSH接続を維持します。既存設定と衝突した場合は停止し、上書きしません。
+
+Rust版・Bash版とも新規導入では、SSH設定のACL・拡張属性・SELinuxや、全属性の確認に必要な`CAP_SYS_ADMIN`などを安全に扱えない環境を変更前に拒否します。既存の同一導入の読取り確認はこの新規導入条件とは別です。`--check`は書込みをしないため、合格しても導入時の同一ファイルシステム内の交換機能が利用できず、安全に停止する場合があります。
+
+新規導入には初期user namespace内の`CAP_SYS_ADMIN`が必要です。コンテナ内のrootや追加のuser namespaceだけでは条件を満たしません。SSH設定と親ディレクトリのmount IDを照合し、別mount（対象ファイルだけのbind mountを含む）や確認不能な状態、保持できないinode flags（immutable・nodumpなど）も拒否します。既存のファイル・ディレクトリ名と競合する場合は、再利用や上書きで進めません。
+
+保存先の祖先ディレクトリもroot所有・安全な権限である必要があります。他者が書込みできる`/tmp`にはsticky bitが必要です。`/run`や既存の導入ロックが安全に確認できない場合も停止します。検査を通すために共有領域の保護を弱めたり、既存ロックを削除したりせず、管理者が環境と実行中の導入を確認してください。
+
+Bash版の新規導入には、`mv --exchange --no-copy -T`と`ln -T`に対応するGNU coreutils、`getfacl`・`getfattr`・`sync`・`readlink`・`lsattr`も必要です。標準の古いcoreutilsや必要なコマンドが未導入の環境では、変更前に停止します。インストーラーはこれらを自動導入・更新しません。管理者が環境を確認し、必要な準備を行ってから再実行してください。
+
+導入中は別の管理操作でSSH設定を変更しないでください。Rust版・Bash版ともSSH設定の交換時に旧inodeをroot限定のバックアップディレクトリへ保持します。旧ファイル記述子を使う処理が終了し、新旧内容とSSH管理接続の動作を確認してから、管理者本人が整理します。自動復元・自動清掃は行いません。詳細は[同梱インストーラーの説明](../setup/vps/README.md)を参照してください。
+
+清掃に失敗した場合は、案内された導入用一時ディレクトリ（stage）やSSHバックアップの保持先を確認してください。今回のものか、SSH設定の交換がどこまで進んだかを確認する前に、一括削除や導入の再実行をしないでください。
 
 完了時に表示される`SHA256:…`のSSHホスト鍵指紋を控えます。事業者のコンソールでも次のコマンドで照合できます。
 
@@ -117,7 +163,7 @@ sudo systemctl is-active plumivox-proxy.service
 
 ## 4. アカウントを設定する
 
-VPSのターミナルから抜け、PowerShell 7で実行します。
+VPSのターミナルから抜け、Windowsの端末で実行します。次の例はPowerShell用です。
 
 ```powershell
 & (Join-Path $pluginRoot 'dist/plumivox.exe') --setup

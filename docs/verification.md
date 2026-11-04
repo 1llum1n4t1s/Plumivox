@@ -16,7 +16,7 @@ macOSの対話セットアップE2EはRustから`libc::openpty`で制御TTYを�
 
 `cargo test --locked --package xtask`でR2の入力・manifest・ハッシュ検証を確認する。実R2の認証・条件付き保存・取得、GitHub-hosted macOSのKeychainとCI全体は、実環境で実行するまで未検証として扱う。
 
-セットアップはWindowsのPowerShell、macOSのネイティブ`--setup`、VPSのBash CLIをそれぞれ対象OSで呼び出して検証する。想定する失敗は次のとおり。
+PCセットアップはWindows・macOSともネイティブの`--setup`を対象OSで呼び出して検証する。VPSはRustインストーラーとBash互換CLIを区別して検証する。想定する失敗は次のとおり。
 
 | セットアップの失敗条件 | 期待する結果 |
 | --- | --- |
@@ -29,8 +29,15 @@ macOSの対話セットアップE2EはRustから`libc::openpty`で制御TTYを�
 | VPS CLIが不正引数・パスワード引数を受け取る | 変更コマンドを呼び出さず拒否 |
 | root権限・対応OS・UFW・SSHの準備が不足 | 原因を示して停止し、既存設定を変更しない |
 | VPSのSquid・専用利用者・ポートが競合する | 既存サービスを停止・上書きしない |
+| Rust版・Bash版VPSの新規導入でACL・拡張属性・SELinux・必要なcapabilityを安全に扱えない | 変更前に拒否する。既存の同一導入の読取り確認とは区別する |
+| Rust版・Bash版VPSの新規導入で同一ファイルシステム内のRENAME_EXCHANGEが利用できない | 安全に停止する。書込みprobeを行わない--checkの合格を交換機能の検証成功と扱わない |
+| Bash版の新規導入でGNU mvが--exchange/--no-copy、lnが-Tに未対応、またはgetfacl・getfattr・sync・readlink・lsattrがない | 変更前に停止し、管理者が環境を確認するまで必要なコマンドやcoreutilsを自動導入・更新しない |
+| 新規導入が初期user namespaceでない、CAP_SYS_ADMINがない、SSH設定と親のmount IDが異なる・確認不能、保持不能なinode flagsがある | 新規導入を変更前に拒否する。既存の同一導入の読取り確認とは区別する |
+| 新規保存先に同名のファイル・ディレクトリが存在する | 上書き・再利用・既存対象の権限変更で回避せず、競合を拒否する |
+| 一時データの清掃が失敗する | stage・バックアップの保持先を通知し、管理者が今回分と交換状態を確認できるようにする |
+| SSH設定を交換した旧ファイルを別処理が開いている | root限定バックアップディレクトリを保持する。旧FDの利用終了、新旧内容とSSH動作の確認前に自動清掃しない |
 
-`tests/setup_e2e.rs`は専用鍵の生成とACL、設定の保存・保持・拒否、保存先の選択、ローカル確認を検証する。`tests/setup_vps_e2e.rs`はBash構文、実CLIのヘルプ・不正入力・権限拒否と変更コマンド未呼出しを検証する。WindowsのGit Bash検証では、Linuxでのパッケージ導入・Squid起動・SSH認証の成功は未検証である。実VPSへの接続・ログイン・投稿はこのE2Eでは行わない。
+`tests/setup_e2e.rs`は専用鍵の生成とACL、設定の保存・保持・拒否、保存先の選択、ローカル確認を検証する。Rust版VPSインストーラーは`cargo test --locked --package plumivox-vps-installer`でCLI・変更拒否経路を検証する。Linux固有のファイル交換・属性境界はLinux上で確認し、他OSのCLI検証とは区別する。`tests/setup_vps_e2e.rs`はBash互換経路の構文、実CLIのヘルプ・不正入力・権限拒否と変更コマンド未呼出しを検証する。WindowsのGit Bash検証では、Linuxでのパッケージ導入・Squid起動・SSH認証の成功は未検証である。実VPSへの接続・ログイン・投稿はこのE2Eでは行わない。実システムへの導入は未確認であり、CLIやfixtureの成功をその代用にしない。
 
 | 失敗条件 | 期待する結果 |
 | --- | --- |
@@ -59,6 +66,12 @@ macOSの対話セットアップE2EはRustから`libc::openpty`で制御TTYを�
 | フィードの続きを別アカウント、改変した署名付きcursor、旧署名なしcursorで要求する | 通信前に拒否。正しい署名付きcursorなら初回の検索対象で継続 |
 | フォロー先一覧に保護状態のフィールドがない | 対象アカウントの未知数をcoverageへ残し、保護アカウント除外を保証しない |
 | 取得対象の上限より後に、選択済みアカウントの既知公開の重複がある | 初出順・取得上限を維持し、そのアカウントを保護状態不明の件数へ含めない |
+| 同じフォロー一覧の応答に、大小文字違いの同名で保護・公開・不明が混在する、または同じ行の保護フィールドが矛盾する | 保護を優先して検索対象から除外し、除外後の初出順で上限まで補充する。公開は不明より優先し、選択対象の未知数へ反映する |
+| 保護アカウントが重複する、無効なユーザー名が保護とされる、または上限外にも保護アカウントがある | protectedAccountsExcludedは同じ応答内の有効なユーザー名を大小文字無視で数えた一意な保護アカウント数とし、上限外を含め、重複・無効名は数えない |
+| 提供元が201件以上の一意な保護アカウントを返す | フィード・フォロー先検索のcursorを発行し、続きでも初回の検索対象・除外数を保持して一覧を再取得しない |
+| 同名の公開アカウントが21行、maxAccounts=20、提供元の続きなし | フィード・フォロー先検索とも対象1件、フォロー一覧の続きなしで成功する |
+| 一意な非保護対象がmaxAccountsを超える | 提供元cursorの有無によらず、未検索対象を示すfollowingHasNextPage=trueとaccount_limitを返し、一覧の継続cursorを提供しない。投稿の続きでもこの状態を保持する |
+| 検索キーワードが😀256個、257個、空白＋256個 | 未trimのUTF-16単位数で検証し、256個は通信、残りは通信前にMCP -32602で拒否する |
 | 提供元cursor、複数バッチの合計、署名付きwrapperが長さ上限を超える | 取得済み投稿と提供元のhasNextPageを保持し、cursorを切り詰めず、継続不能の理由とnullのnextCursorを返す |
 | X全体またはフォロー先をキーワード・期間で検索 | キーワードを語句として扱い、期間をAPIの検索条件へ渡す。フォロー先条件を解除する演算子として扱わない |
 | 空キーワード、不正日時、終了日時が開始日時以下の期間 | HTTPを呼ばず安全に拒否。開始は含み、終了は含まない |
@@ -137,6 +150,8 @@ SSH停止では、転送解除の応答まで旧リスナーの解放を遅ら�
 
 ## ビルドと実行
 
+VPSの正式成果物は`cargo xtask build-vps x86_64`・`cargo xtask build-vps aarch64`で生成する静的ネイティブ実行ファイルです。配布CIでは対応するLinux CPUで実行ファイルの起動を確認し、Windows・macOS本体とともに既存R2経路へ保存します。CI処理はRustに集約します。ローカルの検査成功は実R2通信・CI起動の成功とは別で、実R2/CIは未確認です。設定と取得手順は[配布手順](distribution.md)を参照してください。
+
 開発時だけリポジトリをクローンします。プラグインのインストール元にはこの作業ディレクトリを登録せず、[GitHubの最新mainを参照する手順](../README.md#インストール)を使います。
 
 ```powershell
@@ -149,13 +164,15 @@ cargo xtask check
 cargo xtask test-e2e
 ```
 
-開発・CIの基準はRust/Cargo 1.99.1です。Windowsの検証にはPowerShell 7の最新安定版を使います。ビルド・ライセンス生成・E2EもRustで実行するため、開発環境にもNode.js・pnpm・npmパッケージは不要です。`cargo xtask build`はホストOS向けのRust releaseビルドを`dist/`へ配置し、`cargo xtask licenses`はCargoの依存と`third-party/emoji-regex/`のライセンスから同梱文書を生成します。Windowsの正式実行物は`dist/plumivox.exe`、macOSは`dist/plumivox`です。利用者はネイティブ実行ファイルを直接使います。旧Nodeランチャーを指す登録の変更は[管理プロキシの移行手順](managed-proxy.md#旧タスクから切り替える)を参照してください。
+開発・CIの基準はRust/Cargo 1.99.1です。PCセットアップ・ビルド・ライセンス生成・E2EもRustで実行するため、開発環境にもNode.js・pnpm・npmパッケージは不要です。`cargo xtask build`はホストOS向けのRust releaseビルドを`dist/`へ配置し、`cargo xtask licenses`はCargoの依存と`third-party/emoji-regex/`のライセンスから同梱文書を生成します。Windowsの正式実行物は`dist/plumivox.exe`、macOSは`dist/plumivox`です。利用者はネイティブ実行ファイルを直接使います。旧Nodeランチャーを指す登録の変更は[管理プロキシの移行手順](managed-proxy.md#旧タスクから切り替える)を参照してください。
+
+`xtask build`とE2Eは、Cargoの`compiler-artifact`メッセージが返す実行ファイルを使います。`CARGO_TARGET_DIR`・`CARGO_BUILD_TARGET_DIR`・Cargo設定の`build.target-dir`による出力先を尊重し、既存の`target/debug`・`target/release`から推測して選びません。Windowsの配布ビルドはx64を保証するため、xtaskのMSVC／GNU／GNU LLVM環境に応じて`--target x86_64-pc-windows-msvc`／`--target x86_64-pc-windows-gnu`／`--target x86_64-pc-windows-gnullvm`を明示します。macOS universalも両アーキテクチャを明示し、それ以外のビルドとE2Eは`CARGO_BUILD_TARGET`・`build.target`を尊重します。同じバイナリに複数の異なる実行ファイルが返る設定はエラーにします。E2Eのビルド対象は実行環境で起動できるターゲットにしてください。
 
 macOSの正式配布物は、Mac上で両ターゲットを導入して`cargo xtask build --universal`を実行し、`lipo -archs dist/plumivox`で`arm64`と`x86_64`を確認します。Windows x64ビルド、macOS universalビルド、各OSの実動検証を別々に記録します。クロスビルドだけでKeychain・Unix socket・セットアップが動作したとは扱いません。
 
-`cargo test --locked --lib`はRustのAPI境界・設定・セッション・プロキシテストを実行します。`cargo xtask test-e2e`は本体の単体テストとRustの各E2Eを実行し、対象OSのPCセットアップとVPS CLIも確認します。WindowsのDPAPI・PowerShellセットアップとmacOSのKeychain・Unix権限・セットアップを区別し、未実行・skipを成功へ数えません。
+`cargo test --locked --lib`はRustのAPI境界・設定・セッション・プロキシテストを実行します。`cargo xtask test-e2e`は本体の単体テストとRustの各E2Eを実行し、対象OSのPCセットアップとVPS CLIも確認します。WindowsのDPAPI・ACL・ネイティブセットアップとmacOSのKeychain・Unix権限・セットアップを区別し、未実行・skipを成功へ数えません。
 
-`cargo xtask test-setup-e2e`は検証用バイナリをビルドしてから、WindowsではPowerShell、macOSではネイティブのPCセットアップE2Eを実行し、続いてVPSセットアップCLIを確認します。
+`cargo xtask test-setup-e2e`は検証用バイナリをビルドしてから、対象OSのネイティブPCセットアップE2Eを実行し、続いてVPSセットアップCLIを確認します。
 
 全件検証には`tests/tls_e2e.rs`も含みます。RustのHTTPS偽APIと別プロセスのMCPを使い、検証CAでの成功、未信頼CAの拒否、ホスト名不一致の拒否を確認します。公開された合成証明書・鍵だけを使い、CA追加とHTTPSループバック許可は検証専用バイナリの明示モードに限定します。配布物の信頼設定や利用者の設定には追加しません。出力先は`PLUMIVOX_TLS_E2E_OUTPUT_DIR`または一時ディレクトリ配下`Codex/Plumivox/<UUID>`で、`summary.json`、`http-trace.json`、`diagnostics.json`を読みます。偽設定は呼び出し側で清掃します。TLSの交渉バージョンは`http-trace.json`の実測値で確認します。
 

@@ -5,7 +5,7 @@ TwitterAPI.ioを使い、Xへの投稿、キーワード・期間検索、フォ
 ## 必要なもの
 
 - Windows x64またはmacOS（Apple Silicon・Intel）。MCP本体はRust製のネイティブ実行ファイルで、Node.jsやRustのインストールは不要です。
-- Windowsの初期設定にはPowerShell 7 (`pwsh`) が必要です。macOSの初期設定は同梱の実行ファイルを使います。
+- Windows・macOSの初期設定は同梱の実行ファイルを使います。PowerShell 7 (`pwsh`) は不要です。
 - TwitterAPI.ioのAPIキー。API利用には同サービスの従量課金が発生します。
 - 投稿には対象アカウントのv2ログインCookieとプロキシ。既存の外部プロキシに加え、Windows・macOSではPlumivox内の住宅回線出口とSSH中継を複数チャットで共有できます。公開中継サーバーの初回準備は必要です。
 
@@ -56,7 +56,7 @@ Codexを再起動すると直接接続が無効になります。以後の操作
 
 ## 初期設定
 
-初めて使う場合は[セットアップ手順](docs/setup.md)に進んでください。VPSインストーラーとWindows・macOSの設定ウィザードを同梱しています。Codexへ「Plumivoxをセットアップして」と依頼すると、同梱の`setup-plumivox`スキルでも案内できます。
+初めて使う場合は[セットアップ手順](docs/setup.md)に進んでください。Windows・macOSのネイティブ設定ウィザードと、Linux x86_64・aarch64向けの静的Rust VPSインストーラーを同梱します。他CPUにはBash互換経路を残しています。Codexへ「Plumivoxをセットアップして」と依頼すると、同梱の`setup-plumivox`スキルでも案内できます。
 
 設定ファイルはリポジトリ外へ置きます。新規利用者はWindowsでは`%LOCALAPPDATA%\Kagayoi\Plumivox\settings.json`、macOSでは`~/Library/Application Support/Kagayoi/Plumivox/settings.json`を使います。既存の`~/dev/Secret/secrets.json`がある利用者は、そのファイルの`twitterapi_io`を読みます。vava／blblの`release_posting`と`blog_posting`も維持します。別の場所を使う場合は`PLUMIVOX_SECRETS_FILE`を指定します。秘密値を会話やMCPの引数へ渡す必要はありません。
 
@@ -82,6 +82,8 @@ Codexを再起動すると直接接続が無効になります。以後の操作
 
 `account`を省略すると、検索・読取り・投稿・認証で既定アカウントを使います。`list_accounts`の`isDefault`で省略先を確認でき、別のアカウントには`account`で`release_posting`や`blog_posting`などの設定名を明示します。複数登録で既定がない場合は指定を要求し、不正な既定では省略呼出しを拒否します。
 
+各ツールの入力文字列（配列内の文字列を含む）に定義された長さ制限は、空白を除去する前のUTF-16コード単位数でも検証します。BMP外の絵文字などは1文字で2単位です。JSON Schemaの`minLength`・`maxLength`はUnicode文字数のため、標準のJSON Schema validatorだけではこの追加制約を検出できません。たとえば検索キーワードの上限512では、😀256個は通りますが、257個、または空白＋256個は通信前にMCP引数エラー（`-32602`）になります。
+
 初回セットアップは登録先を既定として保存します。既存設定の既定だけを変更するには、同梱の実行ファイルへ`--setup --set-default-account blog_posting`を指定します。詳細は[セットアップ手順](docs/setup.md)と[設定の優先順位](docs/configuration.md)を参照してください。
 
 投稿文字数はURLを23文字、日本語を2文字、Unicode 17までの複合絵文字を1つ2文字として数えます。肌の色が異なる握手なども、[Xの加重文字数の仕様](https://docs.x.com/fundamentals/counting-characters)に合わせて判定します。
@@ -92,13 +94,17 @@ Codexを再起動すると直接接続が無効になります。以後の操作
 
 TwitterAPI.ioにX公式ホームの「フォロー中」を直接取得するAPIはありません。Plumivoxは既定ではフォロー一覧の先頭から最大100アカウントを読み、20アカウントずつまとめて公開投稿を検索します。`maxAccounts` は20〜200に設定できます。初回100なら最大6回、200なら最大11回のAPI要求です。最新の単価は[TwitterAPI.ioの料金](https://twitterapi.io/pricing)を確認してください。
 
-結果の `officialHomeEquivalent` は常に `false` です。保護投稿は取得できず、検索で得られる内容・リポストの扱い・全体の並び順は公式ホームと一致する保証がありません。フォロー数が上限を超える場合は `coverage.followingHasNextPage` が `true` になります。`coverage.followingNextCursor` を `followingCursor` に渡すと、次のフォロー先一覧を対象にします。フォロー一覧は新しいフォローから並び、継続中のフォロー変更による取得差は避けられません。
+結果の `officialHomeEquivalent` は常に `false` です。保護投稿は取得できず、検索で得られる内容・リポストの扱い・全体の並び順は公式ホームと一致する保証がありません。提供元に続きがある場合、または一意な非保護の検索対象が上限を超えた場合は `coverage.followingHasNextPage` が `true` になります。`coverage.followingNextCursor` を `followingCursor` に渡すと、次のフォロー先一覧を対象にします。フォロー一覧は新しいフォローから並び、継続中のフォロー変更による取得差は避けられません。
 
 `nextCursor` を同じアカウントの `get_following_feed` の `cursor` に渡すと、各検索バッチの続きを取得します。ページ内は日時順ですが、バッチごとのページ境界によりページをまたぐ全体の時系列順は保証しません。フォロー先は初回の一覧を固定し、検索の続きでは再読込しません。フィードのcursorもAPIキーで署名し、検索対象の改変を拒否します。旧版の署名なしcursorや、APIキー変更前のcursorは使用できないため、cursorを外して取り直してください。`cursor` と `followingCursor` は別のページ送りで、同時に指定できません。
 
-[フォロー一覧の公式応答仕様](https://docs.twitterapi.io/api-reference/endpoint/get_user_followings)では保護状態のフィールドを確認できません。応答で保護アカウントと判明した対象は除外しますが、判定できない対象数は `coverage.protectionStatusUnknownAccounts` に返します。`protectedAccountsExcluded` は判明して除外した数であり、0でも全対象が公開アカウントとは限りません。
+[フォロー一覧の公式応答仕様](https://docs.twitterapi.io/api-reference/endpoint/get_user_followings)では保護状態のフィールドを確認できません。同じフォロー一覧の応答内では、有効なユーザー名を大文字小文字を区別せずに集約し、保護・公開・不明の順で判定します。保護と判明した対象を除いた初出順で上限まで選び、選択した対象のうち判定できない数を `coverage.protectionStatusUnknownAccounts` に返します。`protectedAccountsExcluded` は、その応答内で保護と判明した一意なアカウント数です。重複・無効なユーザー名は数えず、取得対象の上限外の保護アカウントも含めるため、`maxAccounts` を超える場合があります。0でも全対象が公開アカウントとは限りません。
+
+旧実装が発行した署名済みcursorの続きは、検索対象・件数に加え、未検索範囲・継続可否も旧実装の判定を引き継ぐため、上限外の対象を飛ばす可能性があります。新しい保護状態の集約・件数計算・継続判定で確実に再取得するには、cursorを外してください。
 
 投稿やフォロー一覧に続きがあっても、提供元cursorや組み合わせたcursorが長さ上限を超える場合は継続できません。取得済み投稿と `hasNextPage` は保持し、`nextCursor` は `null`、`coverage.tweetContinuationAvailable` は `false`、`tweetContinuationUnavailableReason` は `cursor_too_long` となります。フォロー一覧では `followingNextCursor` と `followingContinuationAvailable`・`followingContinuationUnavailableReason` を確認してください。cursorは切り詰めず、取得済み内容を失敗として捨てません。
+
+提供元が1回の応答で `maxAccounts` を超える一意な非保護対象を返した場合は、上限外の対象が未検索です。`followingHasNextPage` は `true`、`followingContinuationUnavailableReason` は `account_limit` となり、フォロー一覧の継続は提供しません（`followingContinuationAvailable: false`、`followingNextCursor: null`）。提供元の次cursorで未検索対象を飛ばすことを防ぐためです。`maxAccounts` が200未満なら、200までの範囲で上限を増やし、cursorなしで再取得できます。上限200でも提供元が過剰返却する場合は、その応答の未検索対象をこの方法では取得できません。同名の重複行や保護・無効名だけで上限を超えても、この制限には該当しません。選択済み対象の投稿の続きは通常どおり取得でき、未検索対象がある状態も引き継ぎます。
 
 ## キーワード・期間の検索
 

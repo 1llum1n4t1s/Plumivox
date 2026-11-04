@@ -11,7 +11,8 @@ PlumivoxはTwitterAPI.ioを経由してXへの投稿・認証更新・公開投�
 | `src/main.rs` / `src/lib.rs` | 引数なし／`--stdio`で本体を起動する。`--setup`と内部の`--proxy-daemon`を同じネイティブ実行ファイルへ接続する |
 | `src/server.rs` / `src/tool-definitions.json` | stdioのMCP JSON-RPC、11ツールの入力スキーマと検証、MCP注釈、アカウント選択、認証処理、定型エラー応答 |
 | `src/config.rs` | 呼出し時の設定再読込み、アカウント・資格情報の検証、Cookieの選択、秘密を除いた準備状態の公開 |
-| `src/setup.rs` / `setup/Setup-Plumivox.ps1` / `setup/vps/` | macOSのネイティブ設定ウィザード、WindowsのPowerShellウィザード、VPSの認証付き公開プロキシの初回構築。通常の投稿処理から独立する |
+| `src/setup.rs` / `src/setup_windows.rs` / `setup/vps/` | Windows・macOSのネイティブ設定ウィザード、Windowsの保存先・ACL・排他制御、VPSの認証付き公開プロキシの初回構築。通常の投稿処理から独立する |
+| `vps-installer/` / `setup/vps/plumivox-vps-setup-x86_64` / `setup/vps/plumivox-vps-setup-aarch64` | Linux x86_64・aarch64向けの静的Rustインストーラー。他CPUには`setup/vps/install.sh`のBash互換経路を残す |
 | `skills/setup-plumivox/SKILL.md` | 同梱資材を使う初期設定の案内。通常の投稿前条件を増やさない |
 | `src/session.rs` | ネイティブDPAPI／Keychain内の鍵によるAES-GCM、保存先検証・権限、セッション照合、OS別の認証ロック、暗号化保存 |
 | `src/proxy_egress.rs` | loopback限定のCONNECT出口、X宛先制限、DNS全候補検証、接続数・容量・時間制限 |
@@ -20,12 +21,12 @@ PlumivoxはTwitterAPI.ioを経由してXへの投稿・認証更新・公開投�
 | `src/client.rs` / `src/client_emoji.txt` | HTTP通信、応答検証・正規化、画像検証・アップロード、投稿、フィード再構成、検索条件と継続cursor、Unicode 17絵文字の検証 |
 | `Cargo.toml` / `Cargo.lock` / `.cargo/config.toml` / `xtask/` | 本体と開発ツールの依存固定、Windows x64とmacOS universalのビルド、ライセンス生成、検査・E2E実行。Node.jsを使わない |
 | `dist/plumivox.exe` / `dist/plumivox` | 正式なネイティブ実行ファイル |
-| `.github/workflows/distribution.yml` / `xtask/src/r2.rs` | Windows・macOSの検証とビルド、R2への成果物保存・検証付き取得。利用者のMCP実行から独立する |
+| `.github/workflows/distribution.yml` / `xtask/src/ci.rs` / `xtask/src/r2.rs` | RustによるWindows・macOS本体とLinux x86_64・aarch64のVPSインストーラーの検証とビルド、R2への成果物保存・検証付き取得。利用者のMCP実行から独立する |
 | `tests/api_e2e.rs` / `tests/native_e2e.rs` / `tests/tls_e2e.rs` / `tests/support/` / `tests/native-fixture.rs` | Rustの偽HTTP・HTTPS APIと別プロセスのMCPを使い、通信内容・回数・失敗状態を検証する。失敗注入は`test-fixture`ビルドに限定する |
 | `tests/proxy_e2e.rs`と`src/proxy.rs` / `src/proxy_egress.rs` / `src/proxy_ipc.rs`内のテスト | Rustの偽SSH・echo、認証付きIPCとCONNECT出口の境界を検証する |
 | `tests/setup_e2e.rs` / `tests/setup_vps_e2e.rs` | Windows・macOSの設定ウィザード、個別保存先、鍵の保護、VPS CLIの検証と拒否条件。実VPSへの導入は別途確認が必要 |
 
-`mcp.json`は`${PLUGIN_ROOT}/dist/plumivox --stdio`を起動する。Windowsは`.exe`を解決し、macOSはApple SiliconとIntelを含むuniversal実行ファイルを使う。本体と開発ツール・E2EはRustで、Node.jsのインストールや起動時のコード取得を必要としない。旧Nodeランチャーは廃止し、旧登録はネイティブ実行ファイルへ変更する。マーケットプレイスは`.agents/plugins/marketplace.json`、プラグイン情報は`plugin.json`に置く。
+`mcp.json`は作業ディレクトリを`${PLUGIN_ROOT}`として`./dist/plumivox --stdio`を起動する。Windowsは`.exe`を解決し、macOSはApple SiliconとIntelを含むuniversal実行ファイルを使う。本体と開発ツール・E2EはRustで、Node.jsのインストールや起動時のコード取得を必要としない。旧Nodeランチャーは廃止し、旧登録はネイティブ実行ファイルへ変更する。マーケットプレイスは`.agents/plugins/marketplace.json`、プラグイン情報は`plugin.json`に置く。
 
 開発用の成果物は、既定ブランチで手動起動する配布CIが各OSの実行環境で検証してから非公開R2へ保存する。`plumivox/ci/{commit}/{run}/{attempt}/{target}/`に実行ファイル・第三者ライセンスを保存し、サイズとSHA256を含むmanifestを最後に保存する。既存オブジェクトの上書きを拒否し、取得ではidentity・ファイル名・サイズ・SHA256を照合する。R2は配布準備の受け渡しであり、GitHub mainの同梱`dist`を使うプラグインの導入・更新経路は維持する。CIは`dist`を自動コミットせず、latestの差替えや過去成果物の自動削除も行わない。操作・保持方針は [docs/distribution.md](docs/distribution.md) を参照する。
 
@@ -33,9 +34,19 @@ PlumivoxはTwitterAPI.ioを経由してXへの投稿・認証更新・公開投�
 
 設定ストアは環境変数、内部の明示パス、現在の利用者の既存 `~/dev/Secret/secrets.json`、利用者別の標準保存先の順にファイルを選ぶ。Windows・macOSのセットアップも同じ順序を使う。既存利用者の設定を維持しつつ、特定利用者の絶対パスに依存しないためである。MCPは起動時に選んだファイルを各呼出しで読み直し、消失・不正時に別ファイルへ切り替えない。保存先と設定項目は [設定仕様](docs/configuration.md) を参照する。
 
-`--setup`は専用Ed25519鍵の準備、設定ウィザード、通信を伴わないローカル確認を担当する。Windowsは同梱PowerShellへ転送し、macOSはRust本体で実行する。鍵と設定の保存先・本人所有を確認してOS別の利用者限定アクセス権を適用し、適用後にも検証する。所有者は変更せず、所有者の再設定に必要な権限を要求しない。保存先ごとにWindowsのMutexまたはmacOSのファイルロックで排他し、既存鍵・同名アカウント・共有中継設定は上書きせず、他の設定項目を保持し、保存直前に元の内容との一致を確認する。macOSでは本人所有・リンクでない保存先を検証し、ディレクトリ700・ファイル600を適用する。ホスト鍵指紋はVPS提供元のコンソールで照合した値を入力する。初期設定の完了やローカル確認は、SSH接続・Xログインの成功を意味しない。
+`--setup`は専用Ed25519鍵の準備、設定ウィザード、通信を伴わないローカル確認を担当する。Windows・macOSともRust本体で対話入力を処理する。鍵と設定の保存先・本人所有を確認してOS別の利用者限定アクセス権を適用し、適用後にも検証する。所有者は変更せず、所有者の再設定に必要な権限を要求しない。保存先ごとにWindowsのMutexまたはmacOSのファイルロックで排他し、既存鍵・同名アカウント・共有中継設定は上書きせず、他の設定項目を保持し、保存直前に元の内容との一致を確認する。macOSでは本人所有・リンクでない保存先を検証し、ディレクトリ700・ファイル600を適用する。ホスト鍵指紋はVPS提供元のコンソールで照合した値を入力する。初期設定の完了やローカル確認は、SSH接続・Xログインの成功を意味しない。
 
 VPSインストーラーはDebian 12以降／Ubuntu 22.04以降の専用VPSを対象とし、既存SSH・有効なUFW・競合を事前確認してからSquidと専用SSHユーザーを構築する。再実行は管理対象のハッシュ・権限・導入条件が一致する場合だけ受け入れ、設定変更を自動適用しない。公開IPv4口はBasic認証付きのX宛先・443番CONNECTに限定し、SSHユーザーは指定loopbackポートへの逆転送だけを許可する。Squidは逆トンネルを親プロキシとして使い、PC出口が不在でもVPSから直接接続しない。systemdは資格情報の受渡しと資源制限を担当する。事業者側のファイアウォール設定は利用者が行い、通常のMCP処理はVPSの構築・設定変更を行わない。導入操作と確認手順は [セットアップ手順](docs/setup.md) を参照する。
+
+Rust版VPSインストーラーはx86_64・aarch64の静的実行ファイルを優先し、他CPUでは同じCLI引数のBash互換経路を利用できる。新規導入ではSSH設定のACL・拡張属性・SELinux・全属性の確認に必要な`CAP_SYS_ADMIN`などを安全に扱えなければ変更前に拒否する。既存の同一導入の読取り確認はこの条件とは分ける。`--check`は書込み試験をせず、合格後も`RENAME_EXCHANGE`非対応などによって導入を安全に停止する場合がある。
+
+Bash互換経路の新規導入にも同じ属性・capabilityの安全条件と同一ファイルシステム内の交換が必要で、`mv --exchange --no-copy -T`と`ln -T`対応GNU coreutils、`getfacl`・`getfattr`・`sync`・`readlink`・`lsattr`を要求する。古いcoreutilsや必要なコマンドがない環境では変更前に停止し、管理者の環境確認・準備前に自動導入・更新しない。Bash版も`--check`で書込みprobeを行わない。
+
+新規導入は初期user namespace内の`CAP_SYS_ADMIN`、SSH設定と親ディレクトリのmount ID一致、保持不能なinode flagsがないことを要求し、別mountや確認不能な状態を拒否する。新規保存先の既存名との競合は上書き・再利用で回避しない。清掃失敗時はstage・バックアップの保持先を案内し、管理者が今回分と交換状態を確認して整理する。
+
+SSH設定の交換中は同時管理操作を避ける。Rust版・Bash版とも交換した旧inodeをroot限定のバックアップディレクトリに保持し、旧ファイル記述子を利用する処理の終了、新旧内容、SSH管理接続の動作を本人が確認してから整理する。自動復元・自動清掃を行わず、安全条件をBash版への切替えで迂回しない。
+
+配布CIはWindows・macOS本体に加え、Linux x86_64・aarch64で静的VPSインストーラーをビルドして対象CPUで起動を確認する。処理は`xtask/src/ci.rs`のRustコマンドへ集約し、PowerShellスクリプトは使わない。VPS成果物も既存R2経路で受け渡し、GitHub mainの同梱資材から導入する。ローカルのCLI・fixture検証と、実システムへの導入・実R2通信・CI起動の結果は区別する。
 
 ## データフロー
 

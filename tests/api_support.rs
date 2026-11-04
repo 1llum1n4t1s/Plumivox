@@ -551,12 +551,16 @@ fn followings(s: &str, q: &HashMap<String, String>) -> Value {
             .collect::<Vec<_>>()
     };
     if s == "following-selection" {
+        if q.get("cursor").is_some_and(|v| v == "selection-next") {
+            return json!({"followings":[{"userName":"NextUnknown"},{"userName":"NextPublic","protected":false},{"userName":"NextPrivate","protected":true},{"userName":"NEXTUNKNOWN","protected":true},{"userName":"NextOther"}],"has_next_page":false,"next_cursor":""});
+        }
         let mut users = vec![
             json!({"userName":"FirstUnknown"}),
             json!({"userName":"FIRSTUNKNOWN"}),
             json!({"userName":"","isProtected":false}),
             json!({"userName":"invalid-name","protected":false}),
             json!({"userName":"Private","isProtected":true,"protected":false}),
+            json!({"userName":"OTHERPRIVATE","protected":false}),
             json!({"userName":"OtherPrivate","isProtected":false,"protected":true}),
             json!({"userName":"KnownFirst","protected":false}),
             json!({"userName":"KNOWNFIRST"}),
@@ -566,9 +570,35 @@ fn followings(s: &str, q: &HashMap<String, String>) -> Value {
             json!({"userName":"PastLimit","isProtected":false}),
             json!({"userName":"FIRSTUNKNOWN","protected":false}),
             json!({"userName":"Chosen0","isProtected":true,"protected":false}),
+            json!({"userName":"CHOSEN0","isProtected":false}),
             json!({"userName":"Chosen1","isProtected":false}),
+            json!({"userName":"PRIVATE","isProtected":false}),
+            json!({"userName":"private","protected":true}),
+            json!({"userName":"otherprivate","isProtected":false}),
+            json!({"userName":"invalid-name","protected":true}),
+            json!({"userName":"","protected":true}),
         ]);
         return json!({"followings":users,"has_next_page":true,"next_cursor":"selection-next"});
+    }
+    if s.starts_with("following-duplicates") {
+        let users = (0..21).map(|i| json!({"userName":if i % 2 == 0 { "OnlyPublic" } else { "ONLYPUBLIC" },"protected":false})).collect::<Vec<_>>();
+        return json!({"followings":users,"has_next_page":false,"next_cursor":if s.ends_with("stale-long"){"f".repeat(10001)}else if s.ends_with("stale"){"stale-cursor".to_owned()}else{String::new()}});
+    }
+    if s.starts_with("following-account-limit") {
+        return json!({"followings":public(21),"has_next_page":s.ends_with("with-cursor"),"next_cursor":if s.ends_with("with-cursor"){"must-not-skip"}else{""}});
+    }
+    if s == "following-missing-cursor" {
+        return json!({"followings":public(1),"has_next_page":true,"next_cursor":""});
+    }
+    if s == "following-many-protected" {
+        let mut users = public(20);
+        users.extend((0..201).map(|i| json!({"userName":format!("Private{i}"),"protected":true})));
+        users.extend([
+            json!({"userName":"PRIVATE0","isProtected":true}),
+            json!({"userName":"Private0","isProtected":false}),
+            json!({"userName":"invalid-name","protected":true}),
+        ]);
+        return json!({"followings":users,"has_next_page":true,"next_cursor":"many-protected-next"});
     }
     if s == "unknown-following" {
         return json!({"followings":[{"userName":"KnownPublic","isProtected":false},{"userName":"UnknownPublic"},{"userName":"OtherUnknown"},{"userName":"Private","isProtected":true}],"has_next_page":false,"next_cursor":""});

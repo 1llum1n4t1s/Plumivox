@@ -1,6 +1,7 @@
 use super::*;
 use crate::support::McpClient;
 use std::{
+    collections::BTreeSet,
     path::{Path, PathBuf},
     time::Duration,
 };
@@ -11,6 +12,16 @@ async fn seed(h: &Harness) -> Result<()> {
         h.ok("refresh_session", json!({"account":"auth"})).await?;
     }
     Ok(())
+}
+async fn pending_paths(directory: &Path) -> Result<BTreeSet<PathBuf>> {
+    let mut paths = BTreeSet::new();
+    let mut entries = fs::read_dir(directory).await?;
+    while let Some(entry) = entries.next_entry().await? {
+        if entry.file_name().to_string_lossy().ends_with(".pending") {
+            paths.insert(entry.path());
+        }
+    }
+    Ok(paths)
 }
 async fn single(h: &Harness) -> Result<PathBuf> {
     let p = h.output.join("synthetic-single-account-secrets.json");
@@ -55,6 +66,28 @@ async fn call_pending(
     Ok(data)
 }
 pub async fn run(h: &mut Harness) -> Result<()> {
+    case!(
+        h,
+        "Configuration accepts exact byte limit and rejects one extra byte",
+        {
+            let config = h.output.join("bounded-config.json");
+            let root = h.output.join("bounded-config-state");
+            let mut bytes = serde_json::to_vec(&json!({"twitterapi_io":{"auth":{}}}))?;
+            bytes.resize(2 * 1024 * 1024, b' ');
+            fs::write(&config, &bytes).await?;
+            let mut c = h.spawn(&config, &root, 250, None, &[]).await?;
+            h.call_on(&c, "list_accounts", json!({}), false, true)
+                .await?;
+            bytes.push(b' ');
+            fs::write(&config, &bytes).await?;
+            ensure!(
+                h.call_on(&c, "list_accounts", json!({}), true, true)
+                    .await?["error"]["code"]
+                    == "CONFIG_UNAVAILABLE"
+            );
+            checked_close(&mut c).await?;
+        }
+    );
     for (label, tool, args) in [
         (
             "Login ambiguous account rejected before HTTP",
@@ -567,6 +600,34 @@ async fn gates(h: &mut Harness) -> Result<()> {
             "AUTH_LOCK_LOST",
         ),
         (
+            "Cancellation during partial ciphertext write removes incomplete pending",
+            "writing",
+            true,
+            false,
+            "AUTH_CANCELLED",
+        ),
+        (
+            "Lease loss during partial ciphertext write removes incomplete pending",
+            "writing",
+            false,
+            true,
+            "AUTH_LOCK_LOST",
+        ),
+        (
+            "Cancellation after staging removes incomplete commit without retaining pending",
+            "staged",
+            true,
+            false,
+            "AUTH_CANCELLED",
+        ),
+        (
+            "Lease loss after staging removes incomplete commit without retaining pending",
+            "staged",
+            false,
+            true,
+            "AUTH_LOCK_LOST",
+        ),
+        (
             "Lost saved acknowledgement reports uncertainty while committed session remains usable",
             "saved",
             false,
@@ -585,6 +646,7 @@ async fn gates(h: &mut Harness) -> Result<()> {
             seed(h).await?;
             let previous = fs::read(h.own_session()).await?;
             let mut g = h.gate(phase).await?;
+            let pending_before = pending_paths(h.own_session().parent().unwrap()).await?;
             let before = h.count();
             let p = g
                 .client
@@ -594,8 +656,16 @@ async fn gates(h: &mut Harness) -> Result<()> {
                 )
                 .await?;
             ensure!(g.wait().await?["phase"] == phase);
+            if phase == "writing" {
+                let current = pending_paths(h.own_session().parent().unwrap()).await?;
+                let created: Vec<_> = current.difference(&pending_before).collect();
+                ensure!(created.len() == 1);
+                // Windowsでは開いた書込みhandleのサイズがdirectory metadataへ
+                // 反映されない場合があるため、別handleで実際のバイトを読む。
+                ensure!(!fs::read(created[0]).await?.is_empty());
+            }
             let current = fs::read(h.own_session()).await?;
-            ensure!((current == previous) == (phase == "encrypt"));
+            ensure!((current == previous) == (phase != "saved"));
             if lose {
                 g.lose().await?;
             }
@@ -604,16 +674,19 @@ async fn gates(h: &mut Harness) -> Result<()> {
                 ensure!(p.wait_timeout(Duration::from_millis(300)).await.is_err());
                 ensure!(g.wait_result().await?["code"] == expected);
             } else {
-                if phase == "encrypt" {
+                if phase != "saved" {
                     g.resume().await?;
                 }
                 call_pending(h, p, Some(expected)).await?;
             }
-            if phase == "encrypt" {
+            if phase != "saved" {
                 g.resume().await?;
             }
             ensure!(fs::read(h.own_session()).await? == current && h.count() - before == 1);
             checked_close(&mut g.client).await?;
+            if phase == "staged" || phase == "writing" {
+                ensure!(pending_paths(h.own_session().parent().unwrap()).await? == pending_before);
+            }
             if phase == "saved" {
                 let before = h.count();
                 metadata(
@@ -634,17 +707,85 @@ async fn symlink_dir(target: &Path, alias: &Path) -> Result<()> {
     }
     #[cfg(windows)]
     {
-        let output = tokio::process::Command::new("cmd.exe")
-            .args(["/D", "/C", "mklink", "/J"])
-            .arg(alias)
-            .arg(target)
-            .output()
-            .await?;
-        ensure!(output.status.success(), "Cannot create synthetic junction");
+        #[path = "windows_junction.rs"]
+        mod fixture;
+        fixture::directory_junction(alias, target)?;
     }
     Ok(())
 }
 async fn storage_and_locks(h: &mut Harness) -> Result<()> {
+    #[cfg(windows)]
+    case!(
+        h,
+        "Failed replacement retains complete encrypted pending and previous session",
+        {
+            use std::os::windows::fs::OpenOptionsExt;
+            let config = single(h).await?;
+            let root = h.output.join("failed-replacement-state");
+            let session = root.join(sha("auth\nauthuser")).join(session_name());
+            let mut c = h.spawn(&config, &root, 15000, None, &[]).await?;
+            metadata(
+                &h.call_on(&c, "login_account", json!({"account":"auth"}), false, false)
+                    .await?,
+                false,
+            )?;
+            let previous = fs::read(&session).await?;
+            // 読取り・書込みは許可し、置換に必要な削除共有だけを拒否する。
+            let held = std::fs::OpenOptions::new()
+                .read(true)
+                .share_mode(3)
+                .open(&session)?;
+            ensure!(
+                h.call_on(
+                    &c,
+                    "refresh_session",
+                    json!({"account":"auth"}),
+                    true,
+                    false
+                )
+                .await?["error"]["code"]
+                    == "AUTH_SAVE_UNCERTAIN"
+            );
+            drop(held);
+            ensure!(fs::read(&session).await? == previous);
+            let mut pending = Vec::new();
+            let mut backups = Vec::new();
+            let mut entries = fs::read_dir(session.parent().unwrap()).await?;
+            while let Some(entry) = entries.next_entry().await? {
+                if entry.file_name().to_string_lossy().ends_with(".pending") {
+                    pending.push(entry.path());
+                }
+                if entry.file_name().to_string_lossy().contains(".backup.") {
+                    backups.push(entry.path());
+                }
+            }
+            ensure!(pending.len() == 1 && backups.len() == 1);
+            ensure!(fs::read(&backups[0]).await? == previous);
+            checked_close(&mut c).await?;
+            let mut c = h.spawn(&config, &root, 15000, None, &[]).await?;
+            let before = h.count();
+            metadata(
+                &h.call_on(&c, "login_account", json!({"account":"auth"}), false, true)
+                    .await?,
+                true,
+            )?;
+            ensure!(h.count() == before && fs::read(&session).await? == previous);
+            checked_close(&mut c).await?;
+            // 保持した暗号文は同じアカウントへ復元すると本体で再利用できる。
+            let pending_bytes = fs::read(&pending[0]).await?;
+            ensure!(!pending_bytes.is_empty() && pending_bytes != previous);
+            fs::write(&session, &pending_bytes).await?;
+            let mut c = h.spawn(&config, &root, 15000, None, &[]).await?;
+            let before = h.count();
+            metadata(
+                &h.call_on(&c, "login_account", json!({"account":"auth"}), false, true)
+                    .await?,
+                true,
+            )?;
+            ensure!(h.count() == before);
+            checked_close(&mut c).await?;
+        }
+    );
     case!(
         h,
         "Actual storage failure retains storage error classification",
@@ -664,7 +805,9 @@ async fn storage_and_locks(h: &mut Harness) -> Result<()> {
         h,
         "Safe parent alias preserves encrypted session and native lock identity",
         {
-            let real = h.output.join("safe-session-parent");
+            let real = h
+                .output
+                .join(format!("safe-session-parent-{}", "x".repeat(140)));
             let alias = h.output.join("safe-session-parent-alias");
             fs::create_dir(&real).await?;
             let config = single(h).await?;
@@ -683,6 +826,8 @@ async fn storage_and_locks(h: &mut Harness) -> Result<()> {
                 false,
             )?;
             let relative = PathBuf::from(sha("auth\nauthuser")).join(session_name());
+            #[cfg(windows)]
+            ensure!(real_state.join(&relative).as_os_str().len() > 260);
             let previous = fs::read(real_state.join(&relative)).await?;
             symlink_dir(&real, &alias).await?;
             let mut aliased = h.spawn(&config, &alias_state, 15000, None, &[]).await?;
