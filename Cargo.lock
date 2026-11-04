@@ -1766,7 +1766,7 @@ dependencies = [
 
 [[package]]
 name = "plumivox"
-version = "1.0.7"
+version = "1.0.8"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -1805,7 +1805,7 @@ dependencies = [
 
 [[package]]
 name = "plumivox-vps-installer"
-version = "1.0.7"
+version = "1.0.8"
 dependencies = [
  "libc",
  "rpassword",
