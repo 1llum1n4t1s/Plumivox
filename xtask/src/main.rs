@@ -1,4 +1,3 @@
-mod automerge;
 mod ci;
 mod r2;
 
@@ -608,7 +607,7 @@ fn main() -> Result {
         }
         return build_vps(&args[1]);
     }
-    match args.first().map(String::as_str) {Some("build")=>build(args.iter().any(|a|a=="--universal")),Some("check")=>check(),Some("licenses")=>licenses(),Some("dependabot-auto-merge")=>automerge::execute(),Some(command) if command.starts_with("ci-")=>ci::execute(command),Some(command) if command.starts_with("test-")=>e2e(command),_=>Err("cargo xtask build [--universal] | check | licenses | test-e2e | test-api-e2e | test-proxy-e2e | test-proxy-shared-e2e | test-setup-e2e | dependabot-auto-merge".into())}
+    match args.first().map(String::as_str) {Some("build")=>build(args.iter().any(|a|a=="--universal")),Some("check")=>check(),Some("licenses")=>licenses(),Some(command) if command.starts_with("ci-")=>ci::execute(command),Some(command) if command.starts_with("test-")=>e2e(command),_=>Err("cargo xtask build [--universal] | check | licenses | test-e2e | test-api-e2e | test-proxy-e2e | test-proxy-shared-e2e | test-setup-e2e".into())}
 }
 
 #[cfg(test)]
