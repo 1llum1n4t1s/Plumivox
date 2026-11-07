@@ -1,6 +1,6 @@
 [package]
 name = "plumivox"
-version = "1.0.8"
+version = "1.0.9"
 edition = "2024"
 license = "MIT"
 publish = false
@@ -42,9 +42,7 @@ regex = "1"
 chrono = { version = "0.4", features = ["clock"] }
 url = "2"
 unicode-normalization = "0.1"
-unicode-segmentation = "1"
 twitter-text = "0.3.1"
-twitter_text_config = "0.3.1"
 dirs = "7"
 rand = "0.10"
 aes-gcm = "0.11"
