@@ -293,7 +293,8 @@ pub fn execute(command: &str) -> Result {
             ) {
                 return Err("不正な配布対象です".into());
             }
-            build()?;
+            // CIに個人のクラウド署名環境を持ち込まず、準備用成果物とする。
+            build(false)?;
             if target == "macos-arm64"
                 && !architecture_set(&output(
                     "/usr/bin/lipo",

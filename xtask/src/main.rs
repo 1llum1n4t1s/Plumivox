@@ -1,5 +1,7 @@
 mod ci;
 mod r2;
+#[cfg(windows)]
+mod windows_signing;
 
 use serde_json::Value;
 use std::{
@@ -191,7 +193,7 @@ fn release_build_args(windows_env: Option<&str>) -> Result<Vec<&'static str>> {
     Ok(args)
 }
 
-fn build() -> Result {
+fn build(sign_windows: bool) -> Result {
     if !cfg!(any(windows, target_os = "macos")) {
         return Err("配布ビルドの対象はWindowsとmacOSです".into());
     }
@@ -213,6 +215,15 @@ fn build() -> Result {
         args.extend(["--target", "aarch64-apple-darwin"]);
     }
     let artifacts = cargo_build(&args, &["plumivox"])?;
+    #[cfg(windows)]
+    if sign_windows {
+        // 検証完了まで既存の配布物を上書きしない。
+        windows_signing::sign(artifacts.executable("plumivox")?)?;
+    } else {
+        println!("Windows: signing skipped (CI preparation artifact)");
+    }
+    #[cfg(not(windows))]
+    let _ = sign_windows;
     fs::copy(artifacts.executable("plumivox")?, &output)?;
     #[cfg(unix)]
     {
@@ -583,7 +594,7 @@ fn main() -> Result {
         }
         return build_vps(&args[1]);
     }
-    match args.first().map(String::as_str) {Some("build") if args.len() == 1=>build(),Some("check")=>check(),Some("licenses")=>licenses(),Some(command) if command.starts_with("ci-")=>ci::execute(command),Some(command) if command.starts_with("test-")=>e2e(command),_=>Err("cargo xtask build | check | licenses | test-e2e | test-api-e2e | test-proxy-e2e | test-proxy-shared-e2e | test-setup-e2e".into())}
+    match args.first().map(String::as_str) {Some("build") if args.len() == 1=>build(true),Some("build-unsigned") if args.len() == 1=>build(false),Some("check")=>check(),Some("licenses")=>licenses(),Some(command) if command.starts_with("ci-")=>ci::execute(command),Some(command) if command.starts_with("test-")=>e2e(command),_=>Err("cargo xtask build | build-unsigned | check | licenses | test-e2e | test-api-e2e | test-proxy-e2e | test-proxy-shared-e2e | test-setup-e2e".into())}
 }
 
 #[cfg(test)]

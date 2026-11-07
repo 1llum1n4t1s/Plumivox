@@ -158,9 +158,10 @@ impl Session {
         json!({"version":3,"context":self.context,"client":self.client,"channel":self.channel,"challenge":self.challenge})
     }
     fn same_binding(&self, frame: &Value) -> bool {
+        let binding = self.binding();
         ["version", "context", "client", "channel", "challenge"]
             .iter()
-            .all(|k| frame[*k] == self.binding()[*k])
+            .all(|k| frame[*k] == binding[*k])
     }
     pub async fn request(&mut self, operation: &str, secret: &[u8]) -> Result<Value> {
         self.id = self

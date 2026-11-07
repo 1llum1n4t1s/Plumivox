@@ -82,7 +82,7 @@ jobs:
       - name: Install locked dependencies
         run: cargo fetch --locked
       - name: Validate 1
-        run: cargo xtask build
+        run: cargo xtask build-unsigned
       - name: Validate 2
         run: cargo xtask check
       - name: Validate 3

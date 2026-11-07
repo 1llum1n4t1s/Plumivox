@@ -19,9 +19,9 @@
 
 GitHub Actionsの「Build distribution artifacts」を既定ブランチから手動実行します。元リポジトリ`1llum1n4t1s/Plumivox`の既定ブランチだけが対象で、PRやforkからR2へ書き込みません。CIは固定Git URLから対象のcommit SHAを取得・照合し、WindowsとmacOSの各runnerでRust/Cargo 1.99.1を使って次を実行します。Node製Actionは使いません。
 
-1. 依存の固定取得、ネイティブビルド、`cargo xtask check`、`cargo xtask test-e2e`。
+1. 依存の固定取得、`cargo xtask check`、`cargo xtask test-e2e`。
 2. macOSは専用の一時KeychainでOSの保存機能を検証し、既定Keychainと検索一覧の不変を確認。終了時は成功・失敗を問わず専用Keychainを清掃。
-3. fixture機能なしで正式成果物を再ビルド。macOSはaarch64-apple-darwinを明示してビルドし、ARM64単独を確認。
+3. fixture機能なしで準備用成果物を再ビルド。Windowsは未署名で保存し、取得後に開発端末で署名・検証する。macOSはaarch64-apple-darwinを明示してビルドし、ARM64単独を確認。
 4. `cargo xtask artifact-upload`で成果物をR2へ保存。
 
 Linuxはx86_64とaarch64それぞれのnative runnerを使います。`sshd`・`ssh-keygen`を導入し、`cargo xtask ci-vps-test`でインストーラーのunit・CLIテストと実sshdを使うignoredテストを明示実行します。不足ツールはskipせず失敗させます。続いて各CPUのmuslターゲットをrust-lld・self-containedでビルドし、ELF64のCPU、動的ローダー・共有ライブラリ依存がないことと、生成した実行物の起動を確認してR2へ保存します。これは実VPSへの導入やsystemd・UFWの適用確認を代用しません。
@@ -57,6 +57,23 @@ cargo xtask artifact-download --commit <commit> --run <run> --attempt <attempt> 
 保存先には本人が管理する信頼できる階層を使います。Windowsは出力先とファイルを本人限定の権限で作り、ディレクトリハンドルを保持します。Unixは親の所有者・書込み権限・リンクを検査し、出力先を700で作成して、開いた同じファイルハンドルで実行権限を設定します。Unixの拡張ACLと、同一ユーザーによる悪意ある並行変更までは検査・防止しません。
 
 取得成功だけではプラグインへ反映されません。配布準備では対象commitと各OS・CPUのCI結果を確認し、取得した実行ファイルを上表の同梱先へ、ライセンスを`dist`へ反映してレビューします。同じcommitのライセンス内容が全targetで一致することも確認します。コミット・pushは別の明示依頼に従い、利用者はGitHub mainの更新後に通常のプラグイン更新を行います。バージョン更新やリリース告知はこのCIに含めません。
+
+## Windows配布物のコード署名
+
+Windowsの`cargo xtask build`は、releaseビルド後にSimplySignへ自動接続し、本人のCertum証明書でAuthenticode署名とSHA256タイムスタンプを付けます。Windows SDKの最新バージョンのx64版`signtool.exe`を使い、信頼チェーン・発行者・タイムスタンプの検証が成功した場合だけ`dist/plumivox.exe`へ反映します。接続ヘルパー・SDK・証明書がない場合や認証・署名・検証の失敗はビルドエラーとし、既存の`dist/plumivox.exe`を保持します。未署名へ自動で切り替えません。
+
+この開発端末では、他アプリと共通の`D:\Dev\skills\vava\scripts\Connect-SimplySign.ps1`で公式SimplySign Desktopへ自動接続します。別の配置では`PLUMIVOX_SIMPLYSIGN_CONNECT`へ同じ共通ヘルパーの絶対パスを指定します。登録情報はヘルパーだけが`D:\Dev\Secret\secrets.json`の`certum_simplysign`から読み、認証コードをログや引数へ出しません。Windowsの署名用開発端末にはPowerShell 7.4以降・公式SimplySign Desktop・Windows SDKと本人の有効な証明書が必要です。利用者側には追加の依存関係を要求しません。
+
+`cargo xtask build-unsigned`はCIの検証・R2受渡し用にWindows署名を明示的に省くコマンドです。依存検証CIと配布CIは個人のSimplySign環境を持たないため、この経路を使います。macOSは従来どおりARM64実行物へadhoc署名します。R2から取得したWindows成果物を配布に使う場合は、最終配置前に開発端末で次を行います。SDKのx64版`signtool.exe`にPATHを通し、各コマンドが成功してから次へ進んでください。R2のmanifestは署名前の内容を示すため、署名後のハッシュは異なります。
+
+```powershell
+pwsh -NoProfile -File D:\Dev\skills\vava\scripts\Connect-SimplySign.ps1
+# Windows SDKのx64版signtool.exeを使用。<thumbprint>は使用する証明書のSHA1拇印。
+signtool sign /sha1 <thumbprint> /fd SHA256 /tr http://time.certum.pl /td SHA256 /d Plumivox D:\Dev\Plumivox\dist\plumivox.exe
+signtool verify /pa /all /v D:\Dev\Plumivox\dist\plumivox.exe
+```
+
+各コマンドの終了コードを確認し、失敗した場合は配布へ進みません。Defenderは定義を更新し、`MpCmdRun.exe -Scan -ScanType 3 -File <実行ファイルの絶対パス> -DisableRemediation`で検査します。この個別検査は除外設定を無視し、検出ファイルの自動削除・隔離を行いません。署名は発行元と改変有無の確認に役立ちますが、将来の誤検出を防ぐ保証ではありません。検出が残る場合は保護設定を弱めず、本人の外部送信許可を得てMicrosoftの[ファイル提出窓口](https://www.microsoft.com/en-us/wdsi/filesubmission)へ再判定を依頼します。
 
 ## 保持と検証範囲
 

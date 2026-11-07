@@ -152,4 +152,6 @@ API応答が10MiBを超えた場合は受信を打ち切って失敗を返しま
 
 開発・ビルド・テストにもNode.jsは不要です。Rust/Cargoの`cargo xtask build`、`cargo xtask check`、`cargo xtask test-e2e`を使います。旧Nodeランチャーを指定した登録は、上記のネイティブ起動へ変更してください。
 
+Windowsの`cargo xtask build`は共通SimplySign自動認証・Certum署名・署名検証後に`dist/plumivox.exe`を更新します。署名に必要な開発端末の設定と、CIの未署名準備物を扱う手順は[配布成果物](docs/distribution.md#windows配布物のコード署名)を参照してください。
+
 [開発者向けのビルド・検証手順](docs/verification.md)、[作業規約](AGENTS.md)、[システム設計](DESIGN.md)を参照してください。

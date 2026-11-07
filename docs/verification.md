@@ -4,7 +4,9 @@
 
 macOSの対話セットアップE2EはRustから`libc::openpty`で制御TTYを作り、入力時のECHO無効化を確認する。PythonやNode.jsは使わない。
 
-手動起動の配布CIはWindowsとmacOSそれぞれで`cargo xtask check`・`cargo xtask test-e2e`を実行し、fixture機能を含まないWindows x64／macOS ARM64成果物を最後に再ビルドしてR2へ保存する。macOSでは同じジョブ内で専用Keychainを作成・unlockして`PLUMIVOX_TEST_KEYCHAIN`へ渡し、既定Keychain・検索一覧を変更せず、終了時に専用Keychainを削除する。CIの起動・実R2通信は別途実行結果が必要で、ローカルの構文・Rustテストの成功を代用しない。手順は [配布成果物](distribution.md) を参照する。
+Windowsの`cargo xtask build`は共通SimplySign接続ヘルパーで自動認証し、署名・本人の発行者・信頼チェーン・タイムスタンプの検証後に配布物を置換する。ヘルパー不在・認証・署名・検証の各失敗ではビルドを失敗させ、既存配布物を保持する。`PLUMIVOX_SIMPLYSIGN_CONNECT`に存在しないパスと失敗終了するfixtureを指定し、実際の`cargo xtask build`が非ゼロ終了し既存配布物のハッシュが不変であることを確認する。通常の`cargo xtask build`で署名済み配布物を生成して`signtool verify /pa /all`、Defender個別スキャン、MCP起動で確認する。CIの`build-unsigned`と`ci-distribution-build`はWindowsの署名を省く準備物を生成し、実署名の成功に数えない。
+
+手動起動の配布CIはWindowsとmacOSそれぞれで`cargo xtask check`・`cargo xtask test-e2e`を実行し、fixture機能を含まないWindows x64／macOS ARM64の準備用成果物を最後に再ビルドしてR2へ保存する。WindowsのCI成果物は署名を省き、配布前に開発端末で署名・検証する。macOSでは同じジョブ内で専用Keychainを作成・unlockして`PLUMIVOX_TEST_KEYCHAIN`へ渡し、既定Keychain・検索一覧を変更せず、終了時に専用Keychainを削除する。CIの起動・実R2通信は別途実行結果が必要で、ローカルの構文・Rustテストの成功を代用しない。手順は [配布成果物](distribution.md) を参照する。
 
 | R2成果物の失敗条件 | 期待する結果 |
 | --- | --- |

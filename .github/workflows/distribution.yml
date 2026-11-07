@@ -8,7 +8,7 @@ permissions:
 
 jobs:
   build:
-    if: github.repository == '1llum1n4t1s/Plumivox' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    if: ${{ (github.repository == '1llum1n4t1s/Plumivox' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)) && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
     strategy:
       fail-fast: false
       matrix:
@@ -104,9 +104,6 @@ jobs:
         run: cargo xtask ci-keychain-prepare
       - name: Fetch locked dependencies
         run: cargo fetch --locked
-      - name: Build native executable for validation
-        if: runner.os != 'Linux'
-        run: cargo xtask build
       - name: Check sources and development tools
         if: runner.os != 'Linux'
         run: cargo xtask check
