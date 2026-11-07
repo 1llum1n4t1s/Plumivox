@@ -19,14 +19,14 @@ PlumivoxはTwitterAPI.ioを経由してXへの投稿・認証更新・公開投�
 | `src/proxy_ipc.rs` | 相互HMAC認証IPC。Windowsの名前付きパイプとmacOSのUnix socketを利用する |
 | `src/proxy.rs` | 設定と鍵の検証、russhによるSSHホスト鍵照合・逆転送・再接続、共有daemon・複数チャット・idle終了・取消・停止の制御 |
 | `src/client.rs` / `src/client_emoji.txt` | HTTP通信、応答検証・正規化、画像検証・アップロード、投稿、フィード再構成、検索条件と継続cursor、Unicode 17絵文字の検証 |
-| `Cargo.toml` / `Cargo.lock` / `.cargo/config.toml` / `xtask/` | 本体と開発ツールの依存固定、Windows x64とmacOS universalのビルド、ライセンス生成、検査・E2E実行。Node.jsを使わない |
+| `Cargo.toml` / `Cargo.lock` / `.cargo/config.toml` / `xtask/` | 本体と開発ツールの依存固定、Windows x64とmacOS ARM64のビルド、ライセンス生成、検査・E2E実行。Node.jsを使わない |
 | `dist/plumivox.exe` / `dist/plumivox` | 正式なネイティブ実行ファイル |
 | `.github/workflows/distribution.yml` / `xtask/src/ci.rs` / `xtask/src/r2.rs` | RustによるWindows・macOS本体とLinux x86_64・aarch64のVPSインストーラーの検証とビルド、R2への成果物保存・検証付き取得。利用者のMCP実行から独立する |
 | `tests/api_e2e.rs` / `tests/native_e2e.rs` / `tests/tls_e2e.rs` / `tests/support/` / `tests/native-fixture.rs` | Rustの偽HTTP・HTTPS APIと別プロセスのMCPを使い、通信内容・回数・失敗状態を検証する。失敗注入は`test-fixture`ビルドに限定する |
 | `tests/proxy_e2e.rs`と`src/proxy.rs` / `src/proxy_egress.rs` / `src/proxy_ipc.rs`内のテスト | Rustの偽SSH・echo、認証付きIPCとCONNECT出口の境界を検証する |
 | `tests/setup_e2e.rs` / `tests/setup_vps_e2e.rs` | Windows・macOSの設定ウィザード、個別保存先、鍵の保護、VPS CLIの検証と拒否条件。実VPSへの導入は別途確認が必要 |
 
-`mcp.json`は作業ディレクトリを`${PLUGIN_ROOT}`として`./dist/plumivox --stdio`を起動する。Windowsは`.exe`を解決し、macOSはApple SiliconとIntelを含むuniversal実行ファイルを使う。本体と開発ツール・E2EはRustで、Node.jsのインストールや起動時のコード取得を必要としない。旧Nodeランチャーは廃止し、旧登録はネイティブ実行ファイルへ変更する。マーケットプレイスは`.agents/plugins/marketplace.json`、プラグイン情報は`plugin.json`に置く。
+`mcp.json`は作業ディレクトリを`${PLUGIN_ROOT}`として`./dist/plumivox --stdio`を起動する。Windowsは`.exe`を解決し、macOSはApple Silicon向けARM64実行ファイルを使う。本体と開発ツール・E2EはRustで、Node.jsのインストールや起動時のコード取得を必要としない。旧Nodeランチャーは廃止し、旧登録はネイティブ実行ファイルへ変更する。マーケットプレイスは`.agents/plugins/marketplace.json`、プラグイン情報は`plugin.json`に置く。
 
 開発用の成果物は、既定ブランチで手動起動する配布CIが各OSの実行環境で検証してから非公開R2へ保存する。`plumivox/ci/{commit}/{run}/{attempt}/{target}/`に実行ファイル・第三者ライセンスを保存し、サイズとSHA256を含むmanifestを最後に保存する。既存オブジェクトの上書きを拒否し、取得ではidentity・ファイル名・サイズ・SHA256を照合する。R2は配布準備の受け渡しであり、GitHub mainの同梱`dist`を使うプラグインの導入・更新経路は維持する。CIは`dist`を自動コミットせず、latestの差替えや過去成果物の自動削除も行わない。操作・保持方針は [docs/distribution.md](docs/distribution.md) を参照する。
 

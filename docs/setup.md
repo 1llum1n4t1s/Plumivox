@@ -15,7 +15,7 @@ PCからVPSへSSH接続するため、自宅ルーターのポート開放は不
 | 場所 | 必要なもの |
 | --- | --- |
 | Windows PC | Windows x64、Codex、OpenSSHの`ssh`・`scp`・`ssh-keygen` |
-| Mac | macOS（Apple Silicon・Intel）、Codex、`ssh`・`scp`・`ssh-keygen`。ログインする利用者のKeychainを利用可能なこと |
+| Mac | Apple Silicon Mac（macOS ARM64）、Codex、`ssh`・`scp`・`ssh-keygen`。ログインする利用者のKeychainを利用可能なこと |
 | VPS | Ubuntu 22.04以降またはDebian 12以降、systemd、固定の公開IPv4、SSH管理者とsudo権限、有効なUFW |
 | TwitterAPI.io | APIキー。API利用料とVPS料金は各サービスの契約に従います |
 | X | 投稿先のユーザー名、ログイン用メールアドレスとパスワード。2FA利用時はBase32のTOTP秘密鍵 |
@@ -35,7 +35,7 @@ $pluginRoot = (codex plugin add plumivox@plumivox-local --json | ConvertFrom-Jso
 $publicKey = Join-Path $env:LOCALAPPDATA 'Kagayoi/Plumivox/keys/plumivox_ed25519.pub'
 ```
 
-macOSではターミナルで実行します。実行ファイルはApple Silicon・Intel共通です。鍵の作成にはmacOSの`ssh-keygen`を使います。
+Apple Silicon Macではターミナルで実行します。同梱のmacOS実行ファイルはARM64専用です。鍵の作成にはmacOSの`ssh-keygen`を使います。
 
 ```bash
 codex plugin marketplace add https://github.com/1llum1n4t1s/Plumivox.git --ref main

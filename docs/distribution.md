@@ -1,6 +1,6 @@
 # 配布成果物の保存と取得
 
-開発用の配布CIはWindows x64、macOS universal（Apple Silicon・Intel）、Linux x86_64・aarch64の静的リンクVPSインストーラーをCloudflare R2へ保存します。OSごとのビルド・検証結果を配布準備へ渡すための保管先です。利用者向けプラグインはGitHubの最新`main`に同梱した`dist`から起動し、VPSインストーラーは同梱した`setup/vps`の実行物を使います。R2の資格情報、Rust、Node.js、Wrangler、起動時ダウンロードは要求しません。
+開発用の配布CIはWindows x64、macOS ARM64（Apple Silicon）、Linux x86_64・aarch64の静的リンクVPSインストーラーをCloudflare R2へ保存します。OSごとのビルド・検証結果を配布準備へ渡すための保管先です。利用者向けプラグインはGitHubの最新`main`に同梱した`dist`から起動し、VPSインストーラーは同梱した`setup/vps`の実行物を使います。R2の資格情報、Rust、Node.js、Wrangler、起動時ダウンロードは要求しません。
 
 ## 管理者の設定
 
@@ -21,7 +21,7 @@ GitHub Actionsの「Build distribution artifacts」を既定ブランチから�
 
 1. 依存の固定取得、ネイティブビルド、`cargo xtask check`、`cargo xtask test-e2e`。
 2. macOSは専用の一時KeychainでOSの保存機能を検証し、既定Keychainと検索一覧の不変を確認。終了時は成功・失敗を問わず専用Keychainを清掃。
-3. fixture機能なしで正式成果物を再ビルド。macOSはarm64とx86_64の両ターゲットからuniversalを作り、両アーキテクチャを確認。
+3. fixture機能なしで正式成果物を再ビルド。macOSはaarch64-apple-darwinを明示してビルドし、ARM64単独を確認。
 4. `cargo xtask artifact-upload`で成果物をR2へ保存。
 
 Linuxはx86_64とaarch64それぞれのnative runnerを使います。`sshd`・`ssh-keygen`を導入し、`cargo xtask ci-vps-test`でインストーラーのunit・CLIテストと実sshdを使うignoredテストを明示実行します。不足ツールはskipせず失敗させます。続いて各CPUのmuslターゲットをrust-lld・self-containedでビルドし、ELF64のCPU、動的ローダー・共有ライブラリ依存がないことと、生成した実行物の起動を確認してR2へ保存します。これは実VPSへの導入やsystemd・UFWの適用確認を代用しません。
@@ -33,7 +33,7 @@ Linux開発端末での単独ビルドは、対象のRust muslターゲットを
 | target | 実行ファイル | 同梱先 |
 | --- | --- | --- |
 | `windows-x64` | `plumivox.exe` | `dist` |
-| `macos-universal` | `plumivox` | `dist` |
+| `macos-arm64` | `plumivox` | `dist` |
 | `vps-linux-x86_64` | `plumivox-vps-setup-x86_64` | `setup/vps` |
 | `vps-linux-aarch64` | `plumivox-vps-setup-aarch64` | `setup/vps` |
 
@@ -47,7 +47,7 @@ Linux開発端末での単独ビルドは、対象のRust muslターゲットを
 
 ```powershell
 cargo xtask artifact-download --commit <commit> --run <run> --attempt <attempt> --target windows-x64 --output D:\Artifacts\Plumivox\<run>-<attempt>-windows
-cargo xtask artifact-download --commit <commit> --run <run> --attempt <attempt> --target macos-universal --output D:\Artifacts\Plumivox\<run>-<attempt>-macos
+cargo xtask artifact-download --commit <commit> --run <run> --attempt <attempt> --target macos-arm64 --output D:\Artifacts\Plumivox\<run>-<attempt>-macos
 cargo xtask artifact-download --commit <commit> --run <run> --attempt <attempt> --target vps-linux-x86_64 --output D:\Artifacts\Plumivox\<run>-<attempt>-vps-x86_64
 cargo xtask artifact-download --commit <commit> --run <run> --attempt <attempt> --target vps-linux-aarch64 --output D:\Artifacts\Plumivox\<run>-<attempt>-vps-aarch64
 ```
@@ -63,3 +63,5 @@ cargo xtask artifact-download --commit <commit> --run <run> --attempt <attempt> 
 CIはlatestを更新せず、古い成果物を自動削除しません。管理者が必要なcommit・run・attemptを確認して保持し、不要と判断したprefixだけを手動で削除します。失敗したattemptの不完全なprefixも対象を照合してから清掃します。バケットのライフサイクルルールを追加する場合は、必要な配布候補を消さない保持期間を別途決めてください。
 
 ローカルでは`cargo test --locked --package xtask`で入力・manifest・サイズ・ハッシュと、偽HTTPサーバーを使うcurl転送の条件を確認できます。実R2への認証・保存・取得とGitHub Actionsの全工程は実行結果で確認する必要があります。この構成の追加だけでは実クラウド・CIの実行確認は完了していません。
+
+過去の`macos-universal` identityは既存成果物のダウンロードにのみ対応します。新規アップロードは`macos-arm64`を使用し、旧identityへのアップロードは拒否します。

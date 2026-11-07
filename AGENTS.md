@@ -10,7 +10,7 @@
 
 - 利用者向けの導入・操作・取得範囲は [README.md](README.md)、現在の構造と設計判断は [DESIGN.md](DESIGN.md) を参照する。
 - 初期設定は [docs/setup.md](docs/setup.md)、設定と保存形式は [docs/configuration.md](docs/configuration.md)、管理プロキシの設定・運用は [docs/managed-proxy.md](docs/managed-proxy.md)、失敗条件とE2Eの検証方針は [docs/verification.md](docs/verification.md) を参照し、変更した挙動に対応する説明を更新する。
-- 本体実装は`src/*.rs`、ツール定義は`src/tool-definitions.json`、開発用コマンドは`xtask/`、MCP経由のRust検証は`tests/`。配布物はWindows x64の`dist/plumivox.exe`とmacOS universal（arm64・x64）の`dist/plumivox`。開発・検証にもNode.jsやnpmパッケージを要求しない。
+- 本体実装は`src/*.rs`、ツール定義は`src/tool-definitions.json`、開発用コマンドは`xtask/`、MCP経由のRust検証は`tests/`。配布物はWindows x64の`dist/plumivox.exe`とmacOS ARM64の`dist/plumivox`。開発・検証にもNode.jsやnpmパッケージを要求しない。
 
 ## 必須コマンドと検証
 
@@ -23,7 +23,7 @@ cargo xtask check
 cargo xtask test-e2e
 ```
 
-- 実装・依存関係・ビルド設定を変更した場合は上記で検証し、Rustソースと再生成した対象OSの実行ファイルを一緒に更新する。macOSの正式配布物は両Rustターゲットを導入して`cargo xtask build --universal`で作り、arm64・x64を含むことを確認する。`cargo xtask check`はCargoの形式・型検査、同梱Bashの構文、JSON設定を確認する。
+- 実装・依存関係・ビルド設定を変更した場合は上記で検証し、Rustソースと再生成した対象OSの実行ファイルを一緒に更新する。macOSの正式配布物はARM64 Rustターゲットを導入して`cargo xtask build`で作り、arm64単独であることを確認する。`cargo xtask check`はCargoの形式・型検査、同梱Bashの構文、JSON設定を確認する。
 - `cargo xtask test-e2e`はネイティブ本体を対象とするAPI・認証、管理プロキシ・共有daemon、PCセットアップ、VPSセットアップCLIの検証を行う。OS条件を理由に未実行の系統は明示し、全件成功へ数えない。全件検証ではAPI系のケース絞込み用`PLUMIVOX_E2E_CASE`を未設定にし、個別再実行の成功を全件成功として扱わない。ローカルの偽API・偽SSHと別プロセスのMCP・daemonを使い、実際のXへ投稿せず、実際のSSHホストへ接続しない。プロキシのRustテストも確認し、旧JavaScript実装だけの成功をネイティブ版の検証に代用しない。VPS CLIの確認だけで実Linuxへの導入成功を扱わない。失敗条件を先に確認し、挙動の検証は対応する既存E2Eへ追加する。
 - 出力先を指定する場合は `PLUMIVOX_NATIVE_E2E_OUTPUT_DIR`、`PLUMIVOX_TLS_E2E_OUTPUT_DIR`、`PLUMIVOX_PROXY_NATIVE_E2E_OUTPUT_DIR`、`PLUMIVOX_E2E_OUTPUT_DIR`、`PLUMIVOX_SETUP_E2E_OUTPUT_DIR`（Windows）、`PLUMIVOX_NATIVE_SETUP_E2E_OUTPUT_DIR`（macOS）、`PLUMIVOX_SETUP_VPS_E2E_OUTPUT_DIR` をそれぞれ別の、リポジトリとCodexユーザーディレクトリの外のフォルダーにする。未指定時は各系統がユーザーの一時ディレクトリ配下の `Codex/Plumivox/<UUID>` を使う。各出力先の `summary.json` の失敗数と各結果、API系の`http-trace.json`、共有中継の`ssh-trace.json`、VPS CLIの`mutation-trace.json`を読み、偽設定・画像・暗号化セッション・SSH鍵の清掃は呼び出し側で行う。
 - 文書だけの変更では、リンク・コマンド・設定名・記載した挙動を対応する実装へ照合する。

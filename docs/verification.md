@@ -4,7 +4,7 @@
 
 macOSの対話セットアップE2EはRustから`libc::openpty`で制御TTYを作り、入力時のECHO無効化を確認する。PythonやNode.jsは使わない。
 
-手動起動の配布CIはWindowsとmacOSそれぞれで`cargo xtask check`・`cargo xtask test-e2e`を実行し、fixture機能を含まないWindows x64／macOS universal成果物を最後に再ビルドしてR2へ保存する。macOSでは同じジョブ内で専用Keychainを作成・unlockして`PLUMIVOX_TEST_KEYCHAIN`へ渡し、既定Keychain・検索一覧を変更せず、終了時に専用Keychainを削除する。CIの起動・実R2通信は別途実行結果が必要で、ローカルの構文・Rustテストの成功を代用しない。手順は [配布成果物](distribution.md) を参照する。
+手動起動の配布CIはWindowsとmacOSそれぞれで`cargo xtask check`・`cargo xtask test-e2e`を実行し、fixture機能を含まないWindows x64／macOS ARM64成果物を最後に再ビルドしてR2へ保存する。macOSでは同じジョブ内で専用Keychainを作成・unlockして`PLUMIVOX_TEST_KEYCHAIN`へ渡し、既定Keychain・検索一覧を変更せず、終了時に専用Keychainを削除する。CIの起動・実R2通信は別途実行結果が必要で、ローカルの構文・Rustテストの成功を代用しない。手順は [配布成果物](distribution.md) を参照する。
 
 | R2成果物の失敗条件 | 期待する結果 |
 | --- | --- |
@@ -166,9 +166,9 @@ cargo xtask test-e2e
 
 開発・CIの基準はRust/Cargo 1.99.1です。PCセットアップ・ビルド・ライセンス生成・E2EもRustで実行するため、開発環境にもNode.js・pnpm・npmパッケージは不要です。`cargo xtask build`はホストOS向けのRust releaseビルドを`dist/`へ配置し、`cargo xtask licenses`はCargoの依存と`third-party/emoji-regex/`のライセンスから同梱文書を生成します。Windowsの正式実行物は`dist/plumivox.exe`、macOSは`dist/plumivox`です。利用者はネイティブ実行ファイルを直接使います。旧Nodeランチャーを指す登録の変更は[管理プロキシの移行手順](managed-proxy.md#旧タスクから切り替える)を参照してください。
 
-`xtask build`とE2Eは、Cargoの`compiler-artifact`メッセージが返す実行ファイルを使います。`CARGO_TARGET_DIR`・`CARGO_BUILD_TARGET_DIR`・Cargo設定の`build.target-dir`による出力先を尊重し、既存の`target/debug`・`target/release`から推測して選びません。Windowsの配布ビルドはx64を保証するため、xtaskのMSVC／GNU／GNU LLVM環境に応じて`--target x86_64-pc-windows-msvc`／`--target x86_64-pc-windows-gnu`／`--target x86_64-pc-windows-gnullvm`を明示します。macOS universalも両アーキテクチャを明示し、それ以外のビルドとE2Eは`CARGO_BUILD_TARGET`・`build.target`を尊重します。同じバイナリに複数の異なる実行ファイルが返る設定はエラーにします。E2Eのビルド対象は実行環境で起動できるターゲットにしてください。
+`xtask build`とE2Eは、Cargoの`compiler-artifact`メッセージが返す実行ファイルを使います。`CARGO_TARGET_DIR`・`CARGO_BUILD_TARGET_DIR`・Cargo設定の`build.target-dir`による出力先を尊重し、既存の`target/debug`・`target/release`から推測して選びません。Windowsの配布ビルドはx64を保証するため、xtaskのMSVC／GNU／GNU LLVM環境に応じて`--target x86_64-pc-windows-msvc`／`--target x86_64-pc-windows-gnu`／`--target x86_64-pc-windows-gnullvm`を明示します。macOS ARM64もaarch64-apple-darwinを明示し、それ以外のビルドとE2Eは`CARGO_BUILD_TARGET`・`build.target`を尊重します。同じバイナリに複数の異なる実行ファイルが返る設定はエラーにします。E2Eのビルド対象は実行環境で起動できるターゲットにしてください。
 
-macOSの正式配布物は、Mac上で両ターゲットを導入して`cargo xtask build --universal`を実行し、`lipo -archs dist/plumivox`で`arm64`と`x86_64`を確認します。Windows x64ビルド、macOS universalビルド、各OSの実動検証を別々に記録します。クロスビルドだけでKeychain・Unix socket・セットアップが動作したとは扱いません。
+macOSの正式配布物は、Apple Silicon Mac上でARM64ターゲットを導入して`cargo xtask build`を実行し、`lipo -archs dist/plumivox`で`arm64`単独を確認します。Windows x64ビルド、macOS ARM64ビルド、各OSの実動検証を別々に記録します。クロスビルドだけでKeychain・Unix socket・セットアップが動作したとは扱いません。
 
 `cargo test --locked --lib`はRustのAPI境界・設定・セッション・プロキシテストを実行します。`cargo xtask test-e2e`は本体の単体テストとRustの各E2Eを実行し、対象OSのPCセットアップとVPS CLIも確認します。WindowsのDPAPI・ACL・ネイティブセットアップとmacOSのKeychain・Unix権限・セットアップを区別し、未実行・skipを成功へ数えません。
 

@@ -191,10 +191,7 @@ fn release_build_args(windows_env: Option<&str>) -> Result<Vec<&'static str>> {
     Ok(args)
 }
 
-fn build(universal: bool) -> Result {
-    if universal && !cfg!(target_os = "macos") {
-        return Err("Universal builds require macOS".into());
-    }
+fn build() -> Result {
     if !cfg!(any(windows, target_os = "macos")) {
         return Err("配布ビルドの対象はWindowsとmacOSです".into());
     }
@@ -202,42 +199,21 @@ fn build(universal: bool) -> Result {
     let output = root()
         .join("dist")
         .join(format!("plumivox{}", env::consts::EXE_SUFFIX));
-    if universal {
-        let arches = ["aarch64-apple-darwin", "x86_64-apple-darwin"];
-        let mut inputs = Vec::new();
-        for arch in arches {
-            let artifacts = cargo_build(
-                &[
-                    "build",
-                    "--locked",
-                    "--release",
-                    "--bin",
-                    "plumivox",
-                    "--target",
-                    arch,
-                ],
-                &["plumivox"],
-            )?;
-            inputs.push(artifacts.executable("plumivox")?.to_path_buf());
-        }
-        let mut cmd = Command::new("/usr/bin/lipo");
-        cmd.arg("-create");
-        cmd.args(inputs);
-        run(cmd.arg("-output").arg(&output))?;
+    let windows_env = cfg!(windows).then_some(if cfg!(target_env = "msvc") {
+        "msvc"
+    } else if cfg!(all(target_env = "gnu", target_abi = "llvm")) {
+        "gnullvm"
+    } else if cfg!(target_env = "gnu") {
+        "gnu"
     } else {
-        let windows_env = cfg!(windows).then_some(if cfg!(target_env = "msvc") {
-            "msvc"
-        } else if cfg!(all(target_env = "gnu", target_abi = "llvm")) {
-            "gnullvm"
-        } else if cfg!(target_env = "gnu") {
-            "gnu"
-        } else {
-            "unsupported"
-        });
-        let args = release_build_args(windows_env)?;
-        let artifacts = cargo_build(&args, &["plumivox"])?;
-        fs::copy(artifacts.executable("plumivox")?, &output)?;
+        "unsupported"
+    });
+    let mut args = release_build_args(windows_env)?;
+    if cfg!(target_os = "macos") {
+        args.extend(["--target", "aarch64-apple-darwin"]);
     }
+    let artifacts = cargo_build(&args, &["plumivox"])?;
+    fs::copy(artifacts.executable("plumivox")?, &output)?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -607,7 +583,7 @@ fn main() -> Result {
         }
         return build_vps(&args[1]);
     }
-    match args.first().map(String::as_str) {Some("build")=>build(args.iter().any(|a|a=="--universal")),Some("check")=>check(),Some("licenses")=>licenses(),Some(command) if command.starts_with("ci-")=>ci::execute(command),Some(command) if command.starts_with("test-")=>e2e(command),_=>Err("cargo xtask build [--universal] | check | licenses | test-e2e | test-api-e2e | test-proxy-e2e | test-proxy-shared-e2e | test-setup-e2e".into())}
+    match args.first().map(String::as_str) {Some("build") if args.len() == 1=>build(),Some("check")=>check(),Some("licenses")=>licenses(),Some(command) if command.starts_with("ci-")=>ci::execute(command),Some(command) if command.starts_with("test-")=>e2e(command),_=>Err("cargo xtask build | check | licenses | test-e2e | test-api-e2e | test-proxy-e2e | test-proxy-shared-e2e | test-setup-e2e".into())}
 }
 
 #[cfg(test)]
@@ -805,13 +781,13 @@ mod artifact_tests {
     #[test]
     fn refuses_ambiguous_target_outputs_and_keeps_builds_separate() {
         let arm = artifact("plumivox", "custom/aarch64-apple-darwin/release/plumivox");
-        let intel = artifact("plumivox", "custom/x86_64-apple-darwin/release/plumivox");
+        let other = artifact("plumivox", "other/aarch64-apple-darwin/release/plumivox");
         let mut first = BuildArtifacts::default();
         first.record(&arm, PACKAGE, NAMES).unwrap();
         first.record(&arm, PACKAGE, NAMES).unwrap();
-        assert!(first.record(&intel, PACKAGE, NAMES).is_err());
+        assert!(first.record(&other, PACKAGE, NAMES).is_err());
         let mut second = BuildArtifacts::default();
-        second.record(&intel, PACKAGE, NAMES).unwrap();
+        second.record(&other, PACKAGE, NAMES).unwrap();
         assert_ne!(
             first.executable("plumivox").unwrap(),
             second.executable("plumivox").unwrap()

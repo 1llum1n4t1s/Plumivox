@@ -45,7 +45,7 @@ impl Identity {
         Ok([
             match self.target.as_str() {
                 "windows-x64" => "plumivox.exe",
-                "macos-universal" => "plumivox",
+                "macos-arm64" | "macos-universal" => "plumivox",
                 "vps-linux-x86_64" => "plumivox-vps-setup-x86_64",
                 "vps-linux-aarch64" => "plumivox-vps-setup-aarch64",
                 _ => return Err("targetが許可された配布対象ではありません".into()),
@@ -703,6 +703,9 @@ fn transfer_from(
     output: Option<&Path>,
     repository: &Path,
 ) -> Result {
+    if output.is_none() && identity.target == "macos-universal" {
+        return Err("旧macOS universal成果物は読取り専用です".into());
+    }
     let prefix = identity.prefix();
     if let Some(output) = output {
         let bytes = store.request(&format!("{prefix}manifest.json"), None, None, MAX_MANIFEST)?;
@@ -906,9 +909,21 @@ mod tests {
         root
     }
     #[test]
+    fn legacy_macos_upload_is_rejected_before_store_access() {
+        let (id, _, _) = fixture_for("macos-universal");
+        let store = Store {
+            endpoint: "http://127.0.0.1:9".into(),
+            user: "fake-access:fake-secret".into(),
+        };
+        let error = transfer(&id, &store, None).unwrap_err().to_string();
+        assert!(error.contains("読取り専用"));
+    }
+
+    #[test]
     fn all_targets_keep_two_files_and_fixed_sources() {
         for (target, binary, source_directory) in [
             ("windows-x64", "plumivox.exe", "dist"),
+            ("macos-arm64", "plumivox", "dist"),
             ("macos-universal", "plumivox", "dist"),
             ("vps-linux-x86_64", "plumivox-vps-setup-x86_64", "setup/vps"),
             (
@@ -931,12 +946,22 @@ mod tests {
             );
             let output = directory(&format!("all-targets-{target}")).join("new");
             let (store, handle) = server(vec![
-                ("200 OK", m),
+                ("200 OK", m.clone()),
                 ("200 OK", files[0].clone()),
                 ("200 OK", files[1].clone()),
             ]);
             transfer(&id, &store, Some(&output)).unwrap();
-            assert_eq!(fs::read(output.join(binary)).unwrap(), files[0]);
+            assert_eq!(fs::read(output.join(binary)).unwrap(), files[0], "{target}");
+            assert_eq!(
+                fs::read(output.join("THIRD-PARTY-LICENSES.txt")).unwrap(),
+                files[1],
+                "{target}"
+            );
+            assert_eq!(
+                fs::read(output.join("manifest.json")).unwrap(),
+                m,
+                "{target}"
+            );
             #[cfg(unix)]
             if target != "windows-x64" {
                 use std::os::unix::fs::PermissionsExt;
@@ -949,9 +974,12 @@ mod tests {
                     0o755
                 );
             }
+            let requests = handle.join().unwrap();
+            assert_eq!(requests.len(), 3, "{target}");
             assert!(
-                String::from_utf8_lossy(&handle.join().unwrap()[0])
-                    .starts_with(&format!("GET /{}manifest.json ", id.prefix()))
+                String::from_utf8_lossy(&requests[0])
+                    .starts_with(&format!("GET /{}manifest.json ", id.prefix())),
+                "{target}"
             );
         }
     }
@@ -1005,24 +1033,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn native_curl_download_checks_signature_and_files() {
-        let (id, m, files) = fixture();
-        let (store, handle) = server(vec![
-            ("200 OK", m),
-            ("200 OK", files[0].clone()),
-            ("200 OK", files[1].clone()),
-        ]);
-        let output = directory("download").join("new");
-        transfer(&id, &store, Some(&output)).unwrap();
-        assert_eq!(fs::read(output.join("plumivox.exe")).unwrap(), files[0]);
-        assert!(output.join("manifest.json").is_file());
-        let requests = handle.join().unwrap();
-        assert!(
-            String::from_utf8_lossy(&requests[0])
-                .starts_with(&format!("GET /{}manifest.json ", id.prefix()))
-        );
-    }
     #[test]
     fn native_curl_upload_is_conditional_and_preserves_bytes() {
         let path = directory("upload").join("binary with spaces");

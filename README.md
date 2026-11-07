@@ -4,7 +4,7 @@ TwitterAPI.ioを使い、Xへの投稿、キーワード・期間検索、フォ
 
 ## 必要なもの
 
-- Windows x64またはmacOS（Apple Silicon・Intel）。MCP本体はRust製のネイティブ実行ファイルで、Node.jsやRustのインストールは不要です。
+- Windows x64またはApple Silicon Mac（macOS ARM64）。MCP本体はRust製のネイティブ実行ファイルで、Node.jsやRustのインストールは不要です。
 - Windows・macOSの初期設定は同梱の実行ファイルを使います。PowerShell 7 (`pwsh`) は不要です。
 - TwitterAPI.ioのAPIキー。API利用には同サービスの従量課金が発生します。
 - 投稿には対象アカウントのv2ログインCookieとプロキシ。既存の外部プロキシに加え、Windows・macOSではPlumivox内の住宅回線出口とSSH中継を複数チャットで共有できます。公開中継サーバーの初回準備は必要です。
@@ -18,7 +18,7 @@ codex plugin marketplace add https://github.com/1llum1n4t1s/Plumivox.git --ref m
 codex plugin add plumivox@plumivox-local
 ```
 
-`plumivox-local` はマーケットプレイスの識別子です。取得元は上記のGitHub URLです。Windows用の`dist/plumivox.exe`とmacOS用の`dist/plumivox`（Apple Silicon・Intel共通）を同梱しているため、利用者による依存インストールやMCP設定の手動追加は不要です。
+`plumivox-local` はマーケットプレイスの識別子です。取得元は上記のGitHub URLです。Windows x64用の`dist/plumivox.exe`とApple Silicon Mac用の`dist/plumivox`（ARM64）を同梱しているため、利用者による依存インストールやMCP設定の手動追加は不要です。
 
 開発用CIではWindows・macOSで検証した成果物をCloudflare R2へ保存し、配布準備時に受け渡します。[成果物の保存・取得手順](docs/distribution.md)は開発者向けです。プラグイン利用者にR2の設定や資格情報は不要で、インストール・更新は引き続きGitHubの`main`から行います。
 

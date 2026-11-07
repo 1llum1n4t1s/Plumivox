@@ -27,7 +27,7 @@ fn architecture_set(bytes: &[u8]) -> bool {
         .map(str::to_owned)
         .collect::<Vec<_>>();
     arches.sort();
-    arches == ["arm64", "x86_64"]
+    arches == ["arm64"]
 }
 
 fn validate_identity(values: &[String]) -> Result {
@@ -46,7 +46,7 @@ fn validate_identity(values: &[String]) -> Result {
         })
         || !matches!(
             values[3].as_str(),
-            "windows-x64" | "macos-universal" | "vps-linux-x86_64" | "vps-linux-aarch64"
+            "windows-x64" | "macos-arm64" | "vps-linux-x86_64" | "vps-linux-aarch64"
         )
     {
         return Err("CI成果物identityが不正です".into());
@@ -249,10 +249,10 @@ pub fn execute(command: &str) -> Result {
                 )?;
                 return Ok(());
             }
-            if !matches!(target.as_str(), "windows-x64" | "macos-universal") {
+            if !matches!(target.as_str(), "windows-x64" | "macos-arm64") {
                 return Err("不正な配布対象です".into());
             }
-            if target == "macos-universal" {
+            if target == "macos-arm64" {
                 output(
                     "rustup",
                     &[
@@ -261,7 +261,6 @@ pub fn execute(command: &str) -> Result {
                         "--toolchain",
                         "1.99.1",
                         "aarch64-apple-darwin",
-                        "x86_64-apple-darwin",
                     ],
                 )?;
             }
@@ -290,12 +289,12 @@ pub fn execute(command: &str) -> Result {
             }
             if !matches!(
                 (env::consts::OS, target.as_str()),
-                ("windows", "windows-x64") | ("macos", "macos-universal")
+                ("windows", "windows-x64") | ("macos", "macos-arm64")
             ) {
                 return Err("不正な配布対象です".into());
             }
-            build(target == "macos-universal")?;
-            if target == "macos-universal"
+            build()?;
+            if target == "macos-arm64"
                 && !architecture_set(&output(
                     "/usr/bin/lipo",
                     &[
@@ -307,7 +306,7 @@ pub fn execute(command: &str) -> Result {
                     ],
                 )?)
             {
-                return Err("universal成果物に必要な両アーキテクチャがありません".into());
+                return Err("macOS成果物はARM64単独である必要があります".into());
             }
             Ok(())
         }
@@ -344,11 +343,11 @@ pub fn execute(command: &str) -> Result {
 mod tests {
     use super::*;
     #[test]
-    fn universal_requires_exact_architecture_pair() {
-        assert!(architecture_set(b"x86_64 arm64\n"));
-        assert!(architecture_set(b"arm64 x86_64\n"));
+    fn macos_requires_arm64_only() {
+        assert!(architecture_set(b"arm64\n"));
         for value in [
-            b"arm64".as_slice(),
+            b"x86_64".as_slice(),
+            b"arm64 x86_64",
             b"arm64 arm64",
             b"arm64 x86_64 i386",
             b"",
@@ -366,7 +365,7 @@ mod tests {
             "windows-x64".into(),
         ];
         assert!(validate_identity(&valid).is_ok());
-        for target in ["macos-universal", "vps-linux-x86_64", "vps-linux-aarch64"] {
+        for target in ["macos-arm64", "vps-linux-x86_64", "vps-linux-aarch64"] {
             let mut additional = valid.clone();
             additional[3] = target.into();
             assert!(validate_identity(&additional).is_ok());
