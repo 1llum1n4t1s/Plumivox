@@ -1,3 +1,4 @@
+mod api_rejection;
 pub mod client;
 pub mod config;
 pub mod error;

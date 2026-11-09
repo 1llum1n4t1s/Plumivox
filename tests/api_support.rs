@@ -293,6 +293,28 @@ pub async fn handle(state: Arc<State>, req: HttpRequest) -> io::Result<HttpRespo
     }
     state.mock.lock().unwrap().trace.push(trace);
     let send = |v| Ok(support::json_response(200, v));
+    if let Some(kind) = scenario.strip_prefix("rejection-") {
+        let (status, reason) = match kind {
+            "auth" => (200, "Invalid login cookies"),
+            "proxy" => (200, "ProxyError: failed to connect to proxy"),
+            "credits" => (200, "Credits is not enough.Please recharge"),
+            "mixed" => (200, "ProxyError: read timed out"),
+            "http402" => (402, "Credits is not enough.Please recharge"),
+            "http502" => (502, "Bad gateway"),
+            _ => (200, "Unrecognized private refusal"),
+        };
+        // 生エラー・任意コード・request IDに秘密を混ぜても、固定分類だけが
+        // MCPへ届くことを確認する。これらは実資格情報ではないfixture値。
+        return Ok(support::json_response(
+            status,
+            json!({
+                "status":"error",
+                "message":format!("{reason}; {KEY} {COOKIE} {PASSWORD} {SEED} {PROXY} private-rejection-canary"),
+                "code":"ProxyError-private-code", "request_id":COOKIE,
+                "debug":{"message":"Invalid login cookies", "credentials":PASSWORD}
+            }),
+        ));
+    }
     if scenario == "create502" && req.path.ends_with("/create_tweet_v2") {
         return Ok(support::json_response(502, json!({"message":COOKIE})));
     }

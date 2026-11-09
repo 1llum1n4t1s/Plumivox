@@ -18,7 +18,7 @@ PlumivoxはTwitterAPI.ioを経由してXへの投稿・認証更新・公開投�
 | `src/proxy_egress.rs` | loopback限定のCONNECT出口、X宛先制限、DNS全候補検証、接続数・容量・時間制限 |
 | `src/proxy_ipc.rs` | 相互HMAC認証IPC。Windowsの名前付きパイプとmacOSのUnix socketを利用する |
 | `src/proxy.rs` | 設定と鍵の検証、russhによるSSHホスト鍵照合・逆転送・再接続、共有daemon・複数チャット・idle終了・取消・停止の制御 |
-| `src/client.rs` / `src/client_emoji.txt` | HTTP通信、応答検証・正規化、画像検証・アップロード、投稿、フィード再構成、検索条件と継続cursor、Unicode 17絵文字の検証 |
+| `src/client.rs` / `src/api_rejection.rs` / `src/client_emoji.txt` | HTTP通信、応答検証・正規化、秘密を含まない拒否理由の固定分類、画像検証・アップロード、投稿、フィード再構成、検索条件と継続cursor、Unicode 17絵文字の検証 |
 | `Cargo.toml` / `Cargo.lock` / `rust-toolchain.toml` / `.cargo/config.toml` / `xtask/` | 本体と開発ツールの依存・toolchain固定、Windows x64とmacOS ARM64のビルド、ライセンス生成、検査・E2E実行。Node.jsを使わない |
 | `dist/plumivox.exe` / `dist/plumivox` | 正式なネイティブ実行ファイル |
 | `.github/workflows/distribution.yml` / `xtask/src/ci.rs` / `xtask/src/r2.rs` | RustによるWindows・macOS本体とLinux x86_64・aarch64のVPSインストーラーの検証とビルド、R2への成果物保存・検証付き取得。利用者のMCP実行から独立する |

@@ -63,6 +63,129 @@ async fn invoke(
     Ok(requests)
 }
 pub async fn run(h: &mut Harness) -> Result<()> {
+    case!(
+        h,
+        "API refusal diagnostics keep fixed reasons and never disclose provider fields",
+        {
+            for (scenario, status, reasons, source) in [
+                (
+                    "rejection-auth",
+                    200,
+                    json!(["authentication"]),
+                    "provider_message",
+                ),
+                ("rejection-proxy", 200, json!(["proxy"]), "provider_message"),
+                (
+                    "rejection-credits",
+                    200,
+                    json!(["credits"]),
+                    "provider_message",
+                ),
+                (
+                    "rejection-mixed",
+                    200,
+                    json!(["proxy", "upstream_timeout"]),
+                    "provider_message",
+                ),
+                (
+                    "rejection-unknown",
+                    200,
+                    json!(["unknown"]),
+                    "provider_message",
+                ),
+                ("rejection-http402", 402, json!(["credits"]), "http_status"),
+            ] {
+                h.state.scenario(scenario);
+                let before = h.count();
+                let v = h
+                    .fail(
+                        "post_tweet",
+                        json!({"account":"posting","text":"diagnostic refusal","images":[h.png]}),
+                        false,
+                    )
+                    .await?;
+                ensure!(
+                    v["error"]
+                        == json!({
+                            "code":if status==200{"API_REJECTED"}else{"API_HTTP_ERROR"},
+                            "message":if status==200{"APIが処理の失敗を返しました。"}else{"APIが要求を受け付けませんでした。"},
+                            "httpStatus":status,"rejectionReasons":reasons,"rejectionReasonSource":source,
+                            "stage":"image_upload","postAttempted":false,"uploadAttempts":1
+                        }),
+                    "Unexpected safe refusal metadata"
+                );
+                let requests = h.trace();
+                ensure!(
+                    h.count() == before + 1
+                        && requests[before]["path"] == "/twitter/upload_media_v2"
+                );
+            }
+            for (scenario, code, source, reasons) in [
+                (
+                    "rejection-proxy",
+                    "API_REJECTED",
+                    "provider_message",
+                    json!(["proxy"]),
+                ),
+                (
+                    "rejection-http502",
+                    "POST_UNCERTAIN",
+                    "http_status",
+                    json!(["upstream_unavailable"]),
+                ),
+            ] {
+                h.state.scenario(scenario);
+                let before = h.count();
+                let v = h
+                    .fail(
+                        "post_tweet",
+                        json!({"account":"posting","text":"diagnostic post refusal"}),
+                        false,
+                    )
+                    .await?;
+                let e = &v["error"];
+                ensure!(
+                    e["code"] == code
+                        && e["stage"] == "post_creation"
+                        && e["postAttempted"] == true
+                        && e["uploadAttempts"] == 0
+                );
+                ensure!(e["rejectionReasonSource"] == source && e["rejectionReasons"] == reasons);
+                ensure!(
+                    h.count() == before + 1
+                        && h.trace()[before]["path"] == "/twitter/create_tweet_v2"
+                );
+                for secret in [
+                    KEY,
+                    COOKIE,
+                    PASSWORD,
+                    SEED,
+                    PROXY,
+                    "private-rejection-canary",
+                    "ProxyError-private-code",
+                ] {
+                    ensure!(!v.to_string().contains(secret), "Provider detail leaked");
+                }
+            }
+            h.state.scenario("rejection-auth");
+            for (name, args) in [
+                (
+                    "get_tweets",
+                    json!({"account":"reading","tweetIds":["502"]}),
+                ),
+                ("refresh_session", json!({"account":"auth"})),
+            ] {
+                let before = h.count();
+                let v = h.fail(name, args, false).await?;
+                ensure!(
+                    v["error"]
+                        == json!({"code":"API_REJECTED","message":"APIが処理の失敗を返しました。","httpStatus":200,"rejectionReasons":["authentication"],"rejectionReasonSource":"provider_message"})
+                );
+                ensure!(h.count() == before + 1);
+            }
+            h.state.scenario("normal");
+        }
+    );
     case!(h, "Missing Cookie rejected before HTTP", {
         let v = h
             .fail(

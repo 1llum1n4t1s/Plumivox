@@ -399,7 +399,10 @@ impl TwitterApiClient {
             }
             if !response.status().is_success() {
                 return Err(err("API_HTTP_ERROR", "APIが要求を受け付けませんでした。")
-                    .with_details(json!({"httpStatus":response.status().as_u16()})));
+                    .with_details(crate::api_rejection::details(
+                        response.status().as_u16(),
+                        None,
+                    )));
             }
             let mut bytes = Vec::new();
             while let Some(chunk) = response.chunk().await.map_err(|_| network())? {
@@ -417,7 +420,11 @@ impl TwitterApiClient {
                 return Err(err("INVALID_RESPONSE", "API応答の形式が不正です。"));
             }
             if v["status"] == "error" || v["status"] == "failed" || v["success"] == false {
-                return Err(err("API_REJECTED", "APIが処理の失敗を返しました。"));
+                return Err(
+                    err("API_REJECTED", "APIが処理の失敗を返しました。").with_details(
+                        crate::api_rejection::details(response.status().as_u16(), Some(&v)),
+                    ),
+                );
             }
             Ok(v)
         };
