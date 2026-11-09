@@ -1,0 +1,5 @@
+# ローカルの既定toolchainに依存せず、CIと同じ開発環境を選ぶ。
+[toolchain]
+channel = "1.99.1"
+profile = "minimal"
+components = ["rustfmt"]

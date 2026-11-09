@@ -2,6 +2,23 @@
 # Cargoは両OS配布物の更新が必要なため手動対応し、他のマージ可否は最新CIで判定します。
 version: 2
 updates:
+- package-ecosystem: rust-toolchain
+  directory: /
+  schedule:
+    interval: weekly
+    day: monday
+    time: '09:00'
+    timezone: Asia/Tokyo
+  open-pull-requests-limit: 5
+  groups:
+    minor-and-patch:
+      patterns:
+      - '*'
+      update-types:
+      - minor
+      - patch
+  commit-message:
+    prefix: deps
 - package-ecosystem: github-actions
   directory: /
   schedule:

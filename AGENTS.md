@@ -14,7 +14,7 @@
 
 ## 必須コマンドと検証
 
-開発にはRust/Cargo 1.99.1を使う。利用者のMCP実行にはNode.js・Rustを要求しない。WindowsのDPAPI・ACL・ネイティブセットアップの検証にはWindows、VPSのRustインストーラーのOS境界検証にはLinux、Bash互換経路の構文・CLI確認にはBash（WindowsではGit for Windows）が必要。macOSのKeychain・Unix socket・ネイティブセットアップは実macOSで確認し、Windowsでの成功を代用しない。
+開発には`rust-toolchain.toml`で固定したRust/Cargo 1.99.1を使う。利用者のMCP実行にはNode.js・Rustを要求しない。WindowsのDPAPI・ACL・ネイティブセットアップの検証にはWindows、VPSのRustインストーラーのOS境界検証にはLinux、Bash互換経路の構文・CLI確認にはBash（WindowsではGit for Windows）が必要。macOSのKeychain・Unix socket・ネイティブセットアップは実macOSで確認し、Windowsでの成功を代用しない。
 
 ```powershell
 cargo test --locked --lib

@@ -19,7 +19,7 @@ PlumivoxはTwitterAPI.ioを経由してXへの投稿・認証更新・公開投�
 | `src/proxy_ipc.rs` | 相互HMAC認証IPC。Windowsの名前付きパイプとmacOSのUnix socketを利用する |
 | `src/proxy.rs` | 設定と鍵の検証、russhによるSSHホスト鍵照合・逆転送・再接続、共有daemon・複数チャット・idle終了・取消・停止の制御 |
 | `src/client.rs` / `src/client_emoji.txt` | HTTP通信、応答検証・正規化、画像検証・アップロード、投稿、フィード再構成、検索条件と継続cursor、Unicode 17絵文字の検証 |
-| `Cargo.toml` / `Cargo.lock` / `.cargo/config.toml` / `xtask/` | 本体と開発ツールの依存固定、Windows x64とmacOS ARM64のビルド、ライセンス生成、検査・E2E実行。Node.jsを使わない |
+| `Cargo.toml` / `Cargo.lock` / `rust-toolchain.toml` / `.cargo/config.toml` / `xtask/` | 本体と開発ツールの依存・toolchain固定、Windows x64とmacOS ARM64のビルド、ライセンス生成、検査・E2E実行。Node.jsを使わない |
 | `dist/plumivox.exe` / `dist/plumivox` | 正式なネイティブ実行ファイル |
 | `.github/workflows/distribution.yml` / `xtask/src/ci.rs` / `xtask/src/r2.rs` | RustによるWindows・macOS本体とLinux x86_64・aarch64のVPSインストーラーの検証とビルド、R2への成果物保存・検証付き取得。利用者のMCP実行から独立する |
 | `tests/api_e2e.rs` / `tests/native_e2e.rs` / `tests/tls_e2e.rs` / `tests/support/` / `tests/native-fixture.rs` | Rustの偽HTTP・HTTPS APIと別プロセスのMCPを使い、通信内容・回数・失敗状態を検証する。失敗注入は`test-fixture`ビルドに限定する |

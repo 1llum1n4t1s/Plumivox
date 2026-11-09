@@ -243,26 +243,15 @@ pub fn execute(command: &str) -> Result {
             let target = required("ARTIFACT_TARGET")?;
             if target.starts_with("vps-linux-") {
                 let triple = format!("{}-unknown-linux-musl", vps_arch(&target)?);
-                output(
-                    "rustup",
-                    &["target", "add", "--toolchain", "1.99.1", &triple],
-                )?;
+                // rustupも作業ツリーのrust-toolchain.tomlを参照し、Cargoと同じ版へ追加する。
+                output("rustup", &["target", "add", &triple])?;
                 return Ok(());
             }
             if !matches!(target.as_str(), "windows-x64" | "macos-arm64") {
                 return Err("不正な配布対象です".into());
             }
             if target == "macos-arm64" {
-                output(
-                    "rustup",
-                    &[
-                        "target",
-                        "add",
-                        "--toolchain",
-                        "1.99.1",
-                        "aarch64-apple-darwin",
-                    ],
-                )?;
+                output("rustup", &["target", "add", "aarch64-apple-darwin"])?;
             }
             Ok(())
         }

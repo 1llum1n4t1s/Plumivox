@@ -27,13 +27,12 @@ jobs:
       run:
         shell: bash
     env:
-      RUSTUP_TOOLCHAIN: '1.99.1'
       ARTIFACT_COMMIT: ${{ github.sha }}
       ARTIFACT_RUN: ${{ github.run_id }}
       ARTIFACT_ATTEMPT: ${{ github.run_attempt }}
       ARTIFACT_TARGET: ${{ matrix.target }}
     steps:
-      # checkout前はrunner付属stable rustcだけを使用する。以降は1.99.1へ固定。
+      # checkout前はrunner付属stable rustcだけを使用し、以降はrust-toolchain.tomlへ従う。
       - name: Compile native checkout bootstrap
         shell: rustc +stable --edition=2021 --crate-name plumivox_ci_bootstrap -o plumivox-ci-bootstrap.exe {0}
         run: |
@@ -96,7 +95,7 @@ jobs:
           R2_CREDENTIALS_CONFIGURED: ${{ secrets.PLUMIVOX_R2_ACCESS_KEY_ID != '' && secrets.PLUMIVOX_R2_SECRET_ACCESS_KEY != '' }}
         run: checkout
       - name: Install pinned Rust toolchain
-        run: rustup toolchain install 1.99.1 --profile minimal --component rustfmt
+        run: rustup toolchain install --no-self-update
       - name: Install distribution targets
         run: cargo xtask ci-install-targets
       - name: Prepare dedicated macOS test Keychain

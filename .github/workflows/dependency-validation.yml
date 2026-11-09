@@ -16,10 +16,8 @@ jobs:
     defaults:
       run:
         shell: bash
-    env:
-      RUSTUP_TOOLCHAIN: '1.99.1'
     steps:
-      # checkout前はrunner付属stable rustcだけを使用する。以降は1.99.1へ固定。
+      # checkout前はrunner付属stable rustcだけを使用し、以降はrust-toolchain.tomlへ従う。
       - name: Compile native checkout bootstrap
         shell: rustc +stable --edition=2021 --crate-name plumivox_ci_bootstrap -o plumivox-ci-bootstrap.exe {0}
         run: |
@@ -78,7 +76,7 @@ jobs:
           CHECKOUT_SHA: ${{ github.sha }}
         run: checkout
       - name: Install pinned Rust toolchain
-        run: rustup toolchain install 1.99.1 --profile minimal --component rustfmt
+        run: rustup toolchain install --no-self-update
       - name: Install locked dependencies
         run: cargo fetch --locked
       - name: Validate 1
