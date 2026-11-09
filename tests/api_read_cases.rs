@@ -1054,6 +1054,8 @@ pub async fn feed_search(h: &mut Harness) -> Result<()> {
             v["mode"] == "reconstructed_following_feed"
                 && v["officialHomeEquivalent"] == false
                 && ids(&v) == ["602", "601", "603"]
+                && v["tweets"][1]["text"] == "Later batch tweet"
+                && v["tweets"][1]["author"]["name"] == "Later batch author"
                 && v["coverage"]["protectedAccountsExcluded"] == 1
                 && v["hasNextPage"] == true
         );

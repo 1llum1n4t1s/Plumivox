@@ -643,7 +643,7 @@ impl TwitterApiClient {
                 "({from}) include:nativeretweets{}",
                 search_query.map(|s| format!(" {s}")).unwrap_or_default()
             );
-            let p = page(
+            let mut p = page(
                 &self
                     .request(
                         a,
@@ -658,13 +658,15 @@ impl TwitterApiClient {
                 MAX_PROVIDER,
             )?;
             requests += 1;
-            for t in p["tweets"].as_array().unwrap() {
+            // pageで正規化済みの投稿を移動し、本文・authorの複製を避ける。
+            // 残りの継続情報はこの後も同じページから読み取る。
+            for t in p["tweets"].as_array_mut().unwrap().drain(..) {
                 let id = string(&t["id"]).to_owned();
                 if let Some(index) = positions.get(&id) {
-                    tweets[*index] = t.clone();
+                    tweets[*index] = t;
                 } else {
                     positions.insert(id, tweets.len());
-                    tweets.push(t.clone());
+                    tweets.push(t);
                 }
             }
             has |= p["hasNextPage"] == true;

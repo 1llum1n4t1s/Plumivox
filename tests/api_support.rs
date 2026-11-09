@@ -728,10 +728,11 @@ fn search_response(s: &str, q: &HashMap<String, String>) -> Value {
         return json!({"tweets":[normal_tweet("604")],"has_next_page":false,"next_cursor":""});
     }
     let tweets = if query.to_ascii_lowercase().contains("from:public20") {
-        vec![
-            tweet("601", json!("2026-10-12T13:00:00Z")),
-            tweet("602", json!("2026-10-12T14:00:00Z")),
-        ]
+        // 同一IDの後続バッチで本文とネスト値が更新されても、後勝ちを保つ。
+        let mut repeated = tweet("601", json!("2026-10-12T13:00:00Z"));
+        repeated["text"] = json!("Later batch tweet");
+        repeated["author"]["name"] = json!("Later batch author");
+        vec![repeated, tweet("602", json!("2026-10-12T14:00:00Z"))]
     } else {
         vec![
             tweet("603", json!("2026-10-12T11:00:00Z")),
