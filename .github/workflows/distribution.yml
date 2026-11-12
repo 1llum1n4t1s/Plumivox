@@ -21,7 +21,7 @@ jobs:
             target: vps-linux-x86_64
           - os: ubuntu-24.04-arm
             target: vps-linux-aarch64
-    runs-on: ${{ fromJSON(startsWith(matrix.os, 'windows-') && format('["{0}"]', matrix.os) || startsWith(matrix.os, 'macos-') && '["self-hosted","macOS","ARM64","m3mb14"]' || endsWith(matrix.os, '-arm') && '["self-hosted","Linux","ARM64","m3mb14"]' || '["self-hosted","Linux","X64","m3mb14"]') }}
+    runs-on: ${{ fromJSON(startsWith(matrix.os, 'macos-') && '["self-hosted","macOS","ARM64","m3mb14"]' || format('["{0}"]', matrix.os)) }}
     timeout-minutes: 60
     defaults:
       run:
