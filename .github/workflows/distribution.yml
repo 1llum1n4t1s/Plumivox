@@ -23,7 +23,7 @@ jobs:
             target: vps-linux-aarch64
     runs-on: ${{ fromJSON(startsWith(matrix.os, 'macos-') && '["self-hosted","macOS","ARM64","m3mb14"]' || format('["{0}"]', matrix.os)) }}
     # Windows配布物をSigilune（Certum SimplySignのクラウド鍵）で署名するため、署名用Secrets
-    # （SIGILUNE_EMAIL・SIGILUNE_TOTP_URI）を置いた承認付きEnvironment `release`で実行する。
+    # （SIGILUNE_EMAIL・SIGILUNE_TOTP_URI）を置いた`main`限定のEnvironment `release`で実行する（承認者なし）。
     # matrixの一部だけにEnvironmentを付ける書き方は空名の扱いが文書化されていないため、全targetに付ける。
     # 承認は実行ごとのレビューで全targetをまとめて行える。Secretsを環境変数へ渡すのはWindowsの署名stepだけだが、
     # stepのifはrunner側で評価されるため、同じjobのmacOS（自前runner）・Linux runnerにもSecretsの値は配送される。

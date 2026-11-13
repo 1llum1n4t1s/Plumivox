@@ -12,13 +12,13 @@
 | Variable | `PLUMIVOX_R2_BUCKET` | バケット名 |
 | Secret | `PLUMIVOX_R2_ACCESS_KEY_ID` | R2アクセスキーID |
 | Secret | `PLUMIVOX_R2_SECRET_ACCESS_KEY` | R2シークレットアクセスキー |
-| Environment `release`のSecret | `SIGILUNE_EMAIL`・`SIGILUNE_TOTP_URI` | Windows署名用のCertumアカウントとTOTP登録URI（承認必須・`main`限定のEnvironmentに置く） |
+| Environment `release`のSecret | `SIGILUNE_EMAIL`・`SIGILUNE_TOTP_URI` | Windows署名用のCertumアカウントとTOTP登録URI（承認者なし・`main`限定のEnvironmentに置く） |
 
 キーをリポジトリ、コマンド引数、ログへ書かないでください。CIでは資格情報の実値をアップロードstepにだけ渡します。ビルド開始前はVariablesの形式とSecretsが設定済みかという真偽だけを確認し、実際の認証・権限はアップロード時に検証します。取得専用の端末には、同じバケットに限定したObject Read権限の別キーを推奨します。
 
 ## CIで保存する
 
-GitHub Actionsの「Build distribution artifacts」を既定ブランチから手動実行します。元リポジトリ`1llum1n4t1s/Plumivox`の既定ブランチだけが対象で、PRやforkからR2へ書き込みません。CIは固定Git URLから対象のcommit SHAを取得・照合し、WindowsとmacOSの各runnerでRust/Cargo 1.99.1を使って次を実行します。Node製Actionは使いません（Windowsの署名に使うSigiluneのactionはPowerShellのcomposite actionです）。ジョブは承認付きEnvironment `release`で実行するため、起動後に本人がDeploymentsのレビューで承認します。
+GitHub Actionsの「Build distribution artifacts」を既定ブランチから手動実行します。元リポジトリ`1llum1n4t1s/Plumivox`の既定ブランチだけが対象で、PRやforkからR2へ書き込みません。CIは固定Git URLから対象のcommit SHAを取得・照合し、WindowsとmacOSの各runnerでRust/Cargo 1.99.1を使って次を実行します。Node製Actionは使いません（Windowsの署名に使うSigiluneのactionはPowerShellのcomposite actionです）。ジョブは`main`限定のEnvironment `release`で実行し、承認待ちはありません。
 
 1. 依存の固定取得、`cargo xtask check`、`cargo xtask test-e2e`。
 2. macOSは専用の一時KeychainでOSの保存機能を検証し、既定Keychainと検索一覧の不変を確認。終了時は成功・失敗を問わず専用Keychainを清掃。

@@ -6,7 +6,7 @@ macOSの対話セットアップE2EはRustから`libc::openpty`で制御TTYを�
 
 Windowsの`cargo xtask build`はSigiluneで署名し、本人の発行者・信頼チェーン・タイムスタンプの検証後に配布物を置換する。Sigilune不在・認証・署名・検証の各失敗ではビルドを失敗させ、既存配布物を保持する。`SIGILUNE_EXE`に存在しないパスと失敗終了するfixtureを指定し、実際の`cargo xtask build`が非ゼロ終了し既存配布物のハッシュが不変であることを確認する。通常の`cargo xtask build`で署名済み配布物を生成して`sigilune verify --signer "Open Source Developer Yuichiro Shinozaki"`、Defender個別スキャン、MCP起動で確認する。`build-unsigned`と`ci-distribution-build`単体はWindowsの署名を省く準備物を生成し、配布CIでは後続の署名・`ci-windows-verify-signature`の成功をもって署名済みとする。
 
-手動起動の配布CIはWindowsとmacOSそれぞれで`cargo xtask check`・`cargo xtask test-e2e`を実行し、fixture機能を含まないWindows x64／macOS ARM64の準備用成果物を最後に再ビルドしてR2へ保存する。WindowsのCI成果物は、Environment `release`の承認後にSigiluneで署名し、`cargo xtask ci-windows-verify-signature`で本人の署名・タイムスタンプを確認してから保存する。macOSでは同じジョブ内で専用Keychainを作成・unlockして`PLUMIVOX_TEST_KEYCHAIN`へ渡し、既定Keychain・検索一覧を変更せず、終了時に専用Keychainを削除する。CIの起動・実R2通信は別途実行結果が必要で、ローカルの構文・Rustテストの成功を代用しない。手順は [配布成果物](distribution.md) を参照する。
+手動起動の配布CIはWindowsとmacOSそれぞれで`cargo xtask check`・`cargo xtask test-e2e`を実行し、fixture機能を含まないWindows x64／macOS ARM64の準備用成果物を最後に再ビルドしてR2へ保存する。WindowsのCI成果物は、Sigiluneで署名し、`cargo xtask ci-windows-verify-signature`で本人の署名・タイムスタンプを確認してから保存する。macOSでは同じジョブ内で専用Keychainを作成・unlockして`PLUMIVOX_TEST_KEYCHAIN`へ渡し、既定Keychain・検索一覧を変更せず、終了時に専用Keychainを削除する。CIの起動・実R2通信は別途実行結果が必要で、ローカルの構文・Rustテストの成功を代用しない。手順は [配布成果物](distribution.md) を参照する。
 
 | R2成果物の失敗条件 | 期待する結果 |
 | --- | --- |
