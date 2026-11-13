@@ -46,7 +46,7 @@ Plumivoxの新しい保存セッションを最優先で読みます。新しい
 | --- | --- |
 | `release_posting` | `%LOCALAPPDATA%\Kagayoi\TwitterApiRelease` |
 | `blog_posting` | `%LOCALAPPDATA%\Kagayoi\TwitterApiBlog` |
-| その他 | 内部の`AccountStore.session_paths`で状態ディレクトリの絶対パスを指定 |
+| その他 | 旧保存Cookieを読みません |
 
 旧ディレクトリの`SHA256(小文字のuser_name)\session.dpapi`はWindowsのネイティブDPAPIで読み取るだけで、上書きしません。セッションの`schema_version`は`2`、`user_name`は設定アカウントと大文字小文字を除き一致、`binding`は`SHA256(api_key + "\n" + proxy)`と一致している必要があります。旧形式、不一致、復号失敗ではCookieを使用しません。読取りは有効なAPIキーとユーザー名で継続でき、投稿は拒否します。
 
@@ -65,7 +65,7 @@ Plumivoxの新しい保存セッションを最優先で読みます。新しい
 | Windows | `%LOCALAPPDATA%\Kagayoi\Plumivox` | 本人限定ACLとCurrentUser DPAPI。ファイル名は`session.dpapi`で、従来の保存形式と互換 |
 | macOS | `~/Library/Application Support/Kagayoi/Plumivox` | 本人所有の700ディレクトリ・600ファイルとAES-256-GCM。ファイル名は`session.keychain`。暗号鍵はログイン利用者のKeychainに保存 |
 
-状態ディレクトリは`PLUMIVOX_STATE_DIR`、内部起動設定の`state_directory`、OS標準の順に選びます。変更する場合はリポジトリとCodexユーザーディレクトリの外にある絶対パスを指定します。macOSのKeychain項目のサービス名は`com.kagayoi.plumivox.session.aes256gcm.v1`で、正規化した状態ディレクトリの絶対パスから項目を分けます。暗号化ファイルだけを別のMac・利用者・保存先へコピーしても利用できません。Keychainを利用できない場合は平文保存へ切り替えません。ログイン要求の待機中に対象アカウント・APIキー・プロキシが変わった場合は保存を拒否します。
+状態ディレクトリは`PLUMIVOX_STATE_DIR`、内部起動設定の`state_directory`、OS標準の順に選びます。変更する場合はリポジトリとCodex・Claude Codeなどのユーザー設定ディレクトリ（`~/.codex`・`~/.claude`、`CODEX_HOME`・`CLAUDE_CONFIG_DIR`の指定先）の外にある絶対パスを指定します。macOSのKeychain項目のサービス名は`com.kagayoi.plumivox.session.aes256gcm.v1`で、正規化した状態ディレクトリの絶対パスから項目を分けます。暗号化ファイルだけを別のMac・利用者・保存先へコピーしても利用できません。Keychainを利用できない場合は平文保存へ切り替えません。ログイン要求の待機中に対象アカウント・APIキー・プロキシが変わった場合は保存を拒否します。
 
 更新前の暗号化セッションは同じディレクトリに一意名の`session-<ID>.backup.dpapi`（Windows）または`session-<ID>.backup.keychain`（macOS）として保持します。新セッションの利用結果を確認した後、復元に必要な最小世代を残し、不要な世代を清掃してください。新しい暗号文の全量書込みと同期が完了し、その後の保存処理が失敗して`session-<ID>.pending`が残っている場合は、原因調査用に保持します。部分書込み、明示取消、ロック所有喪失で中止したファイルは削除を試みます。ただし、異常終了や削除失敗によって不完全な`.pending`や`.backup.*`が残る可能性があり、名前だけで完全性は保証できません。これらの完全性を変更なしで確認する公開コマンドはありません。自動で復元せず、既存セッションと候補ファイルを保持して原因を調査してください。置換結果が不明な場合は、既存セッションが未変更とは断定できません。
 

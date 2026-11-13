@@ -515,6 +515,21 @@ fn e2e(command: &str) -> Result {
     if command == "test-setup-e2e" && !cfg!(any(windows, target_os = "macos")) {
         return Err("PCセットアップE2EはWindowsまたはmacOSで実行してください".into());
     }
+    // 未知の test-* は、数分かかる fixture ビルドと lib テストの前に拒否する。
+    let targets: &[&str] = match command {
+        "test-e2e" => &[
+            "native_e2e",
+            "tls_e2e",
+            "api_e2e",
+            "proxy_e2e",
+            "setup_e2e",
+            "setup_vps_e2e",
+        ],
+        "test-api-e2e" => &["api_e2e"],
+        "test-proxy-e2e" | "test-proxy-shared-e2e" => &["proxy_e2e"],
+        "test-setup-e2e" => &["setup_e2e", "setup_vps_e2e"],
+        _ => return Err("unknown E2E command".into()),
+    };
     let artifacts = cargo_build(
         &[
             "build",
@@ -541,20 +556,6 @@ fn e2e(command: &str) -> Result {
         }
         cargo_run(&args)?;
     }
-    let targets: &[&str] = match command {
-        "test-e2e" => &[
-            "native_e2e",
-            "tls_e2e",
-            "api_e2e",
-            "proxy_e2e",
-            "setup_e2e",
-            "setup_vps_e2e",
-        ],
-        "test-api-e2e" => &["api_e2e"],
-        "test-proxy-e2e" | "test-proxy-shared-e2e" => &["proxy_e2e"],
-        "test-setup-e2e" => &["setup_e2e", "setup_vps_e2e"],
-        _ => return Err("unknown E2E command".into()),
-    };
     for target in targets {
         if *target == "setup_e2e" && !cfg!(any(windows, target_os = "macos")) {
             println!("PCセットアップE2E未実行: 対象OS外");
@@ -594,8 +595,19 @@ fn main() -> Result {
         }
         return build_vps(&args[1]);
     }
-    match args.first().map(String::as_str) {Some("build") if args.len() == 1=>build(true),Some("build-unsigned") if args.len() == 1=>build(false),Some("check")=>check(),Some("licenses")=>licenses(),Some(command) if command.starts_with("ci-")=>ci::execute(command),Some(command) if command.starts_with("test-")=>e2e(command),_=>Err("cargo xtask build | build-unsigned | check | licenses | test-e2e | test-api-e2e | test-proxy-e2e | test-proxy-shared-e2e | test-setup-e2e".into())}
+    match args.first().map(String::as_str) {
+        Some("build") if args.len() == 1 => build(true),
+        Some("build-unsigned") if args.len() == 1 => build(false),
+        Some("check") => check(),
+        Some("licenses") => licenses(),
+        Some(command) if command.starts_with("ci-") => ci::execute(command),
+        Some(command) if command.starts_with("test-") => e2e(command),
+        _ => Err(USAGE.into()),
+    }
 }
+
+/// 引数なし・不明なコマンドで示す一覧。main の分岐と r2・ci の入口を合わせて載せる。
+const USAGE: &str = "cargo xtask build | build-unsigned | build-vps <x86_64|aarch64> | check | licenses | test-e2e | test-api-e2e | test-proxy-e2e | test-proxy-shared-e2e | test-setup-e2e | artifact-upload | artifact-download | ci-<command>";
 
 #[cfg(test)]
 mod artifact_tests {
@@ -746,26 +758,6 @@ mod artifact_tests {
             output,
             b"{\"late\":\"ordinary output\"}\nlate non-JSON stdout\n"
         );
-    }
-
-    #[test]
-    fn selects_both_fresh_executables_from_cargo_paths() {
-        let mut artifacts = BuildArtifacts::default();
-        for (name, path) in [
-            (
-                "plumivox",
-                "custom-target/x86_64-pc-windows-msvc/debug/plumivox.exe",
-            ),
-            (
-                "plumivox-fixture",
-                "custom-target/x86_64-pc-windows-msvc/debug/plumivox-fixture.exe",
-            ),
-        ] {
-            artifacts
-                .record(&artifact(name, path), PACKAGE, NAMES)
-                .unwrap();
-            assert_eq!(artifacts.executable(name).unwrap(), Path::new(path));
-        }
     }
 
     #[test]

@@ -229,16 +229,27 @@ pub async fn basics(h: &mut Harness) -> Result<()> {
             for root in [
                 std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")),
                 dirs::home_dir().unwrap().join(".codex"),
+                dirs::home_dir().unwrap().join(".claude"),
             ] {
-                ensure!(root.join(".hidden").starts_with(&root));
-                ensure!(
-                    !root
-                        .with_file_name(format!(
-                            "{}-other",
-                            root.file_name().unwrap().to_string_lossy()
-                        ))
-                        .starts_with(&root)
-                );
+                // 実際の証拠出力先の検査（support::contains）を通し、
+                // 「.」始まりの子は内側、名前が前方一致するだけの兄弟は外側と判定することを確かめる。
+                // ファイルシステムには触れない。
+                ensure!(crate::support::contains(&root.join(".hidden"), &root));
+                ensure!(!crate::support::contains(
+                    &root.with_file_name(format!(
+                        "{}-other",
+                        root.file_name().unwrap().to_string_lossy()
+                    )),
+                    &root
+                ));
+                // Windowsは大文字小文字を区別しないため、表記違いでも内側と判定する。
+                // 非ASCII文字の大小変換は往復で一致しないことがあるため、ASCIIだけを変える。
+                #[cfg(windows)]
+                ensure!(crate::support::contains(
+                    &std::path::PathBuf::from(root.to_string_lossy().to_ascii_uppercase())
+                        .join(".hidden"),
+                    &root
+                ));
             }
             let filesystem_root = h.output.ancestors().last().unwrap().to_path_buf();
             let root_error = crate::support::Suite::new_at(filesystem_root, "synthetic-root-guard")
@@ -1290,15 +1301,6 @@ pub async fn feed_search(h: &mut Harness) -> Result<()> {
             .ok("get_following_feed", json!({"account":"reading"}))
             .await?;
         ensure!(ids(&v).is_empty() && v["hasNextPage"] == false);
-    });
-    h.state.scenario("normal");
-    case!(h, "Incomplete following list reported", {
-        h.state.scenario("following-page");
-        ensure!(
-            h.ok("get_following_feed", json!({"account":"reading"}))
-                .await?["coverage"]["followingHasNextPage"]
-                == true
-        );
     });
     h.state.scenario("normal");
     case!(

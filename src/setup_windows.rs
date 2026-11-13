@@ -95,23 +95,10 @@ pub(super) fn path_ok(path: &Path) -> Result<()> {
             Err(_) => return Err(fail("PATH_INVALID")),
         }
     }
-    let mut blocked = vec![
-        home().join(".codex"),
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")),
-    ];
-    if let Some(root) = std::env::var_os("CODEX_HOME").filter(|v| !v.is_empty()) {
-        blocked.push(root.into());
-    }
-    if let Ok(exe) = std::env::current_exe() {
-        for ancestor in exe.ancestors().skip(1) {
-            if ancestor.join(".codex-plugin/plugin.json").exists()
-                || ancestor.join("plugin.json").exists()
-            {
-                blocked.push(ancestor.into());
-                break;
-            }
-        }
-    }
+    // Codex・Claude Code などホストの設定フォルダー、リポジトリ、プラグインルートを拒否する。
+    let mut blocked = crate::agent_dirs::agent_user_roots(&home());
+    blocked.push(PathBuf::from(env!("CARGO_MANIFEST_DIR")));
+    blocked.extend(crate::agent_dirs::executable_plugin_root());
     let candidate = canonical_with_missing_tail(path)?;
     let candidate = PathBuf::from(candidate.to_string_lossy().to_lowercase());
     for root in blocked {
@@ -577,56 +564,22 @@ pub(super) fn lock(path: &Path) -> Result<SetupLock> {
     let owner = std::thread::Builder::new()
         .name("plumivox-setup-lock".into())
         .spawn(move || {
-            use std::ptr::{null, null_mut};
+            use std::ptr::null;
             use windows_sys::Win32::{
-                Foundation::{CloseHandle, LocalFree, WAIT_ABANDONED, WAIT_OBJECT_0},
-                Security::{
-                    Authorization::ConvertSidToStringSidW, GetTokenInformation, TOKEN_QUERY,
-                    TOKEN_USER, TokenUser,
-                },
-                System::Threading::{
-                    CreateMutexW, GetCurrentProcess, OpenProcessToken, ReleaseMutex,
-                    WaitForSingleObject,
-                },
+                Foundation::{CloseHandle, WAIT_ABANDONED, WAIT_OBJECT_0},
+                System::Threading::{CreateMutexW, ReleaseMutex, WaitForSingleObject},
             };
             // Handleはこのスレッドから外へ出さず、すべての終了経路で解放する。
+            // 利用者SIDの取得もこのlock所有スレッド内で行い、失敗は SETUP_BUSY として通知する。
+            // Mutex名の SID 文字列は従来どおり置換変換（lossy）で作る。
+            let Some(sid) = crate::windows_identity::CurrentUser::query()
+                .and_then(|user| user.sid_utf16())
+                .map(|text| String::from_utf16_lossy(&text))
+            else {
+                let _ = ready_tx.send(false);
+                return;
+            };
             unsafe {
-                let mut token = null_mut();
-                if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) == 0 {
-                    let _ = ready_tx.send(false);
-                    return;
-                }
-                let mut size = 0;
-                GetTokenInformation(token, TokenUser, null_mut(), 0, &mut size);
-                if size == 0 || size > 65536 {
-                    CloseHandle(token);
-                    let _ = ready_tx.send(false);
-                    return;
-                }
-                let mut user = vec![0usize; (size as usize).div_ceil(std::mem::size_of::<usize>())];
-                if GetTokenInformation(token, TokenUser, user.as_mut_ptr().cast(), size, &mut size)
-                    == 0
-                {
-                    CloseHandle(token);
-                    let _ = ready_tx.send(false);
-                    return;
-                }
-                CloseHandle(token);
-                let mut sid_text = null_mut();
-                if ConvertSidToStringSidW(
-                    (*(user.as_ptr().cast::<TOKEN_USER>())).User.Sid,
-                    &mut sid_text,
-                ) == 0
-                {
-                    let _ = ready_tx.send(false);
-                    return;
-                }
-                let mut len = 0;
-                while *sid_text.add(len) != 0 {
-                    len += 1;
-                }
-                let sid = String::from_utf16_lossy(std::slice::from_raw_parts(sid_text, len));
-                LocalFree(sid_text.cast());
                 let mut owned = Vec::new();
                 let mut acquired = true;
                 for digest in digests {

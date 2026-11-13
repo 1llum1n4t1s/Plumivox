@@ -16,7 +16,7 @@ Windowsの`cargo xtask build`はSigiluneで署名し、本人の発行者・信�
 | manifestのidentity・ファイル名・サイズ・SHA256が不一致 | 検証に失敗し、取得済みとして扱わない |
 | 出力先が既存ディレクトリ | 上書きせず拒否する |
 
-`cargo test --locked --package xtask`でR2の入力・manifest・ハッシュ検証を確認する。実R2の認証・条件付き保存・取得、GitHub-hosted macOSのKeychainとCI全体は、実環境で実行するまで未検証として扱う。
+`cargo test --locked --package xtask`でR2の入力・manifest・ハッシュ検証を確認する。実R2の認証・条件付き保存・取得、自前macOS runnerのKeychainとCI全体は、実環境で実行するまで未検証として扱う。
 
 PCセットアップはWindows・macOSともネイティブの`--setup`を対象OSで呼び出して検証する。VPSはRustインストーラーとBash互換CLIを区別して検証する。想定する失敗は次のとおり。
 
@@ -25,7 +25,7 @@ PCセットアップはWindows・macOSともネイティブの`--setup`を対象
 | 別のWindows・macOS利用者が初回起動する | そのOSと利用者の保存先を選び、特定利用者の絶対パスを参照しない |
 | 選択済み設定が不正・消失 | 別ファイルへ切り替えず設定エラー |
 | 既存鍵・既存プロファイル・中継設定がある | 上書きを拒否し、既存情報を保持 |
-| 保存先がリンク・リポジトリ・Codex内、所有者やACL／Unix権限が不適切 | 保存前に拒否し、秘密値を公開しない |
+| 保存先がリンク・リポジトリ・Codex／Claude Codeのユーザー設定ディレクトリ内、所有者やACL／Unix権限が不適切 | 保存前に拒否し、秘密値を公開しない |
 | ホスト指紋・ポート・2FA秘密鍵・秘密鍵が不正 | ローカルで拒否し、API・SSH通信を行わない |
 | 書込み準備中に設定が変更された | 検出した変更を上書きしない |
 | VPS CLIが不正引数・パスワード引数を受け取る | 変更コマンドを呼び出さず拒否 |
@@ -168,7 +168,7 @@ cargo xtask check
 cargo xtask test-e2e
 ```
 
-開発・CIの基準はRust/Cargo 1.99.1です。PCセットアップ・ビルド・ライセンス生成・E2EもRustで実行するため、開発環境にもNode.js・pnpm・npmパッケージは不要です。`cargo xtask build`はホストOS向けのRust releaseビルドを`dist/`へ配置し、`cargo xtask licenses`はCargoの依存と`third-party/emoji-regex/`のライセンスから同梱文書を生成します。Windowsの正式実行物は`dist/plumivox.exe`、macOSは`dist/plumivox`です。利用者はネイティブ実行ファイルを直接使います。旧Nodeランチャーを指す登録の変更は[管理プロキシの移行手順](managed-proxy.md#旧タスクから切り替える)を参照してください。
+開発・CIの基準はRust/Cargo 1.100.0です。PCセットアップ・ビルド・ライセンス生成・E2EもRustで実行するため、開発環境にもNode.js・pnpm・npmパッケージは不要です。`cargo xtask build`はホストOS向けのRust releaseビルドを`dist/`へ配置し、`cargo xtask licenses`はCargoの依存と`third-party/emoji-regex/`のライセンスから同梱文書を生成します。Windowsの正式実行物は`dist/plumivox.exe`、macOSは`dist/plumivox`です。利用者はネイティブ実行ファイルを直接使います。旧Nodeランチャーを指す登録の変更は[管理プロキシの移行手順](managed-proxy.md#旧タスクから切り替える)を参照してください。
 
 `xtask build`とE2Eは、Cargoの`compiler-artifact`メッセージが返す実行ファイルを使います。`CARGO_TARGET_DIR`・`CARGO_BUILD_TARGET_DIR`・Cargo設定の`build.target-dir`による出力先を尊重し、既存の`target/debug`・`target/release`から推測して選びません。Windowsの配布ビルドはx64を保証するため、xtaskのMSVC／GNU／GNU LLVM環境に応じて`--target x86_64-pc-windows-msvc`／`--target x86_64-pc-windows-gnu`／`--target x86_64-pc-windows-gnullvm`を明示します。macOS ARM64もaarch64-apple-darwinを明示し、それ以外のビルドとE2Eは`CARGO_BUILD_TARGET`・`build.target`を尊重します。同じバイナリに複数の異なる実行ファイルが返る設定はエラーにします。E2Eのビルド対象は実行環境で起動できるターゲットにしてください。
 

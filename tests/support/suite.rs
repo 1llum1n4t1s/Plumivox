@@ -41,7 +41,9 @@ fn no_links(path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn contains(child: &Path, parent: &Path) -> bool {
+/// 証拠出力先が保護ディレクトリ（リポジトリ・エージェント設定）の内側かを判定する。
+/// Windowsは大文字小文字と区切り文字の違いを吸収した文字列比較で判定する。
+pub fn contains(child: &Path, parent: &Path) -> bool {
     #[cfg(windows)]
     {
         let child = child.to_string_lossy().replace('/', "\\").to_lowercase();
@@ -135,11 +137,8 @@ mod windows_owner {
         }
     }
 
+    // 証拠出力先が本人所有で、本人・SYSTEM・Administrators以外へ許可ACEを持たないことを確かめる。
     pub(super) fn validate(path: &Path) -> Result<()> {
-        check(path, true)
-    }
-
-    fn check(path: &Path, check_acl: bool) -> Result<()> {
         let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
         let user = current_user()?;
         unsafe {
@@ -165,35 +164,33 @@ mod windows_owner {
                 !owner.is_null() && EqualSid(owner, sid) != 0,
                 "Evidence directory must be owned by the current Windows user"
             );
-            if check_acl {
+            ensure!(
+                !dacl.is_null(),
+                "Evidence directory must not have an unrestricted Windows DACL"
+            );
+            for index in 0..u32::from((*dacl).AceCount) {
+                let mut ace = null_mut();
                 ensure!(
-                    !dacl.is_null(),
-                    "Evidence directory must not have an unrestricted Windows DACL"
+                    GetAce(dacl, index, &mut ace) != 0,
+                    "Cannot inspect evidence directory Windows DACL"
                 );
-                for index in 0..u32::from((*dacl).AceCount) {
-                    let mut ace = null_mut();
-                    ensure!(
-                        GetAce(dacl, index, &mut ace) != 0,
-                        "Cannot inspect evidence directory Windows DACL"
-                    );
-                    let header = &*ace.cast::<ACE_HEADER>();
-                    if header.AceType == 1 {
-                        continue;
-                    } // 拒否ACEはアクセスを広げない。
-                    ensure!(
-                        header.AceType == 0,
-                        "Evidence directory has an unsupported Windows DACL entry"
-                    );
-                    let allowed = &*ace.cast::<ACCESS_ALLOWED_ACE>();
-                    let principal = (&allowed.SidStart as *const u32).cast_mut().cast();
-                    ensure!(
-                        allowed.Mask == 0
-                            || EqualSid(principal, sid) != 0
-                            || IsWellKnownSid(principal, WinLocalSystemSid) != 0
-                            || IsWellKnownSid(principal, WinBuiltinAdministratorsSid) != 0,
-                        "Evidence directory Windows DACL grants shared access"
-                    );
-                }
+                let header = &*ace.cast::<ACE_HEADER>();
+                if header.AceType == 1 {
+                    continue;
+                } // 拒否ACEはアクセスを広げない。
+                ensure!(
+                    header.AceType == 0,
+                    "Evidence directory has an unsupported Windows DACL entry"
+                );
+                let allowed = &*ace.cast::<ACCESS_ALLOWED_ACE>();
+                let principal = (&allowed.SidStart as *const u32).cast_mut().cast();
+                ensure!(
+                    allowed.Mask == 0
+                        || EqualSid(principal, sid) != 0
+                        || IsWellKnownSid(principal, WinLocalSystemSid) != 0
+                        || IsWellKnownSid(principal, WinBuiltinAdministratorsSid) != 0,
+                    "Evidence directory Windows DACL grants shared access"
+                );
             }
         }
         Ok(())
@@ -355,15 +352,19 @@ impl Suite {
         let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let mut blocked = vec![repo.clone(), fs::canonicalize(repo)?];
         if let Some(home) = dirs::home_dir() {
+            // Codex・Claude Code などホストのユーザー設定フォルダー（src/agent_dirs.rs と揃える）。
             blocked.push(home.join(".codex"));
+            blocked.push(home.join(".claude"));
         }
-        if let Some(home) = std::env::var_os("CODEX_HOME").filter(|s| !s.is_empty()) {
-            blocked.push(home.into());
+        for name in ["CODEX_HOME", "CLAUDE_CONFIG_DIR"] {
+            if let Some(home) = std::env::var_os(name).filter(|s| !s.is_empty()) {
+                blocked.push(home.into());
+            }
         }
         for root in blocked {
             ensure!(
                 !contains(&output, &root) && !contains(&resolved, &root),
-                "Evidence output must remain outside repository and Codex user directories"
+                "Evidence output must remain outside repository and agent user directories"
             );
             if let Ok(canonical) = root.canonicalize() {
                 ensure!(

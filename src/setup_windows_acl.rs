@@ -1,6 +1,7 @@
 //! セットアップ専用。検査・DACL変更は開いた同じ対象にだけ行う。
 use super::{fail, path_ok};
 use crate::error::Result;
+use crate::windows_identity::{CurrentUser, Local};
 use std::{
     fs::{File, OpenOptions},
     os::windows::{
@@ -11,50 +12,17 @@ use std::{
     ptr::{null, null_mut},
 };
 use windows_sys::Win32::{
-    Foundation::{CloseHandle, HANDLE, LocalFree},
+    Foundation::HANDLE,
     Security::{Authorization::*, *},
     Storage::FileSystem::{
         FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_READ_ATTRIBUTES,
         FILE_SHARE_READ, FILE_SHARE_WRITE, READ_CONTROL, WRITE_DAC,
     },
-    System::Threading::{GetCurrentProcess, OpenProcessToken},
 };
 
-struct Local(*mut core::ffi::c_void);
-impl Drop for Local {
-    fn drop(&mut self) {
-        unsafe {
-            LocalFree(self.0);
-        }
-    }
-}
-
-fn user() -> Result<Vec<usize>> {
-    unsafe {
-        let mut token = null_mut();
-        if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) == 0 {
-            return Err(fail("ACL_UNSAFE"));
-        }
-        let mut size = 0;
-        GetTokenInformation(token, TokenUser, null_mut(), 0, &mut size);
-        if size == 0 || size > 65536 {
-            CloseHandle(token);
-            return Err(fail("ACL_UNSAFE"));
-        }
-        let mut buffer = vec![0usize; (size as usize).div_ceil(std::mem::size_of::<usize>())];
-        let ok = GetTokenInformation(
-            token,
-            TokenUser,
-            buffer.as_mut_ptr().cast(),
-            size,
-            &mut size,
-        );
-        CloseHandle(token);
-        if ok == 0 {
-            return Err(fail("ACL_UNSAFE"));
-        }
-        Ok(buffer)
-    }
+/// 現在の利用者情報を読む。失敗は ACL を安全に扱えないものとして `ACL_UNSAFE` にする。
+fn user() -> Result<CurrentUser> {
+    CurrentUser::query().ok_or_else(|| fail("ACL_UNSAFE"))
 }
 
 fn identity(file: &File, directory: bool) -> Result<()> {
@@ -70,8 +38,9 @@ fn identity(file: &File, directory: bool) -> Result<()> {
 
 pub(super) fn verify(file: &File, directory: bool, private: bool, strict: bool) -> Result<()> {
     identity(file, directory)?;
+    // `user` は検証の終わりまで保持し、`sid` がバッファより長生きしないようにする。
     let user = user()?;
-    let sid = unsafe { (*(user.as_ptr().cast::<TOKEN_USER>())).User.Sid };
+    let sid = user.sid();
     unsafe {
         let mut owner = null_mut();
         let mut dacl = null_mut();
@@ -133,19 +102,9 @@ pub(super) fn verify(file: &File, directory: bool, private: bool, strict: bool) 
 pub(super) fn apply(file: &File, directory: bool) -> Result<()> {
     verify(file, directory, false, false)?;
     let user = user()?;
-    let sid = unsafe { (*(user.as_ptr().cast::<TOKEN_USER>())).User.Sid };
     unsafe {
-        let mut sid_text = null_mut();
-        if ConvertSidToStringSidW(sid, &mut sid_text) == 0 {
-            return Err(fail("ACL_UNSAFE"));
-        }
-        let _sid_text = Local(sid_text.cast());
-        let mut len = 0;
-        while *sid_text.add(len) != 0 {
-            len += 1;
-        }
-        let sid = String::from_utf16(std::slice::from_raw_parts(sid_text, len))
-            .map_err(|_| fail("ACL_UNSAFE"))?;
+        let sid_utf16 = user.sid_utf16().ok_or_else(|| fail("ACL_UNSAFE"))?;
+        let sid = String::from_utf16(&sid_utf16).map_err(|_| fail("ACL_UNSAFE"))?;
         let inheritance = if directory { "OICI" } else { "" };
         let sddl = format!("D:P(A;{inheritance};FA;;;{sid})")
             .encode_utf16()

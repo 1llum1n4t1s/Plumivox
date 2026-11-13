@@ -10,6 +10,6 @@ pub use http::{HttpRequest, HttpResponse, HttpServer, json_response, raw_respons
 #[allow(unused_imports)]
 pub use mcp::{McpClient, PendingCall};
 #[allow(unused_imports)]
-pub use suite::{Suite, free_port, redact, wait_until};
+pub use suite::{Suite, contains, free_port, redact, wait_until};
 
 pub type Result<T = ()> = anyhow::Result<T>;

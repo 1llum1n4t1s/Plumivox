@@ -344,19 +344,17 @@ impl Server {
 fn rpc_error(id: Value, code: i64, message: &str) -> Value {
     json!({"jsonrpc":"2.0", "id":id, "error":{"code":code,"message":message}})
 }
+/// stdio の読み書き失敗を表す共通エラー。原因の詳細は標準出力・診断へ出さない。
+fn mcp_failed() -> AppError {
+    AppError::new("MCP_FAILED", "MCP通信に失敗しました。")
+}
+
 async fn write_response(writer: &Mutex<tokio::io::Stdout>, response: &Value) -> Result<()> {
-    let mut bytes = serde_json::to_vec(response)
-        .map_err(|_| AppError::new("MCP_FAILED", "MCP通信に失敗しました。"))?;
+    let mut bytes = serde_json::to_vec(response).map_err(|_| mcp_failed())?;
     bytes.push(b'\n');
     let mut output = writer.lock().await;
-    output
-        .write_all(&bytes)
-        .await
-        .map_err(|_| AppError::new("MCP_FAILED", "MCP通信に失敗しました。"))?;
-    output
-        .flush()
-        .await
-        .map_err(|_| AppError::new("MCP_FAILED", "MCP通信に失敗しました。"))
+    output.write_all(&bytes).await.map_err(|_| mcp_failed())?;
+    output.flush().await.map_err(|_| mcp_failed())
 }
 
 pub async fn run_stdio(options: Options) -> Result<()> {
@@ -380,10 +378,7 @@ pub async fn run_stdio(options: Options) -> Result<()> {
         // read_until自体の無制限確保を避け、改行前に上限を確認する。
         let mut eof = false;
         loop {
-            let chunk = input
-                .fill_buf()
-                .await
-                .map_err(|_| AppError::new("MCP_FAILED", "MCP通信に失敗しました。"))?;
+            let chunk = input.fill_buf().await.map_err(|_| mcp_failed())?;
             if chunk.is_empty() {
                 eof = true;
                 break;

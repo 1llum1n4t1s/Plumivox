@@ -75,7 +75,8 @@ fn failure(code: &str) -> AppError {
 fn storage() -> AppError {
     failure("SESSION_STORAGE_UNAVAILABLE")
 }
-fn hash(value: &str) -> String {
+/// UTF-8 文字列の SHA-256 を小文字16進で返す。保存先ディレクトリ名や照合値に使う。
+pub(crate) fn hash(value: &str) -> String {
     hex::encode(Sha256::digest(value.as_bytes()))
 }
 fn text<'a>(value: &'a Value, key: &str) -> Result<&'a str> {
@@ -85,12 +86,17 @@ fn text<'a>(value: &'a Value, key: &str) -> Result<&'a str> {
         .filter(|s| !s.trim().is_empty())
         .ok_or_else(storage)
 }
+/// APIキーと送信元プロキシの組から保存セッションの照合値を導出する。
+/// 形式は `"{apiKey}\n{proxy}"` の SHA-256 で、保存済みデータとの互換のため変えない。
+/// 入力検証は呼び出し側で行い、この関数自体は失敗しない。
+pub(crate) fn binding_of(api_key: &str, proxy: &str) -> String {
+    hash(&format!("{api_key}\n{proxy}"))
+}
 fn binding(account: &Value) -> Result<String> {
-    Ok(hash(&format!(
-        "{}\n{}",
+    Ok(binding_of(
         text(account, "apiKey")?,
-        text(account, "proxy")?
-    )))
+        text(account, "proxy")?,
+    ))
 }
 fn valid_cookie(cookie: &str) -> bool {
     !cookie.trim().is_empty()
@@ -305,10 +311,7 @@ impl SessionStorage {
         lease: &SessionLease,
         cancel: CancellationToken,
     ) -> Result<Value> {
-        lease.assert_owned()?;
-        if cancel.is_cancelled() {
-            return Err(failure("AUTH_CANCELLED"));
-        }
+        ensure_live(lease, &cancel)?;
         if !valid_cookie(cookie) {
             return Err(failure("LOGIN_FAILED"));
         }
@@ -331,24 +334,11 @@ impl SessionStorage {
         );
         let encrypted = platform::encrypt(plain.as_bytes(), self.root.as_deref())?;
         #[cfg(feature = "test-fixture")]
-        {
-            let result = crate::test_support::boundary("encrypt", &cancel).await;
-            if result
-                .as_ref()
-                .err()
-                .is_some_and(|e| e.code == "AUTH_LOCK_LOST")
-            {
-                lease.inner.lost.cancelled().await;
-            }
-            result?;
-        }
+        fixture_boundary("encrypt", lease, &cancel).await?;
         if encrypted.len() > MAX_BYTES as usize {
             return Err(storage());
         }
-        lease.assert_owned()?;
-        if cancel.is_cancelled() {
-            return Err(failure("AUTH_CANCELLED"));
-        }
+        ensure_live(lease, &cancel)?;
         let staging = directory.join(format!("session-{}.pending", random_id()));
         let mut file = new_private_file(&staging)?;
         let pending = Pending {
@@ -359,38 +349,15 @@ impl SessionStorage {
         file.write_all(&encrypted[..middle])
             .map_err(|_| storage())?;
         #[cfg(feature = "test-fixture")]
-        {
-            let result = crate::test_support::boundary("writing", &cancel).await;
-            if result
-                .as_ref()
-                .err()
-                .is_some_and(|e| e.code == "AUTH_LOCK_LOST")
-            {
-                lease.inner.lost.cancelled().await;
-            }
-            result?;
-        }
+        fixture_boundary("writing", lease, &cancel).await?;
         file.write_all(&encrypted[middle..])
             .and_then(|_| file.sync_all())
             .map_err(|_| storage())?;
         drop(file);
         #[cfg(feature = "test-fixture")]
-        {
-            let result = crate::test_support::boundary("staged", &cancel).await;
-            if result
-                .as_ref()
-                .err()
-                .is_some_and(|e| e.code == "AUTH_LOCK_LOST")
-            {
-                lease.inner.lost.cancelled().await;
-            }
-            result?;
-        }
+        fixture_boundary("staged", lease, &cancel).await?;
         let (reply, response) = oneshot::channel();
-        lease.assert_owned()?;
-        if cancel.is_cancelled() {
-            return Err(failure("AUTH_CANCELLED"));
-        }
+        ensure_live(lease, &cancel)?;
         lease
             .inner
             .tx
@@ -422,6 +389,36 @@ impl SessionStorage {
             "sessionSource":platform::SOURCE,"acquiredAt":acquired_at}),
         )
     }
+}
+
+/// 保存の各段階の前に、排他の所有と取消を確認する。
+/// 所有喪失（AUTH_LOCK_LOST）を取消（AUTH_CANCELLED）より先に判定する順序を保つ。
+fn ensure_live(lease: &SessionLease, cancel: &CancellationToken) -> Result<()> {
+    lease.assert_owned()?;
+    if cancel.is_cancelled() {
+        return Err(failure("AUTH_CANCELLED"));
+    }
+    Ok(())
+}
+
+/// E2E用の段階ゲート。fixture が所有喪失を指示した場合は、
+/// 所有スレッドが喪失を通知するまで待ってから失敗を返す。
+/// 本番ビルドには存在せず、呼び出し文も同じ cfg で除外する。
+#[cfg(feature = "test-fixture")]
+async fn fixture_boundary(
+    phase: &str,
+    lease: &SessionLease,
+    cancel: &CancellationToken,
+) -> Result<()> {
+    let result = crate::test_support::boundary(phase, cancel).await;
+    if result
+        .as_ref()
+        .err()
+        .is_some_and(|e| e.code == "AUTH_LOCK_LOST")
+    {
+        lease.inner.lost.cancelled().await;
+    }
+    result
 }
 
 struct Pending {
@@ -644,23 +641,22 @@ fn validate_directory(path: &Path) -> Result<()> {
     if canonical.parent().is_none() {
         return Err(storage());
     }
+    // Codex・Claude Code などホストの設定フォルダー（環境変数での移動先を含む）を拒否する。
+    // 既定名の階層はホーム以外にあっても下の名前判定で拒否する。
     let mut blocked = vec![PathBuf::from(env!("CARGO_MANIFEST_DIR"))];
-    if let Some(codex) = std::env::var_os("CODEX_HOME") {
-        blocked.push(codex.into());
-    }
+    blocked.extend(crate::agent_dirs::agent_user_roots(
+        &dirs::home_dir().unwrap_or_default(),
+    ));
     if let Some(plugin) = runtime_plugin_root() {
         blocked.push(plugin);
     }
     if blocked.iter().any(|root| {
         path_inside(path, root)
             || canonical_with_missing_tail(root).is_ok_and(|root| path_inside(&canonical, &root))
-    }) || [path, canonical.as_path()].iter().any(|candidate| {
-        candidate.components().any(|c| {
-            c.as_os_str()
-                .to_string_lossy()
-                .eq_ignore_ascii_case(".codex")
-        })
-    }) {
+    }) || [path, canonical.as_path()]
+        .iter()
+        .any(|candidate| crate::agent_dirs::has_agent_dir_component(candidate))
+    {
         return Err(storage());
     }
     Ok(())
@@ -754,12 +750,10 @@ mod platform {
         ptr::{null, null_mut},
     };
     use windows_sys::Win32::{
-        Foundation::{CloseHandle, HANDLE, LocalFree, WAIT_ABANDONED, WAIT_OBJECT_0, WAIT_TIMEOUT},
+        Foundation::{CloseHandle, HANDLE, WAIT_ABANDONED, WAIT_OBJECT_0, WAIT_TIMEOUT},
         Security::{Authorization::*, Cryptography::*, *},
         Storage::FileSystem::{MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW},
-        System::Threading::{
-            CreateMutexW, GetCurrentProcess, OpenProcessToken, ReleaseMutex, WaitForSingleObject,
-        },
+        System::Threading::{CreateMutexW, ReleaseMutex, WaitForSingleObject},
     };
     pub const FILE_NAME: &str = "session.dpapi";
     pub const BACKUP_SUFFIX: &str = ".dpapi";
@@ -779,40 +773,8 @@ mod platform {
             }
         }
     }
-    struct Local(*mut core::ffi::c_void);
-    impl Drop for Local {
-        fn drop(&mut self) {
-            unsafe {
-                LocalFree(self.0);
-            }
-        }
-    }
-    fn current_user() -> Result<Vec<usize>> {
-        unsafe {
-            let mut token = null_mut();
-            if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) == 0 {
-                return Err(storage());
-            }
-            let token = Handle(token);
-            let mut size = 0;
-            GetTokenInformation(token.0, TokenUser, null_mut(), 0, &mut size);
-            if size == 0 || size > 65536 {
-                return Err(storage());
-            }
-            let mut buffer = vec![0usize; (size as usize).div_ceil(std::mem::size_of::<usize>())];
-            if GetTokenInformation(
-                token.0,
-                TokenUser,
-                buffer.as_mut_ptr().cast(),
-                size,
-                &mut size,
-            ) == 0
-            {
-                return Err(storage());
-            }
-            Ok(buffer)
-        }
-    }
+    // 利用者SIDの取得・文字列化と LocalFree の RAII は共通モジュールを使う。
+    use crate::windows_identity::{CurrentUser, Local};
     fn check_owner(path: &Path, sid: PSID) -> Result<()> {
         unsafe {
             let mut owner = null_mut();
@@ -839,21 +801,13 @@ mod platform {
     }
     pub fn private(path: &Path) -> Result<()> {
         validate_ancestors(path)?;
-        let user = current_user()?;
-        let sid = unsafe { (*(user.as_ptr().cast::<TOKEN_USER>())).User.Sid };
+        // `user` はこの関数の終わりまで保持し、`sid` がバッファより長生きしないようにする。
+        let user = CurrentUser::query().ok_or_else(storage)?;
+        let sid = user.sid();
         check_owner(path, sid)?;
         unsafe {
-            let mut sid_text = null_mut();
-            if ConvertSidToStringSidW(sid, &mut sid_text) == 0 {
-                return Err(storage());
-            }
-            let _sid_text = Local(sid_text.cast());
-            let mut len = 0;
-            while *sid_text.add(len) != 0 {
-                len += 1;
-            }
-            let sid_string = String::from_utf16(std::slice::from_raw_parts(sid_text, len))
-                .map_err(|_| storage())?;
+            let sid_utf16 = user.sid_utf16().ok_or_else(storage)?;
+            let sid_string = String::from_utf16(&sid_utf16).map_err(|_| storage())?;
             let sddl = wide(format!("D:P(A;OICI;FA;;;{sid_string})"));
             let mut descriptor = null_mut();
             if ConvertStringSecurityDescriptorToSecurityDescriptorW(

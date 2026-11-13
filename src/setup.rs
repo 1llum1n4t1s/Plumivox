@@ -24,7 +24,7 @@ fn fail(code: &str) -> AppError {
             "既定アカウントには登録済みのアカウント設定名を指定してください。"
         }
         "PATH_INVALID" => {
-            "プラグイン・Codex設定フォルダーの外に、リンクを含まない絶対パスを指定してください。"
+            "プラグインとCodex・Claudeなどのユーザー設定フォルダーの外に、リンクを含まない絶対パスを指定してください。"
         }
         "SSH_KEYGEN_REQUIRED" => "ssh-keygenで専用のパスフレーズなしSSH鍵を準備してください。",
         "INPUT_REQUIRED" => "必須項目を入力してください。",
@@ -35,6 +35,10 @@ fn fail(code: &str) -> AppError {
     };
     AppError::new(code, message)
 }
+
+/// アカウント設定名とプロキシ利用者名の書式（セットアップだけが使う）。
+static NAME: std::sync::LazyLock<regex::Regex> =
+    std::sync::LazyLock::new(|| regex::Regex::new(r"\A[A-Za-z0-9_-]{1,64}\z").unwrap());
 
 #[derive(Default)]
 struct Options {
@@ -88,11 +92,7 @@ impl Options {
         {
             return Err(fail("MODE_INVALID"));
         }
-        if !regex::Regex::new(r"\A[A-Za-z0-9_-]{1,64}\z")
-            .unwrap()
-            .is_match(&o.account)
-            || o.account.eq_ignore_ascii_case("default_account")
-        {
+        if !NAME.is_match(&o.account) || o.account.eq_ignore_ascii_case("default_account") {
             return Err(fail("ACCOUNT_INVALID"));
         }
         Ok(o)
@@ -153,23 +153,10 @@ mod native {
             }
         }
         let home = dirs::home_dir().ok_or_else(|| fail("PATH_INVALID"))?;
-        let mut blocked = vec![
-            home.join(".codex"),
-            PathBuf::from(env!("CARGO_MANIFEST_DIR")),
-        ];
-        if let Some(p) = std::env::var_os("CODEX_HOME") {
-            blocked.push(p.into());
-        }
-        if let Ok(exe) = std::env::current_exe() {
-            for ancestor in exe.ancestors().skip(1) {
-                if ancestor.join(".codex-plugin/plugin.json").exists()
-                    || ancestor.join("plugin.json").exists()
-                {
-                    blocked.push(ancestor.into());
-                    break;
-                }
-            }
-        }
+        // Codex・Claude Code などホストの設定フォルダー、リポジトリ、プラグインルートを拒否する。
+        let mut blocked = crate::agent_dirs::agent_user_roots(&home);
+        blocked.push(PathBuf::from(env!("CARGO_MANIFEST_DIR")));
+        blocked.extend(crate::agent_dirs::executable_plugin_root());
         if blocked.iter().any(|root| path.starts_with(root)) {
             return Err(fail("PATH_INVALID"));
         }
@@ -410,9 +397,6 @@ mod native {
             .filter(|p| *p >= min)
             .ok_or_else(|| fail("PORT_INVALID"))
     }
-    fn valid(pattern: &str, value: &str) -> bool {
-        regex::Regex::new(pattern).unwrap().is_match(value)
-    }
     async fn keygen(args: &[&str]) -> Result<()> {
         let result = tokio::time::timeout(
             std::time::Duration::from_secs(30),
@@ -625,7 +609,7 @@ mod native {
                 return Err(fail("DEFAULT_ACCOUNT_INVALID"));
             }
             let user = ask("Xユーザー名 (@なし)", "")?;
-            if !valid(r"\A[A-Za-z0-9_]{1,15}\z", &user) {
+            if !crate::config::USER_NAME.is_match(&user) {
                 return Err(fail("USER_INVALID"));
             }
             let host = ask("VPSホスト名/IP", "")?.to_ascii_lowercase();
@@ -637,23 +621,25 @@ mod native {
                 "VPSコンソールで ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub -E sha256 を実行し指紋を照合してください。"
             );
             let fingerprint = ask("コンソールで確認済みのSHA256指紋", "")?;
-            if !valid(r"\A[A-Za-z0-9._:\[\]-]{1,253}\z", &host)
-                || !valid(r"\A[A-Za-z0-9._-]{1,64}\z", &ssh_user)
-                || !valid(r"\ASHA256:[A-Za-z0-9+/]{43}\z", &fingerprint)
+            if !crate::config::SSH_HOST.is_match(&host)
+                || !crate::config::SSH_USER.is_match(&ssh_user)
+                || !crate::config::HOST_KEY.is_match(&fingerprint)
             {
                 return Err(fail("SETTINGS_INVALID"));
             }
             validate_key(&key).await?;
             let public_port = port("公開プロキシポート", 3128, 1024)?;
             let proxy_user = ask("プロキシユーザー", "plumivox")?;
-            if !valid(r"\A[A-Za-z0-9_-]{1,64}\z", &proxy_user) {
+            if !super::NAME.is_match(&proxy_user) {
                 return Err(fail("PROXY_USER_INVALID"));
             }
             let mut profile = json!({"user_name":user,"api_key":secret("twitterapi.io APIキー",false)?,
                 "email":secret("Xログインメール",false)?,"password":secret("Xパスワード",false)?,"proxy_mode":"managed"});
             let totp = secret("Base32の2FA秘密鍵 (未使用なら空欄)", true)?;
             if !totp.is_empty() {
-                if !valid(r"\A[A-Za-z2-7]+={0,6}\z", &totp) || valid(r"\A[0-9]{6}\z", &totp) {
+                if !crate::config::TOTP_SECRET.is_match(&totp)
+                    || crate::config::TOTP_CODE.is_match(&totp)
+                {
                     return Err(fail("TOTP_INVALID"));
                 }
                 profile["totp_secret"] = json!(totp);

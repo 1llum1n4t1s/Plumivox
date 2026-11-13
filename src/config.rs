@@ -1,23 +1,25 @@
 use crate::error::{AppError, Result};
-use crate::session::{SessionLease, SessionStorage, read_legacy_protected_cookie};
+use crate::session::{self, SessionLease, SessionStorage, read_legacy_protected_cookie};
 use regex::Regex;
 use serde_json::{Map, Value, json};
-use sha2::{Digest, Sha256};
-use std::{collections::HashMap, path::PathBuf, sync::LazyLock};
+use std::{path::PathBuf, sync::LazyLock};
 use tokio::io::AsyncReadExt;
 use tokio_util::sync::CancellationToken;
 
 const MAX_BYTES: usize = 2 * 1024 * 1024;
-static USER_NAME: LazyLock<Regex> =
+// 以下の書式はセットアップ（setup.rs）が保存前に同じものを使う。MCPの読込み側と
+// セットアップの書込み側で検証がずれないよう、定義はここだけに置く。
+pub(crate) static USER_NAME: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\A[A-Za-z0-9_]{1,15}\z").unwrap());
-static TOTP_SECRET: LazyLock<Regex> =
+pub(crate) static TOTP_SECRET: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\A[A-Za-z2-7]+={0,6}\z").unwrap());
-static TOTP_CODE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\A[0-9]{6}\z").unwrap());
-static SSH_HOST: LazyLock<Regex> =
+pub(crate) static TOTP_CODE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\A[0-9]{6}\z").unwrap());
+pub(crate) static SSH_HOST: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\A[A-Za-z0-9._:\[\]-]{1,253}\z").unwrap());
-static SSH_USER: LazyLock<Regex> =
+pub(crate) static SSH_USER: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\A[A-Za-z0-9._-]{1,64}\z").unwrap());
-static HOST_KEY: LazyLock<Regex> =
+pub(crate) static HOST_KEY: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\ASHA256:[A-Za-z0-9+/]{43}\z").unwrap());
 
 /// 起動時に正本を固定し、読込みに失敗しても別の設定へ切り替えない。
@@ -155,9 +157,6 @@ fn login_ready(config: &Value, account: &Value) -> bool {
         && nonempty(&config["password"])
         && valid_totp(&config["totp_secret"])
 }
-fn hash(value: &str) -> String {
-    hex::encode(Sha256::digest(value.as_bytes()))
-}
 fn invalid_account() -> AppError {
     error(
         "ACCOUNT_INVALID",
@@ -176,8 +175,6 @@ pub struct AccountStore {
     source: PathBuf,
     profile: Option<String>,
     pub sessions: SessionStorage,
-    /// 既存のWindowsセッションを参照する場合だけ指定する。
-    pub session_paths: HashMap<String, PathBuf>,
 }
 
 impl AccountStore {
@@ -190,7 +187,6 @@ impl AccountStore {
             source: resolve_secrets_path(secrets_path),
             profile,
             sessions: SessionStorage::new(state_directory),
-            session_paths: HashMap::new(),
         }
     }
 
@@ -329,23 +325,23 @@ impl AccountStore {
                     "blog_posting" => Some("TwitterApiBlog"),
                     _ => None,
                 };
-                let directory = self.session_paths.get(name).cloned().or_else(|| {
-                    folder.and_then(|f| {
-                        std::env::var_os("LOCALAPPDATA")
-                            .filter(|s| !s.is_empty())
-                            .map(|p| PathBuf::from(p).join("Kagayoi").join(f))
-                    })
+                // 旧 Kagayoi 形式の保存先は、既知のアカウント設定名に対応するフォルダーだけ。
+                let directory = folder.and_then(|f| {
+                    std::env::var_os("LOCALAPPDATA")
+                        .filter(|s| !s.is_empty())
+                        .map(|p| PathBuf::from(p).join("Kagayoi").join(f))
                 });
                 if let Some(directory) = directory {
                     let user = result["userName"].as_str().unwrap();
                     let file = directory
-                        .join(hash(&user.to_ascii_lowercase()))
+                        .join(session::hash(&user.to_ascii_lowercase()))
                         .join("session.dpapi");
-                    let binding = hash(&format!(
-                        "{}\n{}",
+                    // 旧 Kagayoi 形式の照合値。Plumivox 自身の binding と導出が一致するのは
+                    // 仕様上の偶然だが、同じ関数を使うことで両者のバイト列を揃えて保つ。
+                    let binding = session::binding_of(
                         result["apiKey"].as_str().unwrap(),
-                        result["proxy"].as_str().unwrap()
-                    ));
+                        result["proxy"].as_str().unwrap(),
+                    );
                     if let Some(cookie) = read_legacy_protected_cookie(&file, &binding, user)
                         .await
                         .filter(|c| !c.is_empty())

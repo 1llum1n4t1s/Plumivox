@@ -681,7 +681,7 @@ fn terminal_fixture() -> Result<()> {
             Err(mpsc::RecvTimeoutError::Disconnected) => true,
             Err(mpsc::RecvTimeoutError::Timeout) => false,
         };
-        // rpasswordはCONOUT$へ直接promptを書くため、pipeと専用画面の両方を観測する。
+        // Windowsの秘密入力（src/setup_windows_console.rsのWriteConsoleW）はCONOUT$へ直接promptを書くため、pipeと専用画面の両方を観測する。
         let screen = console_text(&console_output)?;
         let fresh = screen.strip_prefix(&previous_screen).unwrap_or(&screen);
         transcript.extend_from_slice(fresh.as_bytes());
@@ -1639,11 +1639,21 @@ pub async fn run(suite: &mut Suite) -> Result<()> {
     let root = suite
         .output()
         .join("codex-protected-directory-with-long-name");
+    // Codex専用ではないため、Claude Codeの設定フォルダー（既定名と環境変数）も同様に拒否する。
+    let claude_root = suite
+        .output()
+        .join("claude-protected-directory-with-long-name");
     let home = suite.output().join("fixture-user-profile");
     fs::create_dir(&root)?;
+    fs::create_dir(&claude_root)?;
     fs::create_dir_all(home.join(".codex"))?;
+    fs::create_dir_all(home.join(".claude"))?;
     let env = vec![
         ("CODEX_HOME".into(), root.display().to_string()),
+        (
+            "CLAUDE_CONFIG_DIR".into(),
+            claude_root.display().to_string(),
+        ),
         ("USERPROFILE".into(), home.display().to_string()),
     ];
     case!("native-protected-path-dot-components-refused", {
@@ -1654,7 +1664,13 @@ pub async fn run(suite: &mut Suite) -> Result<()> {
             root.file_name().unwrap().to_string_lossy()
         ));
         let dotted_home = PathBuf::from(format!("{}\\.\\.codex", home.display()));
-        for candidate in [dotted, dotted_home] {
+        let dotted_claude = PathBuf::from(format!(
+            "{}\\.\\{}",
+            claude_root.parent().unwrap().display(),
+            claude_root.file_name().unwrap().to_string_lossy()
+        ));
+        let dotted_claude_home = PathBuf::from(format!("{}\\.\\.claude", home.display()));
+        for candidate in [dotted, dotted_home, dotted_claude, dotted_claude_home] {
             let target = candidate.join("must-not-be-created.json");
             ensure!(
                 cli(
@@ -1688,7 +1704,9 @@ pub async fn run(suite: &mut Suite) -> Result<()> {
         }
         ensure!(
             fs::read_dir(&root)?.next().is_none()
-                && fs::read_dir(home.join(".codex"))?.next().is_none(),
+                && fs::read_dir(&claude_root)?.next().is_none()
+                && fs::read_dir(home.join(".codex"))?.next().is_none()
+                && fs::read_dir(home.join(".claude"))?.next().is_none(),
             "Rejected protected path created a file or lock"
         );
         Ok(())

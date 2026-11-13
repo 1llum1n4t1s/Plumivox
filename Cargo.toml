@@ -31,7 +31,7 @@ tokio = { version = "1", features = ["full"] }
 tokio-util = "0.7"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
-reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider", "json", "multipart", "stream"] }
+reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider", "json", "multipart"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 webpki-roots = "1"
 sha2 = "0.11"
@@ -45,12 +45,8 @@ unicode-normalization = "0.1"
 twitter-text = "0.3.1"
 dirs = "7"
 rand = "0.10"
-aes-gcm = "0.11"
-fs2 = "0.4"
-libc = "0.2"
 zeroize = "1"
 russh = { version = "0.65.1", default-features = false, features = ["ring", "rsa", "flate2"] }
-rpassword = "7"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["test-util"] }
@@ -91,10 +87,19 @@ path = "tests/setup_vps_e2e.rs"
 required-features = ["test-fixture"]
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Globalization", "Win32_Security", "Win32_Security_Authorization", "Win32_Security_Cryptography", "Win32_System_Console", "Win32_System_Threading", "Win32_System_Memory", "Win32_Storage_FileSystem"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Globalization", "Win32_Security", "Win32_Security_Authorization", "Win32_Security_Cryptography", "Win32_System_Console", "Win32_System_Threading", "Win32_Storage_FileSystem"] }
+
+# Rust 1.100 の cargo::unused_dependencies に合わせ、利用するOSだけで取得する。
+# fs2・libc は Unix の排他ロック・権限確認、rpassword は macOS セットアップの秘密入力、
+# aes-gcm は macOS のセッション暗号化（Keychain鍵）だけで使う。
+[target.'cfg(unix)'.dependencies]
+fs2 = "0.4"
+libc = "0.2"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 security-framework = "3"
+rpassword = "7"
+aes-gcm = "0.11"
 
 [profile.release]
 lto = "thin"

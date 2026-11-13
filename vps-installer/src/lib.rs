@@ -1,3 +1,7 @@
+// 導入処理（execute 以下）は Linux でだけ呼ばれる。非Linuxの通常ビルドでは
+// tests.rs の検証経路以外から参照されず dead_code 警告が大量に出るため抑止する。
+// Linux とテストビルドでは属性が無効なので、未使用検出は従来どおり働く。
+#![cfg_attr(not(any(target_os = "linux", test)), allow(dead_code))]
 use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
 

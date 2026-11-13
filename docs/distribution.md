@@ -18,7 +18,7 @@
 
 ## CIで保存する
 
-GitHub Actionsの「Build distribution artifacts」を既定ブランチから手動実行します。元リポジトリ`1llum1n4t1s/Plumivox`の既定ブランチだけが対象で、PRやforkからR2へ書き込みません。CIは固定Git URLから対象のcommit SHAを取得・照合し、WindowsとmacOSの各runnerでRust/Cargo 1.99.1を使って次を実行します。Node製Actionは使いません（Windowsの署名に使うSigiluneのactionはPowerShellのcomposite actionです）。ジョブは`main`限定のEnvironment `release`で実行し、承認待ちはありません。
+GitHub Actionsの「Build distribution artifacts」を既定ブランチから手動実行します。元リポジトリ`1llum1n4t1s/Plumivox`の既定ブランチだけが対象で、PRやforkからR2へ書き込みません。CIは固定Git URLから対象のcommit SHAを取得・照合し、WindowsとmacOSの各runnerでRust/Cargo 1.100.0を使って次を実行します。Node製Actionは使いません（Windowsの署名に使うSigiluneのactionはPowerShellのcomposite actionです）。ジョブは`main`限定のEnvironment `release`で実行し、承認待ちはありません。
 
 1. 依存の固定取得、`cargo xtask check`、`cargo xtask test-e2e`。
 2. macOSは専用の一時KeychainでOSの保存機能を検証し、既定Keychainと検索一覧の不変を確認。終了時は成功・失敗を問わず専用Keychainを清掃。
@@ -42,7 +42,7 @@ Linux開発端末での単独ビルドは、対象のRust muslターゲットを
 
 ## 検証して取得する
 
-開発端末にはRust/Cargo 1.99.1とcurl（AWS SigV4対応）が必要です。上の4変数をプロセスの環境変数へ設定します。値は秘密ストアから取り込み、シェル履歴に直接書かないでください。
+開発端末にはRust/Cargo 1.100.0とcurl（AWS SigV4対応）が必要です。上の4変数をプロセスの環境変数へ設定します。値は秘密ストアから取り込み、シェル履歴に直接書かないでください。
 
 成功したジョブのSummaryに表示されるコマンドの`<new-directory>`を新しい出力先に置き換えます。次はPowerShellの例です。`<commit>`は40桁の小文字SHA、`<run>`と`<attempt>`はその実行の正整数です。
 

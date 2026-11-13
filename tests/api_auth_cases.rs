@@ -915,6 +915,46 @@ async fn storage_and_locks(h: &mut Harness) -> Result<()> {
     );
     case!(
         h,
+        "Session storage refuses Codex and Claude user directories",
+        {
+            // Codex専用ではないため、Claude Codeの既定名・環境変数の移動先も拒否する。
+            let executable = PathBuf::from(
+                std::env::var_os("PLUMIVOX_NATIVE_FIXTURE")
+                    .or_else(|| option_env!("CARGO_BIN_EXE_plumivox-fixture").map(Into::into))
+                    .ok_or_else(|| anyhow::anyhow!("Missing fixture binary"))?,
+            );
+            let config = single(h).await?;
+            let claude_home = h.output.join("relocated-claude-config");
+            fs::create_dir_all(&claude_home).await?;
+            let env = [(
+                "CLAUDE_CONFIG_DIR".to_string(),
+                claude_home.to_string_lossy().into_owned(),
+            )];
+            for root in [
+                h.output.join(".codex").join("state"),
+                h.output.join(".claude").join("state"),
+                claude_home.join("state"),
+            ] {
+                let args = vec![
+                    h.server.base_url.clone(),
+                    config.to_string_lossy().into(),
+                    root.to_string_lossy().into(),
+                    "1500".into(),
+                ];
+                let mut c = McpClient::spawn_command(&executable, &args, &env).await?;
+                ensure!(
+                    h.call_on(&c, "login_account", json!({"account":"auth"}), true, true)
+                        .await?["error"]["code"]
+                        == "SESSION_STORAGE_UNAVAILABLE"
+                        && !root.exists(),
+                    "Session storage was accepted inside an agent user directory"
+                );
+                checked_close(&mut c).await?;
+            }
+        }
+    );
+    case!(
+        h,
         "Concurrent same-account refresh refuses second login before HTTP",
         {
             h.state.scenario("login-delay");

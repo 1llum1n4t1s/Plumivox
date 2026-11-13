@@ -14,7 +14,7 @@
 
 ## 必須コマンドと検証
 
-開発には`rust-toolchain.toml`で固定したRust/Cargo 1.99.1を使う。利用者のMCP実行にはNode.js・Rustを要求しない。WindowsのDPAPI・ACL・ネイティブセットアップの検証にはWindows、VPSのRustインストーラーのOS境界検証にはLinux、Bash互換経路の構文・CLI確認にはBash（WindowsではGit for Windows）が必要。macOSのKeychain・Unix socket・ネイティブセットアップは実macOSで確認し、Windowsでの成功を代用しない。
+開発には`rust-toolchain.toml`で固定したRust/Cargo 1.100.0を使う。利用者のMCP実行にはNode.js・Rustを要求しない。WindowsのDPAPI・ACL・ネイティブセットアップの検証にはWindows、VPSのRustインストーラーのOS境界検証にはLinux、Bash互換経路の構文・CLI確認にはBash（WindowsではGit for Windows）が必要。macOSのKeychain・Unix socket・ネイティブセットアップは実macOSで確認し、Windowsでの成功を代用しない。
 
 ```powershell
 cargo test --locked --lib
@@ -25,7 +25,7 @@ cargo xtask test-e2e
 
 - 実装・依存関係・ビルド設定を変更した場合は上記で検証し、Rustソースと再生成した対象OSの実行ファイルを一緒に更新する。macOSの正式配布物はARM64 Rustターゲットを導入して`cargo xtask build`で作り、arm64単独であることを確認する。`cargo xtask check`はCargoの形式・型検査、同梱Bashの構文、JSON設定を確認する。
 - `cargo xtask test-e2e`はネイティブ本体を対象とするAPI・認証、管理プロキシ・共有daemon、PCセットアップ、VPSセットアップCLIの検証を行う。OS条件を理由に未実行の系統は明示し、全件成功へ数えない。全件検証ではAPI系のケース絞込み用`PLUMIVOX_E2E_CASE`を未設定にし、個別再実行の成功を全件成功として扱わない。ローカルの偽API・偽SSHと別プロセスのMCP・daemonを使い、実際のXへ投稿せず、実際のSSHホストへ接続しない。プロキシのRustテストも確認し、旧JavaScript実装だけの成功をネイティブ版の検証に代用しない。VPS CLIの確認だけで実Linuxへの導入成功を扱わない。失敗条件を先に確認し、挙動の検証は対応する既存E2Eへ追加する。
-- 出力先を指定する場合は `PLUMIVOX_NATIVE_E2E_OUTPUT_DIR`、`PLUMIVOX_TLS_E2E_OUTPUT_DIR`、`PLUMIVOX_PROXY_NATIVE_E2E_OUTPUT_DIR`、`PLUMIVOX_E2E_OUTPUT_DIR`、`PLUMIVOX_SETUP_E2E_OUTPUT_DIR`（Windows）、`PLUMIVOX_NATIVE_SETUP_E2E_OUTPUT_DIR`（macOS）、`PLUMIVOX_SETUP_VPS_E2E_OUTPUT_DIR` をそれぞれ別の、リポジトリとCodexユーザーディレクトリの外のフォルダーにする。未指定時は各系統がユーザーの一時ディレクトリ配下の `Codex/Plumivox/<UUID>` を使う。各出力先の `summary.json` の失敗数と各結果、API系の`http-trace.json`、共有中継の`ssh-trace.json`、VPS CLIの`mutation-trace.json`を読み、偽設定・画像・暗号化セッション・SSH鍵の清掃は呼び出し側で行う。
+- 出力先を指定する場合は `PLUMIVOX_NATIVE_E2E_OUTPUT_DIR`、`PLUMIVOX_TLS_E2E_OUTPUT_DIR`、`PLUMIVOX_PROXY_NATIVE_E2E_OUTPUT_DIR`、`PLUMIVOX_E2E_OUTPUT_DIR`、`PLUMIVOX_SETUP_E2E_OUTPUT_DIR`（PCセットアップ共通。全OSで使う）、`PLUMIVOX_NATIVE_SETUP_E2E_OUTPUT_DIR`（macOSで追加して使う）、`PLUMIVOX_SETUP_VPS_E2E_OUTPUT_DIR` をそれぞれ別の、リポジトリとCodex・Claude Codeのユーザー設定ディレクトリの外のフォルダーにする。未指定時は各系統がユーザーの一時ディレクトリ配下の `Codex/Plumivox/<UUID>` を使う。各出力先の `summary.json` の失敗数と各結果、API系の`http-trace.json`、共有中継の`ssh-trace.json`、VPS CLIの`mutation-trace.json`を読み、偽設定・画像・暗号化セッション・SSH鍵の清掃は呼び出し側で行う。
 - 文書だけの変更では、リンク・コマンド・設定名・記載した挙動を対応する実装へ照合する。
 - VPSインストーラー変更では`cargo test --locked --package plumivox-vps-installer`も実行し、Rust版とBash互換経路の検証を区別する。正式配布物は`cargo xtask build-vps x86_64`・`cargo xtask build-vps aarch64`で`setup/vps/`へ配置する。CLI・fixtureの成功を実システムへの導入成功と扱わず、実R2通信・配布CI起動もローカル検証とは別に報告する。
 - R2関連の実装変更では`cargo test --locked --package xtask`も実行し、実R2通信とローカル検証を区別する。配布CIは実Windowsと実macOSで各OSのE2Eを実行し、macOSは専用Keychainを`PLUMIVOX_TEST_KEYCHAIN`へ指定して既定Keychain・検索一覧の不変を確認する。検証後にfixture機能なしで正式配布物を再ビルドする。

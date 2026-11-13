@@ -1,6 +1,5 @@
 mod support;
 use anyhow::{Context, ensure};
-use base64::Engine;
 use serde_json::{Value, json};
 use std::{
     fs,
@@ -16,7 +15,6 @@ struct State {
     scenario: String,
     trace: Vec<Value>,
     next_post: u64,
-    uploads: usize,
 }
 fn tweet(id: &str) -> Value {
     json!({"id":id,"text":"日本語 🫱🏻‍🫲🏽","createdAt":"2026-10-12T12:00:00Z","author":{"userName":"PublicUser","name":"Public User"},"url":format!("https://x.com/PublicUser/status/{id}")})
@@ -90,8 +88,6 @@ async fn native_stdio_contract() -> Result<()> {
     let initial = config.to_string();
     let secrets = suite.output().join("synthetic-secrets.json");
     fs::write(&secrets, &initial)?;
-    let png = suite.output().join("one-pixel.png");
-    fs::write(&png,base64::engine::general_purpose::STANDARD.decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/l9sAAAAASUVORK5CYII=")?)?;
     let state = Arc::new(Mutex::new(State {
         next_post: 900,
         ..Default::default()
@@ -115,8 +111,7 @@ async fn native_stdio_contract() -> Result<()> {
         if scenario=="html" { return Ok(raw_response(200,format!("<html>{COOKIE}</html>").into_bytes())); }
         if scenario=="jsonerror" { return Ok(json_response(200,json!({"status":"error","message":COOKIE}))); }
         let path=request.path.as_str();
-        let value=if path.ends_with("/upload_media_v2") { let mut s=s.lock().unwrap(); s.uploads+=1; if scenario=="upload-fail" || (scenario=="upload-recover" && s.uploads==1) { return Ok(json_response(502,json!({"message":COOKIE}))); } json!({"status":"success","media_id":"700","media_id_string":"700"}) }
-        else if path.ends_with("/create_tweet_v2") { let mut s=s.lock().unwrap(); let id=s.next_post;s.next_post+=1;if scenario=="missing-id" {json!({"status":"success"})}else{json!({"status":"success","tweet_id":id.to_string()})} }
+        let value=if path.ends_with("/create_tweet_v2") { let mut s=s.lock().unwrap(); let id=s.next_post;s.next_post+=1;if scenario=="missing-id" {json!({"status":"success"})}else{json!({"status":"success","tweet_id":id.to_string()})} }
         else if path.ends_with("/user/info") {json!({"data":{"id":"101","userName":"Reader"}})}
         else if path.ends_with("/tweets") {json!({"tweets":[tweet("502")]})}
         else if path.ends_with("/tweet/advanced_search") {let more=!query.contains_key("cursor");json!({"tweets":[tweet("603")],"has_next_page":more,"next_cursor":if more{"native-search-next"}else{""}})}
@@ -130,7 +125,6 @@ async fn native_stdio_contract() -> Result<()> {
         secrets.display().to_string(),
         suite.output().join("auth-state").display().to_string(),
         "250".into(),
-        "--slow-image-upload".into(),
     ])
     .await?;
     macro_rules! case { ($name:expr,$body:block) => {{ state.lock().unwrap().scenario.clear(); let result:Result<()> = async $body.await; suite.record($name,result); }}; }
@@ -142,33 +136,6 @@ async fn native_stdio_contract() -> Result<()> {
             call(&client, &state, $name, $args, $fail, $off).await?
         };
     }
-    case!("MCP discovery", {
-        let raw = client.request("tools/list", json!({})).await?;
-        let mut names: Vec<_> = raw["tools"]
-            .as_array()
-            .context("tools array")?
-            .iter()
-            .filter_map(|v| v["name"].as_str())
-            .collect();
-        names.sort();
-        ensure!(
-            names
-                == [
-                    "get_following_feed",
-                    "get_my_posts",
-                    "get_proxy_status",
-                    "get_tweets",
-                    "list_accounts",
-                    "login_account",
-                    "post_tweet",
-                    "refresh_session",
-                    "search_tweets",
-                    "start_proxy",
-                    "stop_proxy"
-                ]
-        );
-        Ok(())
-    });
     case!(
         "List accounts preserves order, filters metadata and rereads without provider access",
         {
@@ -218,25 +185,8 @@ async fn native_stdio_contract() -> Result<()> {
             Ok(())
         });
     }
-    case!("Tweet lookup preserves UTF-8", {
-        ensure!(
-            call!(
-                "get_tweets",
-                json!({"account":"reading","tweetIds":["502"]})
-            )["tweets"][0]["text"]
-                == tweet("502")["text"]
-        );
-        Ok(())
-    });
-    case!("Own timeline", {
-        ensure!(call!("get_my_posts", json!({"account":"reading"}))["tweets"][0]["id"] == "501");
-        Ok(())
-    });
-    case!("Empty following feed", {
-        ensure!(call!("get_following_feed", json!({"account":"reading"}))["tweets"] == json!([]));
-        Ok(())
-    });
-    for ids in [json!([]), json!(["bad"]), json!(["502", "bad"])] {
+    // 空配列の拒否は api 側に同じ境界がないため native で維持する。
+    for ids in [json!([])] {
         case!(format!("Invalid lookup IDs {ids}"), {
             call!(
                 "get_tweets",
@@ -247,7 +197,8 @@ async fn native_stdio_contract() -> Result<()> {
             Ok(())
         });
     }
-    for text in [String::new(), " ".into(), "あ".repeat(141)] {
+    // 空白のみの本文は api 側に同じ境界がないため native で維持する。
+    for text in [String::from(" ")] {
         case!(
             format!("Invalid post text length {}", text.chars().count()),
             {
@@ -260,52 +211,6 @@ async fn native_stdio_contract() -> Result<()> {
                 Ok(())
             }
         );
-    }
-    for (name, mode, expected, fail) in [
-        (
-            "Image upload precedes one post",
-            "",
-            vec!["upload_media_v2", "create_tweet_v2"],
-            false,
-        ),
-        (
-            "Recoverable upload retries without resending post",
-            "upload-recover",
-            vec!["upload_media_v2", "upload_media_v2", "create_tweet_v2"],
-            false,
-        ),
-        (
-            "Failed upload never creates a post",
-            "upload-fail",
-            vec![],
-            true,
-        ),
-    ] {
-        case!(name, {
-            let n = {
-                let mut s = state.lock().unwrap();
-                s.scenario = mode.into();
-                s.uploads = 0;
-                s.trace.len()
-            };
-            call!(
-                "post_tweet",
-                json!({"account":"posting","text":"image","images":[png]}),
-                fail,
-                false
-            );
-            let s = state.lock().unwrap();
-            let paths: Vec<_> = s.trace[n..]
-                .iter()
-                .map(|v| v["path"].as_str().unwrap().rsplit('/').next().unwrap())
-                .collect();
-            if fail {
-                ensure!(!paths.is_empty() && paths.iter().all(|p| *p == "upload_media_v2"));
-            } else {
-                ensure!(paths == expected);
-            }
-            Ok(())
-        });
     }
     case!("Search cursor continuation", {
         let first = call!(
@@ -379,7 +284,8 @@ async fn native_stdio_contract() -> Result<()> {
         )
         .await;
         fs::write(&secrets, &initial)?;
-        r?;
+        // 失敗の有無だけでなく、別の設定へ切り替えず読込み不能として返すことまで確かめる。
+        ensure!(r?["error"]["code"] == "CONFIG_UNAVAILABLE");
         Ok(())
     });
     for mode in [

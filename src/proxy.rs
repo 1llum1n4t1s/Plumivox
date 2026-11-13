@@ -221,6 +221,16 @@ fn socket_path(config: &Value) -> Result<String> {
 fn stopped() -> Value {
     json!({"state":"stopped","managed":false,"activeConnections":0,"lastErrorCode":null})
 }
+/// 共有daemonへ接続して相互認証済みのセッションを作る。
+/// 接続と認証を合わせて3秒で打ち切り、超過は `PROXY_TIMEOUT` とする。
+/// `bound` の更新など記録の状態変更は呼び出し側が行う。
+async fn connect_session(path: &str, config: &Value, secret: &[u8]) -> Result<Session> {
+    timeout(Duration::from_secs(3), async {
+        Session::client(proxy_ipc::connect(path).await?, context(config), secret).await
+    })
+    .await
+    .map_err(|_| error("PROXY_TIMEOUT"))?
+}
 
 struct Record {
     config: Value,
@@ -348,16 +358,8 @@ impl SharedProxyManager {
         }
         loop {
             if record.session.is_none() {
-                let connection = timeout(Duration::from_secs(3), async {
-                    Session::client(
-                        proxy_ipc::connect(&path).await?,
-                        context(&record.config),
-                        &record.secret,
-                    )
-                    .await
-                })
-                .await
-                .map_err(|_| error("PROXY_TIMEOUT"))?;
+                // タイムアウトは Err(PROXY_TIMEOUT) として下の `Err(e) => return Err(e)` へ流れる。
+                let connection = connect_session(&path, &record.config, &record.secret).await;
                 match connection {
                     Ok(session) => {
                         record.bound = true;
@@ -458,21 +460,12 @@ impl SharedProxyManager {
                 let path = socket_path(&record.config)?;
                 let deadline = Instant::now() + startup_duration();
                 loop {
-                    match timeout(Duration::from_secs(3), async {
-                        Session::client(
-                            proxy_ipc::connect(&path).await?,
-                            context(&record.config),
-                            &record.secret,
-                        )
-                        .await
-                    })
-                    .await
-                    {
-                        Ok(Ok(s)) => {
+                    match connect_session(&path, &record.config, &record.secret).await {
+                        Ok(s) => {
                             record.bound = true;
                             break s;
                         }
-                        Ok(Err(e)) if e.code == "PROXY_DAEMON_UNAVAILABLE" => {
+                        Err(e) if e.code == "PROXY_DAEMON_UNAVAILABLE" => {
                             let pending = record.launch.is_some() && !record.bound;
                             if op == "stop" && pending {
                                 if Instant::now() >= deadline {
@@ -483,8 +476,8 @@ impl SharedProxyManager {
                             }
                             return Ok(stopped());
                         }
-                        Ok(Err(e)) => return Err(e),
-                        Err(_) => return Err(error("PROXY_TIMEOUT")),
+                        // タイムアウト（PROXY_TIMEOUT）もここで返す。
+                        Err(e) => return Err(e),
                     }
                 }
             }
@@ -1020,6 +1013,17 @@ pub async fn run_daemon(bootstrap: Value) -> Result<()> {
     let idle_duration = daemon_idle_duration();
     let mut idle = Instant::now() + idle_duration;
     let mut tasks = tokio::task::JoinSet::new();
+    // 各クライアント処理へ渡す共有状態。clone は接続ごとに1回行う。
+    // 受付ループ自身も core・shutdown・authenticated を使うため、それらは clone して渡す。
+    let shared = DaemonShared {
+        key,
+        binding,
+        core: core.clone(),
+        shutdown: shutdown.clone(),
+        authenticated: authenticated.clone(),
+        departure,
+        stopping,
+    };
     loop {
         tokio::select! {
             _=shutdown.cancelled()=>break,
@@ -1029,37 +1033,11 @@ pub async fn run_daemon(bootstrap: Value) -> Result<()> {
             accepted=listener.accept()=>{
                 let pipe=match accepted{Ok(p)=>p,Err(e) if e.code=="PROXY_IPC_AUTH_FAILED"=>continue,Err(e)=>{core.stop().await?;return Err(e);}};
                 let Ok(permit)=clients.clone().try_acquire_owned() else{continue};
-                let key=key.clone();let binding=binding.clone();let core=core.clone();let shutdown=shutdown.clone();let authenticated=authenticated.clone();let departure=departure.clone();let stopping=stopping.clone();
+                let shared=shared.clone();
                 tasks.spawn(async move{
-                    let _permit=permit;let mut counted=false;
-                    let handling=async{
-                        let mut session=timeout(Duration::from_secs(3),Session::server(pipe,binding,&key)).await.map_err(|_|error("PROXY_TIMEOUT"))??;
-                        loop {
-                            let operation=if counted {session.receive(&key).await?}else{timeout(Duration::from_secs(3),session.receive(&key)).await.map_err(|_|error("PROXY_TIMEOUT"))??};
-                            if !counted{
-                                authenticated.fetch_add(1,Ordering::SeqCst);counted=true;
-                                // Wake the listener to disable an idle timer selected before authentication.
-                                let _=departure.try_send(());
-                            }
-                            let result=match operation.as_str(){
-                                "ready" if stopping.load(Ordering::SeqCst)=>Err(error("PROXY_STOPPED")),
-                                "ready"=>timeout(Duration::from_secs(12),core.ensure()).await.map_err(|_|error("PROXY_TIMEOUT")).and_then(|r|r),
-                                "status"=>Ok(core.status()),
-                                "stop"=>{stopping.store(true,Ordering::SeqCst);core.stop().await},
-                                _=>Err(error("PROXY_IPC_FAILED"))
-                            };
-                            let response=timeout(Duration::from_secs(3),session.respond(&operation,result,&key)).await;
-                            if operation=="stop"{
-                                // Windows pipes may discard unread writes on server close. The client
-                                // drops its session after consuming the stop result; wait for that EOF.
-                                if matches!(response,Ok(Ok(()))) {let _=timeout(Duration::from_secs(1),proxy_ipc::read(&mut session.pipe)).await;}
-                                shutdown.cancel();return Ok::<(),AppError>(());
-                            }
-                            response.map_err(|_|error("PROXY_TIMEOUT"))??;
-                        }
-                    };
-                    tokio::select!{_=shutdown.cancelled()=>{},_=handling=>{}}
-                    if counted{authenticated.fetch_sub(1,Ordering::SeqCst);let _=departure.send(()).await;}
+                    // 同時接続枠は退出通知の送信まで含めて保持する。
+                    let _permit=permit;
+                    serve_client(pipe,shared).await;
                 });
             }
         }
@@ -1069,6 +1047,90 @@ pub async fn run_daemon(bootstrap: Value) -> Result<()> {
     tasks.abort_all();
     while tasks.join_next().await.is_some() {}
     Ok(())
+}
+
+/// 共有daemonの各クライアント処理が参照する状態。
+#[derive(Clone)]
+struct DaemonShared {
+    key: Arc<Secret>,
+    binding: String,
+    core: Arc<Core>,
+    shutdown: CancellationToken,
+    authenticated: Arc<AtomicUsize>,
+    departure: tokio::sync::mpsc::Sender<()>,
+    stopping: Arc<AtomicBool>,
+}
+
+/// 受け付けた1接続の認証・要求処理を行う。
+/// - 認証前の受信は3秒、ready は12秒、応答送信は3秒で打ち切る。
+/// - shutdown で取り消されるのは `handling` だけで、認証済み数の減算と退出通知は
+///   取消後も必ず実行する（アイドル判定がずれないようにするため）。
+/// - stop 要求では、応答成功時だけクライアントの EOF を最大1秒待ってから shutdown する。
+async fn serve_client(pipe: proxy_ipc::Pipe, shared: DaemonShared) {
+    let DaemonShared {
+        key,
+        binding,
+        core,
+        shutdown,
+        authenticated,
+        departure,
+        stopping,
+    } = shared;
+    let mut counted = false;
+    let handling = async {
+        let mut session = timeout(Duration::from_secs(3), Session::server(pipe, binding, &key))
+            .await
+            .map_err(|_| error("PROXY_TIMEOUT"))??;
+        loop {
+            let operation = if counted {
+                session.receive(&key).await?
+            } else {
+                timeout(Duration::from_secs(3), session.receive(&key))
+                    .await
+                    .map_err(|_| error("PROXY_TIMEOUT"))??
+            };
+            if !counted {
+                authenticated.fetch_add(1, Ordering::SeqCst);
+                counted = true;
+                // Wake the listener to disable an idle timer selected before authentication.
+                let _ = departure.try_send(());
+            }
+            let result = match operation.as_str() {
+                "ready" if stopping.load(Ordering::SeqCst) => Err(error("PROXY_STOPPED")),
+                "ready" => timeout(Duration::from_secs(12), core.ensure())
+                    .await
+                    .map_err(|_| error("PROXY_TIMEOUT"))
+                    .and_then(|r| r),
+                "status" => Ok(core.status()),
+                "stop" => {
+                    stopping.store(true, Ordering::SeqCst);
+                    core.stop().await
+                }
+                _ => Err(error("PROXY_IPC_FAILED")),
+            };
+            let response = timeout(
+                Duration::from_secs(3),
+                session.respond(&operation, result, &key),
+            )
+            .await;
+            if operation == "stop" {
+                // Windows pipes may discard unread writes on server close. The client
+                // drops its session after consuming the stop result; wait for that EOF.
+                if matches!(response, Ok(Ok(()))) {
+                    let _ =
+                        timeout(Duration::from_secs(1), proxy_ipc::read(&mut session.pipe)).await;
+                }
+                shutdown.cancel();
+                return Ok::<(), AppError>(());
+            }
+            response.map_err(|_| error("PROXY_TIMEOUT"))??;
+        }
+    };
+    tokio::select! {_=shutdown.cancelled()=>{},_=handling=>{}}
+    if counted {
+        authenticated.fetch_sub(1, Ordering::SeqCst);
+        let _ = departure.send(()).await;
+    }
 }
 
 fn daemon_idle_duration() -> Duration {

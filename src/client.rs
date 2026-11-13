@@ -56,6 +56,20 @@ pub fn configure_tls_fixture(trust_ca: bool) -> Result<()> {
 fn err(code: &str, message: &str) -> AppError {
     AppError::new(code, message)
 }
+/// API通信が完了しなかったことを示す `API_UNAVAILABLE` を作る。
+/// `failureKind` は画像アップロード（`upload_media_v2`）で種別が分かる場合だけ付け、
+/// それ以外は既定の空 details のまま返す。投稿作成の POST_UNCERTAIN 変換は
+/// この details をそのまま引き継ぐため、形を変えてはいけない。
+fn unavailable(endpoint: &str, kind: Option<&str>) -> AppError {
+    let e = err(
+        "API_UNAVAILABLE",
+        "API通信が完了しませんでした。自動再試行はしていません。",
+    );
+    match kind {
+        Some(kind) if endpoint == "upload_media_v2" => e.with_details(json!({"failureKind": kind})),
+        _ => e,
+    }
+}
 fn string(v: &Value) -> &str {
     v.as_str().unwrap_or("")
 }
@@ -322,12 +336,8 @@ impl TwitterApiClient {
         timeout: Duration,
     ) -> Result<Value> {
         let operation = async {
-            let base = url::Url::parse(&self.base).map_err(|_| {
-                err(
-                    "API_UNAVAILABLE",
-                    "API通信が完了しませんでした。自動再試行はしていません。",
-                )
-            })?;
+            // 通信先の解析失敗は upload でも failureKind を付けない（従来どおり）。
+            let base = url::Url::parse(&self.base).map_err(|_| unavailable(endpoint, None))?;
             #[cfg(not(feature = "test-fixture"))]
             let tls_fixture_endpoint = false;
             #[cfg(feature = "test-fixture")]
@@ -364,12 +374,11 @@ impl TwitterApiClient {
                     }
                 }
             }
-            let client = self.http.as_ref().map_err(|_| {
-                err(
-                    "API_UNAVAILABLE",
-                    "API通信が完了しませんでした。自動再試行はしていません。",
-                )
-            })?;
+            // HTTP クライアント構築失敗も upload で failureKind を付けない（従来どおり）。
+            let client = self
+                .http
+                .as_ref()
+                .map_err(|_| unavailable(endpoint, None))?;
             let mut req = if body.is_some() || form.is_some() {
                 client.post(url)
             } else {
@@ -382,17 +391,7 @@ impl TwitterApiClient {
             if let Some(f) = form {
                 req = req.multipart(f);
             }
-            let network = || {
-                err(
-                    "API_UNAVAILABLE",
-                    "API通信が完了しませんでした。自動再試行はしていません。",
-                )
-                .with_details(if endpoint == "upload_media_v2" {
-                    json!({"failureKind":"network"})
-                } else {
-                    json!({})
-                })
-            };
+            let network = || unavailable(endpoint, Some("network"));
             let mut response = req.send().await.map_err(|_| network())?;
             if response.status().is_redirection() {
                 return Err(network());
@@ -429,8 +428,8 @@ impl TwitterApiClient {
             Ok(v)
         };
         let result = tokio::select! { biased;
-            _=cancel.cancelled()=>Err(err("API_UNAVAILABLE","API通信が完了しませんでした。自動再試行はしていません。").with_details(if endpoint=="upload_media_v2"{json!({"failureKind":"cancelled"})}else{json!({})})),
-            r=tokio::time::timeout(timeout,operation)=>r.unwrap_or_else(|_|Err(err("API_UNAVAILABLE","API通信が完了しませんでした。自動再試行はしていません。").with_details(if endpoint=="upload_media_v2"{json!({"failureKind":"timeout"})}else{json!({})})))
+            _=cancel.cancelled()=>Err(unavailable(endpoint,Some("cancelled"))),
+            r=tokio::time::timeout(timeout,operation)=>r.unwrap_or_else(|_|Err(unavailable(endpoint,Some("timeout"))))
         };
         result.map_err(|e| {
             if endpoint == "create_tweet_v2"
@@ -895,28 +894,9 @@ impl TwitterApiClient {
         let mut attempts = 0;
         let result=async{
             let mut ids=Vec::new();
-            for image in prepared.files{
-                let deadline=Instant::now()+self.image_timeout;
-                let mut uploaded=None;
-                for attempt in 0..2{
-                    if cancel.is_cancelled(){return Err(cancelled());}
-                    let remaining=deadline.saturating_duration_since(Instant::now());
-                    if remaining.is_zero(){return Err(err("API_UNAVAILABLE","API通信が完了しませんでした。"));}
-                    let part=reqwest::multipart::Part::bytes(image.bytes.clone()).file_name(image.name).mime_str(image.mime).map_err(|_|err("INVALID_IMAGE","画像ファイルを読み込めません。"))?;
-                    let form=reqwest::multipart::Form::new().text("login_cookies",string(&a["loginCookies"]).to_owned()).text("proxy",string(&a["proxy"]).to_owned()).part("file",part);
-                    attempts+=1;
-                    match self.request(a,"upload_media_v2",None,None,Some(form),&cancel,remaining).await{
-                        Ok(v)=>{uploaded=Some(v);break;}
-                        Err(e)=>{
-                            if cancel.is_cancelled(){return Err(cancelled());}
-                            if attempt!=0 || e.code!="API_HTTP_ERROR" || !matches!(e.details["httpStatus"].as_u64(),Some(502|503|504)) || deadline.saturating_duration_since(Instant::now())<=Duration::from_millis(250){return Err(e);}
-                            tokio::select!{_=cancel.cancelled()=>return Err(cancelled()),_=tokio::time::sleep(Duration::from_millis(250))=>{}}
-                        }
-                    }
-                }
-                let uploaded=uploaded.ok_or_else(||err("UPLOAD_FAILED","画像アップロードの成功を確認できません。投稿は送信していません。"))?;
-                if uploaded["status"]!="success" || !numeric(&uploaded["media_id"]){return Err(err("UPLOAD_FAILED","画像アップロードの成功を確認できません。投稿は送信していません。"));}
-                ids.push(uploaded["media_id"].clone());
+            for image in &prepared.files{
+                // 要求回数は失敗時にも post_error が読むため、戻り値ではなく参照で数える。
+                ids.push(self.upload_image(a,image,&cancel,&mut attempts).await?);
             }
             if cancel.is_cancelled(){return Err(cancelled());}
             stage="post_creation";attempted=true;
@@ -927,6 +907,84 @@ impl TwitterApiClient {
             Ok(json!({"account":a["account"],"tweetId":v["tweet_id"],"url":format!("https://x.com/i/status/{}",string(&v["tweet_id"])),"weightedLength":prepared.weighted}))
         }.await;
         result.map_err(|e| post_error(e, stage, attempted, attempts))
+    }
+    /// 画像1枚をアップロードし、確認できた media_id を返す。
+    /// - 期限 `deadline` は画像ごとに1回だけ作り、再試行で延長しない。
+    /// - 再試行は初回が HTTP 502/503/504 で、残り時間が250msを超える場合の1回だけ。
+    ///   投稿作成はここでは扱わず、自動再試行もしない。
+    /// - `attempts` は要求を送る直前に加算する（失敗時の診断で送信回数を示すため）。
+    async fn upload_image(
+        &self,
+        a: &Value,
+        image: &Image,
+        cancel: &CancellationToken,
+        attempts: &mut usize,
+    ) -> Result<Value> {
+        let deadline = Instant::now() + self.image_timeout;
+        let mut uploaded = None;
+        for attempt in 0..2 {
+            if cancel.is_cancelled() {
+                return Err(cancelled());
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err(err("API_UNAVAILABLE", "API通信が完了しませんでした。"));
+            }
+            let part = reqwest::multipart::Part::bytes(image.bytes.clone())
+                .file_name(image.name)
+                .mime_str(image.mime)
+                .map_err(|_| err("INVALID_IMAGE", "画像ファイルを読み込めません。"))?;
+            let form = reqwest::multipart::Form::new()
+                .text("login_cookies", string(&a["loginCookies"]).to_owned())
+                .text("proxy", string(&a["proxy"]).to_owned())
+                .part("file", part);
+            *attempts += 1;
+            match self
+                .request(
+                    a,
+                    "upload_media_v2",
+                    None,
+                    None,
+                    Some(form),
+                    cancel,
+                    remaining,
+                )
+                .await
+            {
+                Ok(v) => {
+                    uploaded = Some(v);
+                    break;
+                }
+                Err(e) => {
+                    if cancel.is_cancelled() {
+                        return Err(cancelled());
+                    }
+                    if attempt != 0
+                        || e.code != "API_HTTP_ERROR"
+                        || !matches!(e.details["httpStatus"].as_u64(), Some(502 | 503 | 504))
+                        || deadline.saturating_duration_since(Instant::now())
+                            <= Duration::from_millis(250)
+                    {
+                        return Err(e);
+                    }
+                    // 待機中の取消は投稿前の中止として扱う。
+                    tokio::select! {_=cancel.cancelled()=>return Err(cancelled()),_=tokio::time::sleep(Duration::from_millis(250))=>{}}
+                }
+            }
+        }
+        let uploaded = uploaded.ok_or_else(|| {
+            err(
+                "UPLOAD_FAILED",
+                "画像アップロードの成功を確認できません。投稿は送信していません。",
+            )
+        })?;
+        if uploaded["status"] != "success" || !numeric(&uploaded["media_id"]) {
+            return Err(err(
+                "UPLOAD_FAILED",
+                "画像アップロードの成功を確認できません。投稿は送信していません。",
+            ));
+        }
+        Ok(uploaded["media_id"].clone())
     }
 }
 fn cancelled() -> AppError {

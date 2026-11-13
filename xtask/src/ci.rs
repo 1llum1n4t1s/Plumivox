@@ -34,24 +34,20 @@ fn validate_identity(values: &[String]) -> Result {
     if values.len() != 4 {
         return Err("CI成果物identityの項目数が不正です".into());
     }
-    if values[0].len() != 40
-        || !values[0]
-            .bytes()
-            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-        || values[1..3].iter().any(|v| {
-            v.is_empty()
-                || v.len() > 20
-                || v.starts_with('0')
-                || !v.bytes().all(|b| b.is_ascii_digit())
-        })
-        || !matches!(
-            values[3].as_str(),
-            "windows-x64" | "macos-arm64" | "vps-linux-x86_64" | "vps-linux-aarch64"
-        )
-    {
+    // 旧macos-universalはR2から取得だけでき、新規の保存対象ではないため、
+    // R2の資格情報を読む前にここで拒否する。
+    if values[3] == "macos-universal" {
         return Err("CI成果物identityが不正です".into());
     }
-    Ok(())
+    // 検証規則はr2::Identityを正本にする。小文字40桁のcommitと先頭0なしの正整数だけを
+    // 通すため、Step Summaryへ改行・バッククォート等を注入できない。
+    crate::r2::Identity {
+        commit: values[0].clone(),
+        run: values[1].clone(),
+        attempt: values[2].clone(),
+        target: values[3].clone(),
+    }
+    .validate()
 }
 
 fn identity() -> Result<Vec<String>> {
@@ -379,6 +375,7 @@ mod tests {
             (1, "01".into()),
             (2, "1\n```".into()),
             (3, "linux-x64".into()),
+            (3, "macos-universal".into()),
         ] {
             let mut invalid = valid.clone();
             invalid[field] = value;

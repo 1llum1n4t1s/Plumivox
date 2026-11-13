@@ -269,23 +269,6 @@ impl McpClient {
             .await
     }
 
-    pub async fn json_tool(&self, name: &str, args: Value) -> Result<Value> {
-        let response = self.call_tool(name, args).await?;
-        if let Some(value) = response.get("structuredContent") {
-            return Ok(value.clone());
-        }
-        let text = response["content"]
-            .as_array()
-            .and_then(|items| {
-                items
-                    .iter()
-                    .find(|item| item["type"] == "text")
-                    .and_then(|item| item["text"].as_str())
-            })
-            .context("MCP tool result has no JSON text")?;
-        serde_json::from_str(text).context("MCP tool text is not JSON")
-    }
-
     pub fn process_id(&self) -> Option<u32> {
         self.child.as_ref().and_then(Child::id)
     }

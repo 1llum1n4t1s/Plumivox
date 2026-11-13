@@ -13,14 +13,15 @@ const MAX_MANIFEST: usize = 16 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
-struct Identity {
-    commit: String,
-    run: String,
-    attempt: String,
-    target: String,
+pub(crate) struct Identity {
+    pub(crate) commit: String,
+    pub(crate) run: String,
+    pub(crate) attempt: String,
+    pub(crate) target: String,
 }
 impl Identity {
-    fn validate(&self) -> Result {
+    /// commit・run・attempt・targetの検証の正本。CIのStep Summaryへ書く値もこれで検証する（ci.rs）。
+    pub(crate) fn validate(&self) -> Result {
         if self.commit.len() != 40
             || !self
                 .commit
@@ -900,13 +901,45 @@ mod tests {
             handle,
         )
     }
-    fn directory(name: &str) -> std::path::PathBuf {
+    /// テスト用の一時ディレクトリ。破棄時に中身ごと削除する。
+    /// 以前は `r2-<pid>-<name>` を作って残していたため、`cargo xtask check` のたびに
+    /// 一時領域へ蓄積し（自前runnerでは消えない）、PID再利用時は create_dir が失敗していた。
+    /// 名前に時刻と連番を加えて衝突を避け、Windowsのlease等のハンドルは呼出し側の変数が
+    /// 先に破棄される（宣言の逆順）ため、削除はハンドル解放後に行われる。
+    /// ACLで削除できない場合も検証結果に影響させないよう、削除失敗は無視する。
+    struct TempRoot(std::path::PathBuf);
+    impl std::ops::Deref for TempRoot {
+        type Target = Path;
+        fn deref(&self) -> &Path {
+            &self.0
+        }
+    }
+    impl AsRef<Path> for TempRoot {
+        fn as_ref(&self) -> &Path {
+            &self.0
+        }
+    }
+    impl Drop for TempRoot {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+    fn directory(name: &str) -> TempRoot {
+        static SEQUENCE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
         let temporary = env::temp_dir();
         #[cfg(unix)]
         let temporary = fs::canonicalize(temporary).unwrap();
-        let root = temporary.join(format!("r2-{}-{name}", std::process::id()));
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let sequence = SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let root = temporary.join(format!(
+            "r2-{}-{nanos}-{sequence}-{name}",
+            std::process::id()
+        ));
         fs::create_dir(&root).unwrap();
-        root
+        TempRoot(root)
     }
     #[test]
     fn legacy_macos_upload_is_rejected_before_store_access() {
@@ -944,7 +977,8 @@ mod tests {
                 id.source(repository, "THIRD-PARTY-LICENSES.txt"),
                 repository.join("dist/THIRD-PARTY-LICENSES.txt")
             );
-            let output = directory(&format!("all-targets-{target}")).join("new");
+            let temporary = directory(&format!("all-targets-{target}"));
+            let output = temporary.join("new");
             let (store, handle) = server(vec![
                 ("200 OK", m.clone()),
                 ("200 OK", files[0].clone()),
@@ -1035,7 +1069,8 @@ mod tests {
 
     #[test]
     fn native_curl_upload_is_conditional_and_preserves_bytes() {
-        let path = directory("upload").join("binary with spaces");
+        let temporary = directory("upload");
+        let path = temporary.join("binary with spaces");
         let data = b"\0native\xff\r\n";
         fs::write(&path, data).unwrap();
         let (store, handle) = server(vec![("200 OK", vec![]), ("200 OK", data.to_vec())]);
@@ -1098,7 +1133,8 @@ mod tests {
     fn corrupted_download_never_creates_output() {
         let (id, m, _) = fixture();
         let (store, handle) = server(vec![("200 OK", m), ("200 OK", b"corruption".to_vec())]);
-        let output = directory("corrupt").join("new");
+        let temporary = directory("corrupt");
+        let output = temporary.join("new");
         assert!(transfer(&id, &store, Some(&output)).is_err());
         assert!(!output.exists());
         handle.join().unwrap();
