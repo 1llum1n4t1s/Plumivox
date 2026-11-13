@@ -17,9 +17,9 @@ jobs:
             target: windows-x64
           - os: macos-latest
             target: macos-arm64
-          - os: ubuntu-24.04
+          - os: ubuntu-26.04
             target: vps-linux-x86_64
-          - os: ubuntu-24.04-arm
+          - os: ubuntu-26.04-arm
             target: vps-linux-aarch64
     runs-on: ${{ fromJSON(startsWith(matrix.os, 'macos-') && '["self-hosted","macOS","ARM64","m3mb14"]' || format('["{0}"]', matrix.os)) }}
     # Windows配布物をSigilune（Certum SimplySignのクラウド鍵）で署名するため、署名用Secrets
@@ -121,6 +121,7 @@ jobs:
         run: sudo apt-get update
       - name: Install real SSH validation tools
         if: runner.os == 'Linux'
+        # mv --exchange（coreutils 9.5以降）をBash経路の安全確認が要求するため、24.04（9.4）ではなく26.04を使う。
         run: sudo apt-get install --yes openssh-server attr acl e2fsprogs
       - name: Run VPS installer unit, CLI, and real sshd tests
         if: runner.os == 'Linux'
