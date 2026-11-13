@@ -8,6 +8,7 @@ use std::{
     collections::BTreeMap,
     env,
     error::Error,
+    ffi::OsStr,
     fs,
     io::{BufRead, BufReader, Write},
     path::{Path, PathBuf},
@@ -377,13 +378,18 @@ fn check() -> Result {
         .join("setup/vps/install.sh")
         .to_string_lossy()
         .replace('\\', "/");
-    let mut bash = Command::new("bash");
+    // Windowsの PATH 上の `bash` は WSL の起動スタブ（配布が無いと起動できても失敗する）を指し得る。
+    // 構文検査はGit for Windowsの bash を優先し、無い環境だけ PATH の bash を使う。
+    let git_bash = Path::new("C:/Program Files/Git/bin/bash.exe");
+    let program = if cfg!(windows) && git_bash.exists() {
+        git_bash.as_os_str()
+    } else {
+        OsStr::new("bash")
+    };
+    let mut bash = Command::new(program);
     bash.args(["-n", &installer]).current_dir(root());
     match bash.status() {
         Ok(status) if status.success() => (),
-        Err(_) if cfg!(windows) => {
-            run(Command::new("C:/Program Files/Git/bin/bash.exe").args(["-n", &installer]))?
-        }
         other => return Err(format!("Bash syntax check failed: {other:?}").into()),
     }
     for file in [

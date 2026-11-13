@@ -121,7 +121,7 @@ jobs:
         run: sudo apt-get update
       - name: Install real SSH validation tools
         if: runner.os == 'Linux'
-        run: sudo apt-get install --yes openssh-server
+        run: sudo apt-get install --yes openssh-server attr acl e2fsprogs
       - name: Run VPS installer unit, CLI, and real sshd tests
         if: runner.os == 'Linux'
         run: cargo xtask ci-vps-test
