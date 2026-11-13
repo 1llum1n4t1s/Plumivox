@@ -282,7 +282,9 @@ pub fn execute(command: &str) -> Result {
             ) {
                 return Err("不正な配布対象です".into());
             }
-            // CIに個人のクラウド署名環境を持ち込まず、準備用成果物とする。
+            // ビルド（依存crateのbuild scriptを含む）には署名用Secretsを渡さないため、ここでは署名しない。
+            // Windowsはworkflowの次のstepでSigiluneが`dist/plumivox.exe`へ署名し、
+            // `ci-windows-verify-signature`で確認してから保存する。
             build(false)?;
             if target == "macos-arm64"
                 && !architecture_set(&output(
@@ -319,6 +321,15 @@ pub fn execute(command: &str) -> Result {
                 "--",
                 "--ignored",
             ])
+        }
+        // Windows配布物は、Secretsを持つ署名step（workflowからSigiluneを直接実行）で署名した後、
+        // Secretsを渡さないこのコマンドで本人の署名・タイムスタンプを確認してからR2へ保存する。
+        #[cfg(windows)]
+        "ci-windows-verify-signature" => {
+            if required("ARTIFACT_TARGET")? != "windows-x64" {
+                return Err("署名検証の対象はwindows-x64です".into());
+            }
+            crate::windows_signing::verify(&root().join("dist/plumivox.exe"))
         }
         "ci-artifact-upload" => artifact_upload(),
         #[cfg(target_os = "macos")]
