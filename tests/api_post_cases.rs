@@ -96,6 +96,8 @@ pub async fn run(h: &mut Harness) -> Result<()> {
                 ("rejection-http402", 402, json!(["credits"]), "http_status"),
             ] {
                 h.state.scenario(scenario);
+                // 通常の短い画像時間枠では、1秒待つ再試行の余地がなく1要求で止まる。
+                let uploads = 1;
                 let before = h.count();
                 let v = h
                     .fail(
@@ -110,13 +112,13 @@ pub async fn run(h: &mut Harness) -> Result<()> {
                             "code":if status==200{"API_REJECTED"}else{"API_HTTP_ERROR"},
                             "message":if status==200{"APIが処理の失敗を返しました。"}else{"APIが要求を受け付けませんでした。"},
                             "httpStatus":status,"rejectionReasons":reasons,"rejectionReasonSource":source,
-                            "stage":"image_upload","postAttempted":false,"uploadAttempts":1
+                            "stage":"image_upload","postAttempted":false,"uploadAttempts":uploads
                         }),
                     "Unexpected safe refusal metadata"
                 );
                 let requests = h.trace();
                 ensure!(
-                    h.count() == before + 1
+                    h.count() == before + uploads
                         && requests[before]["path"] == "/twitter/upload_media_v2"
                 );
             }
@@ -427,7 +429,7 @@ pub async fn run(h: &mut Harness) -> Result<()> {
         invoke(
             h,
             "upload-jsonerror",
-            1,
+            2,
             0,
             Some("API_REJECTED"),
             image.clone(),
@@ -454,6 +456,27 @@ pub async fn run(h: &mut Harness) -> Result<()> {
             .await?;
         }
         invoke(h, "upload-stream502", 2, 1, None, image.clone()).await?;
+        // プロキシ拒否は同じ画像だけ1秒待って1回再試行し、成功後に投稿を1回だけ送る。
+        invoke(h, "upload-proxyreject-recover", 2, 1, None, image.clone()).await?;
+        invoke(
+            h,
+            "upload-proxyreject-always",
+            2,
+            0,
+            Some("API_REJECTED"),
+            image.clone(),
+        )
+        .await?;
+        // 認証拒否は再試行しない。
+        invoke(
+            h,
+            "upload-authreject-always",
+            1,
+            0,
+            Some("API_REJECTED"),
+            image.clone(),
+        )
+        .await?;
         let stats = h.state.stats();
         crate::support::wait_until(Duration::from_secs(1), || {
             let s = stats.clone();
@@ -481,7 +504,9 @@ pub async fn run(h: &mut Harness) -> Result<()> {
             ("upload-timeout", "API_UNAVAILABLE"),
             ("upload-network", "API_UNAVAILABLE"),
         ] {
-            invoke(h, s, 1, 0, Some(code), image.clone()).await?;
+            // 通信切断だけは1回再試行する（待機1秒）。他は1要求で停止する。
+            let n = if s == "upload-network" { 2 } else { 1 };
+            invoke(h, s, n, 0, Some(code), image.clone()).await?;
         }
         let r = invoke(h, "upload-retry-order", 5, 1, None, json!(h.ordered)).await?;
         let mut hashes = vec![];

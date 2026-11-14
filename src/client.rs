@@ -959,16 +959,17 @@ impl TwitterApiClient {
                     if cancel.is_cancelled() {
                         return Err(cancelled());
                     }
-                    if attempt != 0
-                        || e.code != "API_HTTP_ERROR"
-                        || !matches!(e.details["httpStatus"].as_u64(), Some(502 | 503 | 504))
-                        || deadline.saturating_duration_since(Instant::now())
-                            <= Duration::from_millis(250)
-                    {
+                    // 再試行可否と待機時間は upload_retry_delay が決める。1回だけ、
+                    // かつ画像ごとの期限に待機分が残る場合に限る。
+                    let delay = match upload_retry_delay(&e) {
+                        Some(d) if attempt == 0 => d,
+                        _ => return Err(e),
+                    };
+                    if deadline.saturating_duration_since(Instant::now()) <= delay {
                         return Err(e);
                     }
                     // 待機中の取消は投稿前の中止として扱う。
-                    tokio::select! {_=cancel.cancelled()=>return Err(cancelled()),_=tokio::time::sleep(Duration::from_millis(250))=>{}}
+                    tokio::select! {_=cancel.cancelled()=>return Err(cancelled()),_=tokio::time::sleep(delay)=>{}}
                 }
             }
         }
@@ -985,6 +986,35 @@ impl TwitterApiClient {
             ));
         }
         Ok(uploaded["media_id"].clone())
+    }
+}
+/// 画像アップロード失敗のうち、同じ画像をもう一度送って良い一時的な失敗の待機時間を返す。
+/// アップロードは投稿を作らず副作用が孤立メディアに限られるため再試行できる。
+/// - HTTP 502/503/504: 250ms（従来どおり）。
+/// - 住宅プロキシ・上流の一時障害や、原因不明のJSON拒否（status=error）、
+///   通信切断（network）: 1秒。プロキシ経路の切替わりを待つため長めにする。
+/// 認証・残高・メディア不正・重複・レート制限など、再送しても直らない拒否は対象外。
+/// タイムアウトは期限を使い切っているため対象外。
+fn upload_retry_delay(e: &AppError) -> Option<Duration> {
+    match e.code.as_str() {
+        "API_HTTP_ERROR" => matches!(e.details["httpStatus"].as_u64(), Some(502 | 503 | 504))
+            .then_some(Duration::from_millis(250)),
+        "API_REJECTED" => {
+            let reasons = e.details["rejectionReasons"].as_array()?;
+            reasons
+                .iter()
+                .all(|r| {
+                    matches!(
+                        r.as_str(),
+                        Some("proxy" | "upstream_timeout" | "upstream_unavailable" | "unknown")
+                    )
+                })
+                .then_some(Duration::from_secs(1))
+        }
+        "API_UNAVAILABLE" => {
+            (e.details["failureKind"] == "network").then_some(Duration::from_secs(1))
+        }
+        _ => None,
     }
 }
 fn cancelled() -> AppError {

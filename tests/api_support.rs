@@ -361,6 +361,17 @@ pub async fn handle(state: Arc<State>, req: HttpRequest) -> io::Result<HttpRespo
                     },
                 ));
             }
+            "upload-proxyreject-recover" | "upload-proxyreject-always" => {
+                if scenario == "upload-proxyreject-recover" && attempt > 1 {
+                    return send(json!({"status":"success","media_id":"700"}));
+                }
+                return send(
+                    json!({"status":"error","message":"ProxyError: failed to connect to proxy"}),
+                );
+            }
+            "upload-authreject-always" => {
+                return send(json!({"status":"error","message":"Invalid login cookies"}));
+            }
             "upload-jsonerror" => return send(json!({"status":"error","message":COOKIE})),
             "upload-html" => return Ok(support::raw_response(200, COOKIE.as_bytes().to_vec())),
             "upload-missing-id" => return send(json!({"status":"success"})),
