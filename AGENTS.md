@@ -10,7 +10,7 @@
 
 - 利用者向けの導入・操作・取得範囲は [README.md](README.md)、現在の構造と設計判断は [DESIGN.md](DESIGN.md) を参照する。
 - 初期設定は [docs/setup.md](docs/setup.md)、設定と保存形式は [docs/configuration.md](docs/configuration.md)、管理プロキシの設定・運用は [docs/managed-proxy.md](docs/managed-proxy.md)、失敗条件とE2Eの検証方針は [docs/verification.md](docs/verification.md) を参照し、変更した挙動に対応する説明を更新する。
-- 本体実装は`src/*.rs`、ツール定義は`src/tool-definitions.json`、開発用コマンドは`xtask/`、MCP経由のRust検証は`tests/`。配布物はWindows x64の`dist/plumivox.exe`とmacOS ARM64の`dist/plumivox`。開発・検証にもNode.jsやnpmパッケージを要求しない。
+- 本体実装は`src/*.rs`、ツール定義は`src/tool-definitions.json`、開発用コマンドは`xtask/`、MCP経由のRust検証は`tests/`。配布物はWindows x64の`dist/plumivox.exe`とmacOS ARM64の`dist/plumivox`。開発・検証にもNode.jsやnpmパッケージを要求しない。`xtask/`と`tests/`が起動する子プロセスは、Windowsでコンソール窓を出さない（`CREATE_NO_WINDOW`。xtaskは`quiet()`経由）。新しい子プロセス起動にも同じ扱いを適用する。
 
 ## 必須コマンドと検証
 
