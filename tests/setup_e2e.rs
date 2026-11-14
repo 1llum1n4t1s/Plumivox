@@ -37,6 +37,9 @@ async fn execute(
 ) -> Result<std::process::Output> {
     let mut command = tokio::process::Command::new(program);
     clean(&mut command);
+    // テストの子プロセスごとにコンソール窓が点滅しないようにする。
+    #[cfg(windows)]
+    command.creation_flags(0x0800_0000);
     command.args(args).envs(env.iter().cloned());
     Ok(tokio::time::timeout(Duration::from_secs(35), command.output()).await??)
 }

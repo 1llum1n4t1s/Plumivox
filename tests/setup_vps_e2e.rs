@@ -14,6 +14,9 @@ fn posix(path: &Path) -> String {
 async fn bash(program: &str, args: &[String], bin: &Path) -> Result<std::process::Output> {
     let mut command = tokio::process::Command::new(program);
     command.args(args).stdin(Stdio::null());
+    // テストの子プロセスごとにコンソール窓が点滅しないようにする。
+    #[cfg(windows)]
+    command.creation_flags(0x0800_0000);
     let paths = std::iter::once(bin.to_path_buf())
         .chain(std::env::split_paths(
             &std::env::var_os("PATH").unwrap_or_default(),

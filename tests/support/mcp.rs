@@ -103,6 +103,9 @@ impl McpClient {
         environment: &[(String, String)],
     ) -> Result<Self> {
         let mut command = Command::new(executable);
+        // テストの子プロセスごとにコンソール窓が点滅しないようにする。
+        #[cfg(windows)]
+        command.creation_flags(0x0800_0000);
         command
             .args(args)
             .stdin(Stdio::piped())

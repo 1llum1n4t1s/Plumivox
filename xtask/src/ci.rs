@@ -13,7 +13,9 @@ fn required(name: &str) -> Result<String> {
 }
 
 fn output(program: &str, args: &[&str]) -> Result<Vec<u8>> {
-    let result = Command::new(program).args(args).output()?;
+    let result = crate::quiet(&mut Command::new(program))
+        .args(args)
+        .output()?;
     if !result.status.success() {
         // security等の生エラーに資格情報を含めない。
         return Err(format!("CIコマンドが失敗しました: {program}").into());

@@ -25,8 +25,18 @@ fn root() -> PathBuf {
 fn cargo() -> String {
     env::var("CARGO").unwrap_or_else(|_| "cargo".into())
 }
+/// Windowsでは子プロセスのコンソール窓（CREATE_NO_WINDOW）を作らせない。
+/// 署名やビルドの子プロセスが連続して窓を点滅させるのを防ぐ。標準入出力は継承される。
+fn quiet(command: &mut Command) -> &mut Command {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x0800_0000);
+    }
+    command
+}
 fn run(command: &mut Command) -> Result {
-    let status = command.current_dir(root()).status()?;
+    let status = quiet(command).current_dir(root()).status()?;
     if !status.success() {
         return Err(format!("Command failed: {command:?} ({status})").into());
     }
@@ -135,6 +145,7 @@ fn cargo_build_package(
         .current_dir(root())
         .args(["metadata", "--locked", "--no-deps", "--format-version", "1"])
         .stderr(Stdio::inherit());
+    quiet(&mut metadata_command);
     let metadata = metadata_command.output()?;
     if !metadata.status.success() {
         return Err(format!("Command failed: {metadata_command:?} ({})", metadata.status).into());
@@ -161,6 +172,7 @@ fn cargo_build_package(
         .arg("--message-format=json-render-diagnostics")
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit());
+    quiet(&mut command);
     let mut child = command.spawn()?;
     let parsed = read_build_messages(
         BufReader::new(child.stdout.take().unwrap()),
@@ -388,7 +400,7 @@ fn check() -> Result {
     };
     let mut bash = Command::new(program);
     bash.args(["-n", &installer]).current_dir(root());
-    match bash.status() {
+    match quiet(&mut bash).status() {
         Ok(status) if status.success() => (),
         other => return Err(format!("Bash syntax check failed: {other:?}").into()),
     }
@@ -436,7 +448,7 @@ fn normalize_license_newlines(text: &str) -> String {
 }
 
 fn licenses() -> Result {
-    let output = Command::new(cargo())
+    let output = quiet(&mut Command::new(cargo()))
         .args(["metadata", "--locked", "--format-version", "1"])
         .current_dir(root())
         .stderr(Stdio::inherit())
