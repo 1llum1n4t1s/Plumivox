@@ -574,6 +574,12 @@ fn terminal_fixture() -> Result<()> {
         "Cannot protect dedicated fixture from its synthetic control event"
     );
     let _ctrl_handler = FixtureCtrlHandler;
+    // 起動元（CIのrunnerなど）がCtrl+Cの無視を設定していると、その状態は子プロセスへ継承され、
+    // GenerateConsoleCtrlEventが本体のhandlerへ届かない。通常のCtrl+C処理へ戻してから子を起動する。
+    ensure!(
+        unsafe { SetConsoleCtrlHandler(None, 0) } != 0,
+        "Cannot restore normal Ctrl+C processing for the setup child"
+    );
     let original_code_page = unsafe { GetConsoleOutputCP() };
     ensure!(
         original_code_page != 0,
