@@ -135,7 +135,7 @@ jobs:
       - name: Set up Sigilune
         id: sigilune
         if: runner.os == 'Windows'
-        uses: 1llum1n4t1s/Sigilune@v1
+        uses: 1llum1n4t1s/Sigilune@c12f5c92398c3648cf19651f5b80796efdfdd06a # v1.1.2
       - name: Sign Windows distribution executable
         # 署名用Secretsはこのstepだけへ渡す。Cargo（依存crateのbuild script）を動かさないよう、
         # xtaskを経由せずSigiluneを直接実行する。失敗時は自動再試行せず、R2へ保存しない。
