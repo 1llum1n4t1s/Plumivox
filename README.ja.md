@@ -1,0 +1,179 @@
+[English](README.md) | [日本語](README.ja.md) | [简体中文](README.zh-CN.md) | [繁體中文](README.zh-TW.md) | [한국어](README.ko.md) | [Español](README.es.md) | [Français](README.fr.md) | [Deutsch](README.de.md) | [Português (Brasil)](README.pt-BR.md)
+
+# Plumivox
+
+TwitterAPI.ioを使い、Xへの投稿、キーワード・期間検索、フォロー先の公開投稿の読み込みを提供するローカルMCPサーバー／Codexプラグインです。
+
+## 必要なもの
+
+- Windows x64またはApple Silicon Mac（macOS ARM64）。MCP本体はRust製のネイティブ実行ファイルで、Node.jsやRustのインストールは不要です。
+- Windows・macOSの初期設定は同梱の実行ファイルを使います。PowerShell 7 (`pwsh`) は不要です。
+- TwitterAPI.ioのAPIキー。API利用には同サービスの従量課金が発生します。
+- 投稿には対象アカウントのv2ログインCookieとプロキシ。既存の外部プロキシに加え、Windows・macOSではPlumivox内の住宅回線出口とSSH中継を複数チャットで共有できます。公開中継サーバーの初回準備は必要です。
+
+## インストール
+
+### Windows: Setupで導入する（推奨）
+
+1. [PlumivoxApp-win-Setup.exe](https://plumivox-updates.kagayoi.com/velopack/PlumivoxApp-win-Setup.exe)をダウンロードして実行します。利用者単位の導入で、管理者権限は不要です。Setupは本人のコード署名（`Open Source Developer Yuichiro Shinozaki`）付きです。
+2. `%LOCALAPPDATA%\PlumivoxApp\current\plumivox.exe`に導入され、PATH上に`claude`・`codex`のCLIがあれば、Claude Code（利用者単位）とCodexへMCPサーバー`plumivox`（引数`--stdio`）を自動で登録します。CLIが見つからなかった場合は、後でCLIを入れてから次のログオンかスタートメニューのPlumivoxを起動すると登録します。
+3. 導入直後の画面の案内に従い、ターミナルで`"%LOCALAPPDATA%\PlumivoxApp\current\plumivox.exe" --setup`を実行して[初期設定](#初期設定)を行います。Claude Code・Codexは新しいセッションから使えます。
+
+更新は自動です。MCPの起動中に新しい版をR2（`https://plumivox-updates.kagayoi.com/velopack/`）から取得し、パソコンへのログオン時に、Plumivox（MCP・共有中継）が動いていないときだけ適用します。動いていれば次のログオンへ回し、強制終了しません。適用前に署名者を確かめ、違えば適用しません。自動更新を止めるには`%LOCALAPPDATA%\Kagayoi\Plumivox\app-update\app-update.json`を`{"auto_update": false}`にします。動作の記録は同じフォルダーの`app-update.log`にあります。
+
+アンインストールは「設定」→「アプリ」の一覧からPlumivoxを選びます。自分を指すClaude Code・Codexの`plumivox`登録とログオン時の更新の登録だけを外し、設定・セッションのデータフォルダー（`%LOCALAPPDATA%\Kagayoi\Plumivox`）は残します。登録だけを先に外す場合は`plumivox.exe --uninstall-setup`で予定を確認し、`--uninstall-setup --apply`で実行します。
+
+プラグイン（下記）から移る場合: Setupは旧プラグインの`dist`などを指す同名の`plumivox`登録を、導入先を指す登録へ置き換えます。プラグイン自体が持つMCP（`plumivox@plumivox-local`）は別の登録なので、Plumivoxが2経路で起動しないよう、無効にするかプラグインを外してください。Codexでは[Toolportの節](#toolport経由で使う場合)と同じ`enabled = false`を追加する（またはプラグインを外す）、Claude Codeでは`/plugin`からプラグインを無効化または削除します。Codexは同名の登録をプラグインのMCPより優先するため、Setupの登録がある間は1つしか起動しないはずですが、Claude Codeでは両方が起動し得ます。SetupはCodex・Claude Codeの設定を書き換えず、プラグインが有効なままなら警告だけを出します（Plumivoxを起動したときの案内、`app-update.log`、`app-update\setup-registration.json`の`legacyPlugins`）。Toolportの登録も自動では書き換えないので、Toolportを使う場合は[Toolportの節](#toolport経由で使う場合)を見て自分で確認してください。
+
+### プラグインで導入する（macOS・従来の方法）
+
+macOS（Apple Silicon）はSetupの配信を始めるまでこの方法を使います。Windowsでも引き続き使えます。
+
+GitHubリポジトリの `main` の最新コミットからインストールします。利用者の開発用クローンは参照せず、タグ・コミットSHAには固定しません。
+
+```powershell
+codex plugin marketplace add https://github.com/1llum1n4t1s/Plumivox.git --ref main
+codex plugin add plumivox@plumivox-local
+```
+
+`plumivox-local` はマーケットプレイスの識別子です。取得元は上記のGitHub URLです。Windows x64用の`dist/plumivox.exe`とApple Silicon Mac用の`dist/plumivox`（ARM64）を同梱しているため、利用者による依存インストールやMCP設定の手動追加は不要です。
+
+開発用CIではWindows・macOSで検証した成果物をCloudflare R2へ保存し、配布準備時に受け渡します。[成果物の保存・取得手順](docs/distribution.md)は開発者向けです。プラグイン利用者にR2の設定や資格情報は不要で、インストール・更新は引き続きGitHubの`main`から行います。
+
+更新するときは `main` の最新状態を取得してインストールし、Codexを再起動して読み込みます。
+
+```powershell
+codex plugin marketplace upgrade plumivox-local
+codex plugin list --marketplace plumivox-local --json
+```
+
+一覧の`installed`に表示される版番号を確認します。導入済みのプラグインは更新後に再度`add`せず、Codexを再起動して新しいMCPとスキルを読み込みます。
+
+GitHubを追跡する登録・更新方法は[Codexのプラグイン資料](https://developers.openai.com/plugins/build/plugins#add-a-marketplace-from-the-cli)を参照してください。
+
+### Toolport経由で使う場合
+
+MCPだけをToolportへ登録できます。PlumivoxはToolportの登録を自動では書き換えないため、導入方法に合わせて次のstdioサーバーを追加・変更します。開発用クローンや版番号付きのインストールキャッシュは指定しません。
+
+- 名前: `plumivox`
+- コマンド: WindowsのSetup版は`%LOCALAPPDATA%\PlumivoxApp\current\plumivox.exe`（`%LOCALAPPDATA%`は実際のパスへ展開して指定。`current`は更新で中身が入れ替わってもパスが変わりません）。プラグイン版は`codex plugin marketplace list`で`plumivox-local`の取得済みルートを確認し、Windowsは`<取得済みルート>/dist/plumivox.exe`、macOSは`<取得済みルート>/dist/plumivox`
+- 引数: `--stdio`
+- 作業ディレクトリ: 利用者のホームディレクトリ
+- 要求タイムアウト: 300000ミリ秒（ログインや中継の準備時間を含む）
+
+ToolportでCodexが利用するプロファイルに有効化し、`toolport_search_tools`の`server="plumivox"`で11ツールを確認します。`list_accounts`を検索・呼出しし、設定が読み込めてから直接接続を無効にします。Setup版は`codex mcp remove plumivox`と`claude mcp remove plumivox --scope user`で直接の登録を外します（一度登録を済ませた後は、Setupで入れ直すまで自動では登録し直しません）。プラグイン版はCodexのユーザー設定`config.toml`へ次を追加し、プラグイン本体は有効なままにして設定用スキルを残します。
+
+```toml
+[plugins."plumivox@plumivox-local".mcp_servers.plumivox]
+enabled = false
+```
+
+Codexを再起動すると直接接続が無効になります。以後の操作はToolportでツールを検索し、返された実ツール名を`toolport_call_tool`へ渡します。APIキー・Cookie・SSH鍵はPlumivoxの既存設定から読み込み、Toolportの引数へ移しません。
+
+プラグイン版の更新は上記の`codex plugin marketplace upgrade plumivox-local`で行います。Toolportが実行中のサーバーは読込み済みコードを使うため、更新後にToolportの`plumivox`を無効化・再有効化して、新しい実行ファイルを読み込みます。取得済みルートが変わった場合は登録したコマンドも変更してください。起動時のGit取得や依存インストールは行いません。
+
+## 初期設定
+
+初めて使う場合は[セットアップ手順](docs/setup.md)に進んでください。Windows・macOSのネイティブ設定ウィザードと、Linux x86_64・aarch64向けの静的Rust VPSインストーラーを同梱します。他CPUにはBash互換経路を残しています。Codexへ「Plumivoxをセットアップして」と依頼すると、同梱の`setup-plumivox`スキルでも案内できます。
+
+設定ファイルはリポジトリ外へ置きます。新規利用者はWindowsでは`%LOCALAPPDATA%\Kagayoi\Plumivox\settings.json`、macOSでは`~/Library/Application Support/Kagayoi/Plumivox/settings.json`を使います。既存の`~/dev/Secret/secrets.json`がある利用者は、そのファイルの`twitterapi_io`を読みます。vava／blblの`release_posting`と`blog_posting`も維持します。別の場所を使う場合は`PLUMIVOX_SECRETS_FILE`を指定します。秘密値を会話やMCPの引数へ渡す必要はありません。
+
+選択された設定ファイルを読み込めない場合は、別の設定へ切り替えずエラーになります。保存先を変更した場合はCodexを再起動してください。初回セットアップは既存の鍵・同名アカウント・共有中継設定を上書きしません。既存設定の変更方法は[セットアップ手順](docs/setup.md)を参照してください。
+
+[初めてのセットアップ](docs/setup.md) · [アカウントとCookieの設定](docs/configuration.md) · [Plumivoxでプロキシを管理する](docs/managed-proxy.md)
+
+## 使えるツール
+
+| ツール | 内容 |
+| --- | --- |
+| `list_accounts` | アカウント名と読取・投稿の準備状態。外部通信なし |
+| `login_account` | 保存Cookieを再利用、未作成なら設定済み資格情報でログインして暗号化保存 |
+| `refresh_session` | 明示的に再ログインし、投稿用セッションを更新 |
+| `get_my_posts` | 自分のプロフィール投稿。返信の有無とページングを指定可能 |
+| `get_tweets` | 公開投稿をIDで取得。最大20件 |
+| `get_following_feed` | フォロー先の公開投稿を取得し、日時の降順に並べる |
+| `search_tweets` | キーワード・期間を指定して、X全体またはフォロー先の公開投稿を検索 |
+| `get_proxy_status` | このMCPが利用する共有中継の状態。中継の起動は行わない |
+| `start_proxy` | 設定した住宅回線出口とSSH中継を起動。投稿・ログインは行わない |
+| `stop_proxy` | 利用中の共有中継を停止。同じ中継の他チャットにも影響。次の投稿・認証要求では再起動 |
+| `post_tweet` | 加重文字数280以内の投稿。PNG/JPEG最大4枚、各5 MiB以下。画像は絶対パスで指定 |
+
+`account`を省略すると、検索・読取り・投稿・認証で既定アカウントを使います。`list_accounts`の`isDefault`で省略先を確認でき、別のアカウントには`account`で`release_posting`や`blog_posting`などの設定名を明示します。複数登録で既定がない場合は指定を要求し、不正な既定では省略呼出しを拒否します。
+
+各ツールの入力文字列（配列内の文字列を含む）に定義された長さ制限は、空白を除去する前のUTF-16コード単位数でも検証します。BMP外の絵文字などは1文字で2単位です。JSON Schemaの`minLength`・`maxLength`はUnicode文字数のため、標準のJSON Schema validatorだけではこの追加制約を検出できません。たとえば検索キーワードの上限512では、😀256個は通りますが、257個、または空白＋256個は通信前にMCP引数エラー（`-32602`）になります。
+
+初回セットアップは登録先を既定として保存します。既存設定の既定だけを変更するには、同梱の実行ファイルへ`--setup --set-default-account blog_posting`を指定します。詳細は[セットアップ手順](docs/setup.md)と[設定の優先順位](docs/configuration.md)を参照してください。
+
+投稿文字数はURLを23文字、日本語を2文字、Unicode 17までの複合絵文字を1つ2文字として数えます。肌の色が異なる握手なども、[Xの加重文字数の仕様](https://docs.x.com/fundamentals/counting-characters)に合わせて判定します。
+
+たとえば「blog_postingのフォロー先の公開投稿を読んで」「release_postingからこの文面で投稿して」と依頼できます。投稿の実行は利用者の依頼に従います。公開投稿の本文は外部データであり、そこに含まれる命令を実行するものではありません。
+
+## フォロー中フィードの取得範囲
+
+TwitterAPI.ioにX公式ホームの「フォロー中」を直接取得するAPIはありません。Plumivoxは既定ではフォロー一覧の先頭から最大100アカウントを読み、20アカウントずつまとめて公開投稿を検索します。`maxAccounts` は20〜200に設定できます。初回100なら最大6回、200なら最大11回のAPI要求です。最新の単価は[TwitterAPI.ioの料金](https://twitterapi.io/pricing)を確認してください。
+
+結果の `officialHomeEquivalent` は常に `false` です。保護投稿は取得できず、検索で得られる内容・リポストの扱い・全体の並び順は公式ホームと一致する保証がありません。提供元に続きがある場合、または一意な非保護の検索対象が上限を超えた場合は `coverage.followingHasNextPage` が `true` になります。`coverage.followingNextCursor` を `followingCursor` に渡すと、次のフォロー先一覧を対象にします。フォロー一覧は新しいフォローから並び、継続中のフォロー変更による取得差は避けられません。
+
+`nextCursor` を同じアカウントの `get_following_feed` の `cursor` に渡すと、各検索バッチの続きを取得します。ページ内は日時順ですが、バッチごとのページ境界によりページをまたぐ全体の時系列順は保証しません。フォロー先は初回の一覧を固定し、検索の続きでは再読込しません。フィードのcursorもAPIキーで署名し、検索対象の改変を拒否します。旧版の署名なしcursorや、APIキー変更前のcursorは使用できないため、cursorを外して取り直してください。`cursor` と `followingCursor` は別のページ送りで、同時に指定できません。
+
+[フォロー一覧の公式応答仕様](https://docs.twitterapi.io/api-reference/endpoint/get_user_followings)では保護状態のフィールドを確認できません。同じフォロー一覧の応答内では、有効なユーザー名を大文字小文字を区別せずに集約し、保護・公開・不明の順で判定します。保護と判明した対象を除いた初出順で上限まで選び、選択した対象のうち判定できない数を `coverage.protectionStatusUnknownAccounts` に返します。`protectedAccountsExcluded` は、その応答内で保護と判明した一意なアカウント数です。重複・無効なユーザー名は数えず、取得対象の上限外の保護アカウントも含めるため、`maxAccounts` を超える場合があります。0でも全対象が公開アカウントとは限りません。
+
+旧実装が発行した署名済みcursorの続きは、検索対象・件数に加え、未検索範囲・継続可否も旧実装の判定を引き継ぐため、上限外の対象を飛ばす可能性があります。新しい保護状態の集約・件数計算・継続判定で確実に再取得するには、cursorを外してください。
+
+投稿やフォロー一覧に続きがあっても、提供元cursorや組み合わせたcursorが長さ上限を超える場合は継続できません。取得済み投稿と `hasNextPage` は保持し、`nextCursor` は `null`、`coverage.tweetContinuationAvailable` は `false`、`tweetContinuationUnavailableReason` は `cursor_too_long` となります。フォロー一覧では `followingNextCursor` と `followingContinuationAvailable`・`followingContinuationUnavailableReason` を確認してください。cursorは切り詰めず、取得済み内容を失敗として捨てません。
+
+提供元が1回の応答で `maxAccounts` を超える一意な非保護対象を返した場合は、上限外の対象が未検索です。`followingHasNextPage` は `true`、`followingContinuationUnavailableReason` は `account_limit` となり、フォロー一覧の継続は提供しません（`followingContinuationAvailable: false`、`followingNextCursor: null`）。提供元の次cursorで未検索対象を飛ばすことを防ぐためです。`maxAccounts` が200未満なら、200までの範囲で上限を増やし、cursorなしで再取得できます。上限200でも提供元が過剰返却する場合は、その応答の未検索対象をこの方法では取得できません。同名の重複行や保護・無効名だけで上限を超えても、この制限には該当しません。選択済み対象の投稿の続きは通常どおり取得でき、未検索対象がある状態も引き継ぎます。
+
+## キーワード・期間の検索
+
+「X全体で10月1日から7日までの音声認識の投稿を検索して」「blog_postingのフォロー先から同じ条件で検索して」と依頼できます。検索はAPI側で絞り込み、投稿の本文・作者・日時・URLを返します。意味検索は行いません。
+
+`search_tweets` の `scope` は `all`（既定、X全体の公開検索）または `following`（指定アカウントのフォロー先）。`keyword` は必須で、前後の空白を除いた語句をフレーズとして検索します。`OR` や `from:` を含めても検索演算子として扱いません。引用符・バックスラッシュ・制御文字を含む語句は拒否します。
+
+`startTime` と `endTime` は省略可能な、タイムゾーン付きISO 8601の秒単位の日時です。開始を含み、終了を含まない期間を検索します。日付だけでは指定せず、Codexが依頼した日付とタイムゾーンから日時へ変換します。たとえば日本時間の10月1日から7日までなら、次の条件です。
+
+```json
+{
+  "account": "blog_posting",
+  "scope": "all",
+  "keyword": "音声認識",
+  "startTime": "2026-10-01T00:00:00+09:00",
+  "endTime": "2026-10-08T00:00:00+09:00"
+}
+```
+
+検索は新しい投稿から取得します。`nextCursor` を次の呼出しの `cursor` に渡すと、同じ条件で続きを取得できます。アカウント・対象・キーワード・期間・フォロー先の上限を変える場合は、cursorを外して新しい検索を始めます。APIキーを変えた場合も既存の検索cursorは使用できません。
+
+`following` は `maxAccounts`（20〜200、既定100）と `followingCursor` を使えます。`coverage.followingNextCursor` を渡すと次のフォロー先一覧を同じ条件で検索します。投稿検索の `cursor` と同時には指定できません。`all` ではこの2引数を指定しません。既存の `get_following_feed` と検索のcursorは相互に使用できません。旧署名なしフィードcursorを内包した旧版のフォロー先検索cursorも使えないため、cursorを外して再検索してください。
+
+X全体検索は1ページにつき1回、フォロー先検索は既存フィードと同じ最大6回（100人）／11回（200人）のAPI要求です。保護投稿や検索期間内の全投稿の網羅は保証せず、取得範囲は `coverage` に返します。期間の演算子は[TwitterAPI.ioの説明](https://twitterapi.io/blog/search-a-tweet)に従ってUTCへ変換します。
+
+## 投稿と認証に失敗した場合
+
+成功時は投稿IDとXのURLを返します。投稿作成の通信失敗や投稿ID欠落は未確定として返し、自動で再送しません。同じ文面を改めて投稿するよう依頼した場合は、各呼び出しで一回送信します。履歴・本文ハッシュを理由に停止する仕組みはありません。
+
+通常のAPI要求は45秒、画像アップロードは1画像あたり120秒が既定の通信時間枠です。画像アップロードだけは、一時的な失敗に限り同じ画像を最大1回再試行します。対象はHTTP 502・503・504（250ms待機）と、プロキシ・上流の障害や原因不明のJSON拒否、通信切断（1秒待機）で、認証・残高・画像不正・重複・レート制限・タイムアウトは再試行しません。待機と再試行は1画像の通信時間枠内に収め、前の画像の再送や投稿作成・ログインの自動再送は行いません。画像の失敗では投稿を送信せず、投稿作成後に成否が不明になった場合は `POST_UNCERTAIN` を返します。
+
+既知の投稿処理エラーには `stage`（`input_validation`・`pre_send`・`image_upload`・`post_creation`）、投稿作成要求を試みたかを示す `postAttempted`、実行した画像アップロード要求の総数 `uploadAttempts` を含めます。アカウント・Cookie不足や中継準備の失敗は `pre_send` です。未知の内部エラーとMCP入力形式の拒否ではこれらを返しません。`postAttempted: true` は投稿成功を意味しません。提供元の生エラーや資格情報は返しません。
+
+画像通信の `API_UNAVAILABLE` には `failureKind` を含め、`timeout`（時間切れ）・`network`（通信障害）・`cancelled`（取消）を区別します。これらの場合も画像や投稿を自動再送しません。
+
+APIの拒否エラー（`API_REJECTED`・`API_HTTP_ERROR`）には `httpStatus`、固定分類の配列 `rejectionReasons`、分類元 `rejectionReasonSource` を含めます。投稿作成の5xxが `POST_UNCERTAIN` になる場合にも、この診断情報を保持します。分類元は `provider_message`（提供元のJSONメッセージから推定した候補）または `http_status`（HTTPステータスからの分類）です。候補は原因の確定や再送の許可を意味せず、判別できない文面は `unknown` とします。生の応答文・任意のエラーコード・request IDは返さず、保存もしません。
+
+`provider_message` の候補は `api_key`・`authentication`・`account_locked`・`account_suspended`・`rate_limit`・`credits`・`proxy`・`media`・`duplicate`・`upstream_timeout`・`upstream_unavailable`・`unknown` です。`http_status` にはさらに `invalid_request`（400）・`unauthorized`（401）・`forbidden`（403）・`endpoint_not_found`（404）があります。たとえば画像アップロード時の `rejectionReasons: ["proxy", "upstream_timeout"]` と `postAttempted: false` なら、プロキシ・上流タイムアウトが疑われ、投稿作成前に止まったことが分かります。非2xxの本文は読まず、既存の通信上限・再試行条件を維持します。
+
+API応答が10MiBを超えた場合は受信を打ち切って失敗を返します。投稿の応答で上限を超えた場合も、投稿済みの可能性があるため再送しません。
+
+保存Cookieの照合失敗は投稿だけを止めます。公開投稿の読み込み・検索はAPIキーとユーザー名だけを使い、保存Cookieを読み込まずに利用できます。認証済みCookieの取得・更新は[設定手順](docs/configuration.md)を参照してください。
+
+`login_account` は保存Cookieが利用できる形式なら再利用し、X上での有効性を検証したとは報告しません。失効や設定不一致が確認された場合は `refresh_session` を呼びます。新しいCookieはPlumivoxの保存先へWindowsではDPAPI、macOSではKeychainの鍵で暗号化して保存し、失敗した投稿を自動再送しません。
+
+保存の置換前に中止した場合は `AUTH_CANCELLED`、認証更新の排他を維持できない場合は `AUTH_LOCK_LOST`、保存できないCookieは `LOGIN_FAILED` で返します。保存の置換を指示した後に結果を確認できない場合は `AUTH_SAVE_UNCERTAIN` となり、更新済みの可能性があります。`SESSION_STORAGE_UNAVAILABLE` は保存先や、WindowsのDPAPI・macOSのKeychainなどの保存処理の失敗を表します。
+
+## 開発・検証
+
+開発・ビルド・テストにもNode.jsは不要です。Rust/Cargoの`cargo xtask build`、`cargo xtask check`、`cargo xtask test-e2e`を使います。旧Nodeランチャーを指定した登録は、上記のネイティブ起動へ変更してください。
+
+Windowsの`cargo xtask build`はSigilune（Certum SimplySignのクラウド署名）での署名・署名検証後に`dist/plumivox.exe`を更新します。配布CIもWindows成果物をSigiluneで署名してから保存します。署名に必要な開発端末の設定とCIのSecretsは[配布成果物](docs/distribution.md#windows配布物のコード署名)を参照してください。WindowsのSetupは`cargo xtask velopack-pack`で梱包し、`cargo xtask test-setup-velopack-e2e`で本物の導入に触れずに隔離検証します。配信は手動起動の`release-velopack.yml`だけが行います（[Setup（Velopack）の配信](docs/distribution.md#setupvelopackの配信)）。
+
+[開発者向けのビルド・検証手順](docs/verification.md)、[作業規約](AGENTS.md)、[システム設計](DESIGN.md)を参照してください。
