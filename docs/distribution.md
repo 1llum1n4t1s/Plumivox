@@ -12,13 +12,18 @@
 | Variable | `PLUMIVOX_R2_BUCKET` | バケット名 |
 | Secret | `PLUMIVOX_R2_ACCESS_KEY_ID` | R2アクセスキーID |
 | Secret | `PLUMIVOX_R2_SECRET_ACCESS_KEY` | R2シークレットアクセスキー |
-| Environment `release`のSecret | `SIGILUNE_EMAIL`・`SIGILUNE_TOTP_URI` | Windows署名用のCertumアカウントとTOTP登録URI（承認者なし・`main`限定のEnvironmentに置く） |
+| Environment `release`のSecret | `SIGILUNE_EMAIL`・`SIGILUNE_TOTP_URI` | Windows署名用のCertumアカウントとTOTP登録URI（承認者なし・`release/*`限定のEnvironmentに置く） |
 
 キーをリポジトリ、コマンド引数、ログへ書かないでください。CIでは資格情報の実値をアップロードstepにだけ渡します。ビルド開始前はVariablesの形式とSecretsが設定済みかという真偽だけを確認し、実際の認証・権限はアップロード時に検証します。取得専用の端末には、同じバケットに限定したObject Read権限の別キーを推奨します。
 
 ## CIで保存する
 
-GitHub Actionsの「Build distribution artifacts」を既定ブランチから手動実行します。元リポジトリ`1llum1n4t1s/Plumivox`の既定ブランチだけが対象で、PRやforkからR2へ書き込みません。CIは固定Git URLから対象のcommit SHAを取得・照合し、WindowsとmacOSの各runnerでRust/Cargo 1.100.0を使って次を実行します。Node製Actionは使いません（Windowsの署名に使うSigiluneのactionはPowerShellのcomposite actionです）。ジョブは`main`限定のEnvironment `release`で実行し、承認待ちはありません。
+GitHub Actionsの「Distribution」（`distribution.yml`）は、`release/<版>`ブランチへのpush（同じブランチでの手動再実行を含む）で起動します。元リポジトリ`1llum1n4t1s/Plumivox`だけが対象で、PRやforkからR2へ書き込みません。`release/<版>`のpushは公開操作なので、`vava`（版の更新・公開の依頼）でだけ行います。ワークフローは3つのjobで構成します。
+- `unix`：macOS（自前runner）とLinux x86_64・aarch64。Environmentを付けず、署名用Secretsは届きません。
+- `windows`：Windows x64。Environment `release`（`release/*`限定、承認待ちなし）で実行し、署名用Secretsはこのjobの署名stepだけへ渡します。
+- `velopack`：`windows`の成功後に、Environment `r2-velopack`（`release/*`限定）でWindowsのSetupを梱包・署名して公開R2へ配信します（[Setup（Velopack）の配信](#setupvelopackの配信)）。
+
+`main`の手動起動で動くのは`unix`のmacOSとLinuxだけで、非公開R2へ成果物を保存します（`windows`と`velopack`は`release/*`以外では動きません）。CIは固定Git URLから対象のcommit SHAを取得・照合し、各runnerでRust/Cargo 1.100.0を使って次を実行します。Node製Actionは使いません（Windowsの署名に使うSigiluneのactionはPowerShellのcomposite actionです）。
 
 1. 依存の固定取得、`cargo xtask check`、`cargo xtask test-e2e`。
 2. macOSは専用の一時KeychainでOSの保存機能を検証し、既定Keychainと検索一覧の不変を確認。終了時は成功・失敗を問わず専用Keychainを清掃。
@@ -57,13 +62,15 @@ cargo xtask artifact-download --commit <commit> --run <run> --attempt <attempt> 
 
 保存先には本人が管理する信頼できる階層を使います。Windowsは出力先とファイルを本人限定の権限で作り、ディレクトリハンドルを保持します。Unixは親の所有者・書込み権限・リンクを検査し、出力先を700で作成して、開いた同じファイルハンドルで実行権限を設定します。Unixの拡張ACLと、同一ユーザーによる悪意ある並行変更までは検査・防止しません。
 
+`main`の手動起動で取得できるのは`macos-arm64`と`vps-linux-x86_64`・`vps-linux-aarch64`です。`windows-x64`は`release/<版>`のpushで起動したCIだけが保存するため、`main`の配布準備ではWindowsの実行ファイルを手元で署名して作ります（`cargo xtask build`）。
+
 取得成功だけではプラグインへ反映されません。配布準備では対象commitと各OS・CPUのCI結果を確認し、取得した実行ファイルを上表の同梱先へ、ライセンスを`dist`へ反映してレビューします。同じcommitのライセンス内容が全targetで一致することも確認します。コミット・pushは別の明示依頼に従い、利用者はGitHub mainの更新後に通常のプラグイン更新を行います。バージョン更新やリリース告知はこのCIに含めません。
 
 ## Windows配布物のコード署名
 
 署名は[Sigilune](https://github.com/1llum1n4t1s/Sigilune)で行います。SigiluneはCertum SimplySignのクラウド鍵をsigntoolの`/dlib`として使うCLIで、SimplySign Desktopと手入力のワンタイムコードは不要です。本人のCertum証明書でAuthenticode署名とSHA256タイムスタンプを付け、Sigiluneの検証（有効性・署名者・タイムスタンプ）に加えて、xtaskが信頼チェーン・本人の共通名・Certumの発行者・タイムスタンプを独立に確認します。Sigiluneがない場合や認証・署名・検証の失敗はエラーとし、未署名へ自動で切り替えません。
 
-**配布CI**：「Build distribution artifacts」のWindows targetは、ビルド後に署名stepだけへEnvironment `release`のSecrets `SIGILUNE_EMAIL`・`SIGILUNE_TOTP_URI`を渡してSigiluneで`dist/plumivox.exe`へ署名し、Secretsを渡さないstepの`cargo xtask ci-windows-verify-signature`で確認してからR2へ保存します。R2のmanifestは署名後の内容を示します。Cargoのビルド（依存crateのbuild script）には署名用Secretsを渡しません。署名の失敗を自動で再実行しません。
+**配布CI**：「Distribution」の`windows` jobは（署名を`unix` jobから別jobに分け、macOS・Linuxのrunnerへ署名用Secretsを届けません）、ビルド後に署名stepだけへEnvironment `release`のSecrets `SIGILUNE_EMAIL`・`SIGILUNE_TOTP_URI`を渡してSigiluneで`dist/plumivox.exe`へ署名し、Secretsを渡さないstepの`cargo xtask ci-windows-verify-signature`で確認してからR2へ保存します。SigiluneはCertumが同じTOTP時間枠の並行ログインを拒否するため、Setupの署名を行う`velopack` jobは`needs: windows`で直列にします。R2のmanifestは署名後の内容を示します。Cargoのビルド（依存crateのbuild script）には署名用Secretsを渡しません。署名の失敗を自動で再実行しません。
 
 **開発端末**：`cargo xtask build`はreleaseビルド後にSigiluneでCargoの出力物へ署名・検証し、成功した場合だけ`dist/plumivox.exe`へ反映します。失敗時は既存の`dist/plumivox.exe`を保持します。事前にSigiluneを導入し、`sigilune setup --email <Certumアカウント>`で資格情報マネージャーへ登録します。実行ファイルは環境変数`SIGILUNE_EXE`→PATH→`%USERPROFILE%\.local\Sigilune\bin\sigilune.exe`の順に探します。Windows SDK（signtool）とPowerShell 7.4以降も必要です。利用者側には追加の依存関係を要求しません。
 
@@ -97,7 +104,7 @@ WindowsのSetupは、上記の非公開成果物とは別の公開バケット`p
 
 ### CIで梱包・公開する
 
-`release/<版>`ブランチ（Cargo.tomlの版と一致）で、GitHub Actionsの「Release Velopack」を手動実行します。pushでは起動しません。ジョブは次を順に行います。
+`release/<版>`ブランチ（Cargo.tomlの版と一致）へのpushで、「Distribution」の`velopack` jobが起動します。`windows` jobの成功後に実行されるため、`windows`が失敗すると配信されません（`workflow_run`は既定ブランチのrefで動き、`release/*`限定のEnvironmentに拒否されるため使いません）。公開済みの版を同じ`release/<版>`へ再pushすると、版付きの成果物の照合で失敗して公開バケットは何も変わりません。ジョブは次を順に行います。
 
 1. 固定Git URLから対象commitを取得・照合し、Rust 1.100.0とVelopack CLI 1.2.161（`dotnet tool install --global vpk --version 1.2.161`）を用意する。
 2. `cargo xtask ci-velopack-branch`でブランチ名と版の一致、`cargo xtask check`、`cargo xtask test-setup-velopack-e2e`（未署名のテスト用packIdで隔離E2E）。

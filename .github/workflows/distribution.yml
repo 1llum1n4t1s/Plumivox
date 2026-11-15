@@ -1,20 +1,51 @@
-name: Build distribution artifacts
+name: Distribution
 
+# 配布CIの1本のワークフロー。release/<版> ブランチへの push（同じブランチでの手動再実行を含む）で起動する。
+# release/<版> の push は公開操作なので、vava（版の更新・公開の依頼）でだけ行う。
+#
+# job の構成:
+# - unix    : macOS（自前 m3mb14）と Linux x86_64・aarch64 の検証・ビルド・非公開R2（plumivox-artifacts）への保存。
+#             Environment を付けず、署名用 Secrets は届かない。
+# - windows : Windows x64 の検証・ビルド・Sigilune 署名・非公開R2への保存。Environment `release`（release/* 限定）。
+# - velopack: windows の成功後に Windows の Setup（Velopack）を梱包・署名し、公開R2（plumivox-updates）の
+#             velopack/ へ配信する。Environment `r2-velopack`（release/* 限定）。
+#
+# 方針と理由:
+# - Sigilune は同じ TOTP 時間枠の並行ログインを Certum が拒否する。windows と velopack の署名が重ならないよう
+#   velopack を needs: windows で直列にし、windows の test-e2e が成功した後でだけ配信へ進める。
+# - workflow_run は既定ブランチの ref で動き、release/* 限定の Environment に拒否されるため使わない。
+# - main の手動起動（workflow_dispatch）は unix の macOS と Linux の非公開成果物だけを作る
+#   （Linux 用 VPS 実行物を main で作る経路を残すため）。windows と velopack は release/* 以外では動かない。
+# - 公開済みの版を同じ release/<版> で再 push（再実行）しても、版付きの成果物は新規作成のみで照合に失敗するため、
+#   公開バケットは何も変わらない（docs/distribution.md）。
+# - CI の手順は Rust（cargo xtask）で行い、PowerShell スクリプトを使わない（AGENTS.md）。
+# - 署名用 Secrets（SIGILUNE_*）は windows の署名 step と velopack の梱包 step だけへ渡し、その step では cargo を
+#   動かさない（依存 crate の build script に Secrets を見せないため）。R2 の Secrets は保存・配信の step だけへ渡す。
+# - 本人が事前に用意するもの（値はここに書かない）:
+#   Environment `release`（release/* のみ）に Secrets `SIGILUNE_EMAIL`・`SIGILUNE_TOTP_URI`。
+#   Environment `r2-velopack`（release/* のみ）に Variables `PLUMIVOX_UPDATES_R2_ACCOUNT_ID`・
+#   `PLUMIVOX_UPDATES_R2_BUCKET`（plumivox-updates）、Secrets `PLUMIVOX_UPDATES_R2_ACCESS_KEY_ID`・
+#   `PLUMIVOX_UPDATES_R2_SECRET_ACCESS_KEY`（バケット限定キー）・`SIGILUNE_EMAIL`・`SIGILUNE_TOTP_URI`。
 on:
+  push:
+    branches: ['release/**']
   workflow_dispatch:
 
 permissions:
   contents: read
 
+concurrency:
+  group: plumivox-release
+  cancel-in-progress: false
+
 jobs:
-  build:
-    if: ${{ (github.repository == '1llum1n4t1s/Plumivox' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)) && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+  unix:
+    # release/* の push、または既定ブランチ（main）の手動起動だけで動く。
+    if: ${{ github.repository == '1llum1n4t1s/Plumivox' && (startsWith(github.ref, 'refs/heads/release/') || (github.event_name == 'workflow_dispatch' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch))) }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          - os: windows-latest
-            target: windows-x64
           - os: macos-latest
             target: macos-arm64
           - os: ubuntu-26.04
@@ -22,13 +53,7 @@ jobs:
           - os: ubuntu-26.04-arm
             target: vps-linux-aarch64
     runs-on: ${{ fromJSON(startsWith(matrix.os, 'macos-') && '["self-hosted","macOS","ARM64","m3mb14"]' || format('["{0}"]', matrix.os)) }}
-    # Windows配布物をSigilune（Certum SimplySignのクラウド鍵）で署名するため、署名用Secrets
-    # （SIGILUNE_EMAIL・SIGILUNE_TOTP_URI）を置いた`main`限定のEnvironment `release`で実行する（承認者なし）。
-    # matrixの一部だけにEnvironmentを付ける書き方は空名の扱いが文書化されていないため、全targetに付ける。
-    # Environmentに承認者は置かないため、実行時の承認待ちはない。Secretsを環境変数へ渡すのはWindowsの署名stepだけだが、
-    # stepのifはrunner側で評価されるため、同じjobのmacOS（自前runner）・Linux runnerにもSecretsの値は配送される。
-    # 署名用Secretsを他のrunnerへ届けないようにするには、Windowsの署名を別jobへ分離する必要がある。
-    environment: release
+    # Environment は付けない。署名用 Secrets（SIGILUNE_*）はこの job へ配送されない。
     timeout-minutes: 60
     defaults:
       run:
@@ -132,14 +157,112 @@ jobs:
         run: cleanup
       - name: Build distribution executable without test fixtures
         run: cargo xtask ci-distribution-build
+      - name: Upload immutable artifacts to R2
+        env:
+          PLUMIVOX_R2_ACCOUNT_ID: ${{ vars.PLUMIVOX_R2_ACCOUNT_ID }}
+          PLUMIVOX_R2_BUCKET: ${{ vars.PLUMIVOX_R2_BUCKET }}
+          PLUMIVOX_R2_ACCESS_KEY_ID: ${{ secrets.PLUMIVOX_R2_ACCESS_KEY_ID }}
+          PLUMIVOX_R2_SECRET_ACCESS_KEY: ${{ secrets.PLUMIVOX_R2_SECRET_ACCESS_KEY }}
+        run: cargo xtask ci-artifact-upload
+
+  windows:
+    # release/* だけで動く。Windows の配布物は main の手動起動では作らない（手元で署名して作る）。
+    if: ${{ github.repository == '1llum1n4t1s/Plumivox' && startsWith(github.ref, 'refs/heads/release/') }}
+    runs-on: windows-latest
+    # Windows配布物をSigilune（Certum SimplySignのクラウド鍵）で署名するため、署名用Secrets
+    # （SIGILUNE_EMAIL・SIGILUNE_TOTP_URI）を置いた release/* 限定のEnvironment `release`で実行する（承認者なし）。
+    # Windowsだけの job なので、Secretsは macOS（自前runner）・Linux runner へ届かない。
+    environment: release
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+    env:
+      ARTIFACT_COMMIT: ${{ github.sha }}
+      ARTIFACT_RUN: ${{ github.run_id }}
+      ARTIFACT_ATTEMPT: ${{ github.run_attempt }}
+      ARTIFACT_TARGET: windows-x64
+    steps:
+      # checkout前はrunner付属stable rustcだけを使用し、以降はrust-toolchain.tomlへ従う。
+      - name: Compile native checkout bootstrap
+        shell: rustc +stable --edition=2021 --crate-name plumivox_ci_bootstrap -o plumivox-ci-bootstrap.exe {0}
+        run: |
+          use std::{env, error::Error, fs, process::Command};
+          type Result = std::result::Result<(), Box<dyn Error>>;
+          fn run(args: &[&str]) -> Result {
+              if !Command::new("git").args(args).status()?.success() {
+                  return Err("Git checkout failed".into());
+              }
+              Ok(())
+          }
+          fn main() -> Result {
+              let script = fs::read_to_string(env::args().nth(1).ok_or("Missing command")?)?;
+              if script.trim() != "checkout" { return Err("Invalid bootstrap command".into()); }
+              if env::var("CHECK_R2").as_deref() == Ok("true") {
+                  let account = env::var("PLUMIVOX_R2_ACCOUNT_ID")?;
+                  let bucket = env::var("PLUMIVOX_R2_BUCKET")?;
+                  if account.len() != 32 || !account.bytes().all(|b| b.is_ascii_hexdigit())
+                      || !(3..=63).contains(&bucket.len())
+                      || !bucket.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+                      || bucket.starts_with('-') || bucket.ends_with('-')
+                      || env::var("R2_CREDENTIALS_CONFIGURED").as_deref() != Ok("true") {
+                      return Err("Configure R2 repository variables and secrets".into());
+                  }
+              }
+              let exact = env::var("CHECKOUT_MODE").as_deref() == Ok("exact");
+              let reference = if exact {
+                  let sha = env::var("CHECKOUT_SHA")?;
+                  if sha.len() != 40 || !sha.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)) {
+                      return Err("Invalid checkout SHA".into());
+                  }
+                  sha
+              } else {
+                  let branch = env::var("DEFAULT_BRANCH")?;
+                  if branch.is_empty() { return Err("Missing default branch".into()); }
+                  let reference = format!("refs/heads/{branch}");
+                  run(&["check-ref-format", &reference])?;
+                  reference
+              };
+              run(&["init", "."])?;
+              run(&["remote", "add", "origin", "https://github.com/1llum1n4t1s/Plumivox.git"])?;
+              run(&["fetch", "--no-tags", "--depth=1", "origin", &reference])?;
+              run(&["checkout", "--detach", "FETCH_HEAD"])?;
+              if exact {
+                  let head = Command::new("git").args(["rev-parse", "HEAD"]).output()?;
+                  if !head.status.success() || String::from_utf8(head.stdout)?.trim() != reference {
+                      return Err("Checkout SHA mismatch".into());
+                  }
+              }
+              Ok(())
+          }
+      - name: Check out trusted workflow source
+        shell: rustup run stable ./plumivox-ci-bootstrap.exe {0}
+        env:
+          CHECKOUT_MODE: exact
+          CHECKOUT_SHA: ${{ github.sha }}
+          CHECK_R2: 'true'
+          PLUMIVOX_R2_ACCOUNT_ID: ${{ vars.PLUMIVOX_R2_ACCOUNT_ID }}
+          PLUMIVOX_R2_BUCKET: ${{ vars.PLUMIVOX_R2_BUCKET }}
+          R2_CREDENTIALS_CONFIGURED: ${{ secrets.PLUMIVOX_R2_ACCESS_KEY_ID != '' && secrets.PLUMIVOX_R2_SECRET_ACCESS_KEY != '' }}
+        run: checkout
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install --no-self-update
+      - name: Install distribution targets
+        run: cargo xtask ci-install-targets
+      - name: Fetch locked dependencies
+        run: cargo fetch --locked
+      - name: Check sources and development tools
+        run: cargo xtask check
+      - name: Run native and setup E2E tests
+        run: cargo xtask test-e2e
+      - name: Build distribution executable without test fixtures
+        run: cargo xtask ci-distribution-build
       - name: Set up Sigilune
         id: sigilune
-        if: runner.os == 'Windows'
         uses: 1llum1n4t1s/Sigilune@05006dcad019e5e863a08985b9208d72004f1b5f # v1.1.3
       - name: Sign Windows distribution executable
         # 署名用Secretsはこのstepだけへ渡す。Cargo（依存crateのbuild script）を動かさないよう、
         # xtaskを経由せずSigiluneを直接実行する。失敗時は自動再試行せず、R2へ保存しない。
-        if: runner.os == 'Windows'
         shell: pwsh
         env:
           SIGILUNE_EMAIL: ${{ secrets.SIGILUNE_EMAIL }}
@@ -148,7 +271,6 @@ jobs:
           sigilune sign --description Plumivox (Join-Path $env:GITHUB_WORKSPACE 'dist/plumivox.exe')
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Verify Windows signature
-        if: runner.os == 'Windows'
         run: cargo xtask ci-windows-verify-signature
       - name: Sign out of Sigilune
         # ランナー上のCertumセッションを残さない。
@@ -162,3 +284,103 @@ jobs:
           PLUMIVOX_R2_ACCESS_KEY_ID: ${{ secrets.PLUMIVOX_R2_ACCESS_KEY_ID }}
           PLUMIVOX_R2_SECRET_ACCESS_KEY: ${{ secrets.PLUMIVOX_R2_SECRET_ACCESS_KEY }}
         run: cargo xtask ci-artifact-upload
+
+  velopack:
+    # windows（署名・検証・保存）の成功後にだけ動く。Sigilune の TOTP 時間枠が windows と重ならない。
+    needs: windows
+    if: ${{ github.repository == '1llum1n4t1s/Plumivox' && startsWith(github.ref, 'refs/heads/release/') }}
+    runs-on: windows-latest
+    environment: r2-velopack
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: bash
+    env:
+      # vpk 1.2.161 を新しい .NET ランタイムでも動かす（ランナーに合う版が無い場合に備える）。
+      DOTNET_ROLL_FORWARD: Major
+    steps:
+      # checkout前はrunner付属stable rustcだけを使用し、以降はrust-toolchain.tomlへ従う。
+      - name: Compile native checkout bootstrap
+        shell: rustc +stable --edition=2021 --crate-name plumivox_ci_bootstrap -o plumivox-ci-bootstrap.exe {0}
+        run: |
+          use std::{env, error::Error, fs, process::Command};
+          type Result = std::result::Result<(), Box<dyn Error>>;
+          fn run(args: &[&str]) -> Result {
+              if !Command::new("git").args(args).status()?.success() {
+                  return Err("Git checkout failed".into());
+              }
+              Ok(())
+          }
+          fn main() -> Result {
+              let script = fs::read_to_string(env::args().nth(1).ok_or("Missing command")?)?;
+              if script.trim() != "checkout" { return Err("Invalid bootstrap command".into()); }
+              let sha = env::var("CHECKOUT_SHA")?;
+              if sha.len() != 40 || !sha.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)) {
+                  return Err("Invalid checkout SHA".into());
+              }
+              run(&["init", "."])?;
+              run(&["remote", "add", "origin", "https://github.com/1llum1n4t1s/Plumivox.git"])?;
+              run(&["fetch", "--no-tags", "--depth=1", "origin", &sha])?;
+              run(&["checkout", "--detach", "FETCH_HEAD"])?;
+              let head = Command::new("git").args(["rev-parse", "HEAD"]).output()?;
+              if !head.status.success() || String::from_utf8(head.stdout)?.trim() != sha {
+                  return Err("Checkout SHA mismatch".into());
+              }
+              Ok(())
+          }
+      - name: Check out the exact release commit
+        shell: rustup run stable ./plumivox-ci-bootstrap.exe {0}
+        env:
+          CHECKOUT_SHA: ${{ github.sha }}
+        run: checkout
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install --no-self-update
+      - name: Install Velopack CLI 1.2.161
+        run: dotnet tool install --global vpk --version 1.2.161
+      - name: Require release/<version> to match Cargo.toml
+        run: cargo xtask ci-velopack-branch
+      - name: Fetch locked dependencies
+        run: cargo fetch --locked
+      - name: Check sources and development tools
+        run: cargo xtask check
+      - name: Run the isolated Setup E2E (unsigned test packId)
+        env:
+          PLUMIVOX_SETUP_VELOPACK_E2E_OUTPUT_DIR: ${{ runner.temp }}\plumivox-velopack-e2e
+        run: cargo xtask test-setup-velopack-e2e
+      - name: Build the release executable and xtask without signing secrets
+        # 依存 crate の build script も動くため、この step には署名用 Secrets を渡さない。
+        # 既定の機能だけでビルドする（update-feed-test・test-fixture を含めない）。
+        run: |
+          set -euo pipefail
+          target="$RUNNER_TEMP/plumivox-target"
+          cargo build --locked --release --target x86_64-pc-windows-msvc --target-dir "$target" --bin plumivox
+          cargo xtask licenses
+          cargo build --locked --release --package xtask --target-dir "$target"
+          mkdir -p "$RUNNER_TEMP/plumivox-tools"
+          cp "$target/x86_64-pc-windows-msvc/release/plumivox.exe" "$RUNNER_TEMP/plumivox-tools/plumivox.exe"
+          cp "$target/release/xtask.exe" "$RUNNER_TEMP/plumivox-tools/xtask.exe"
+          mkdir -p "$RUNNER_TEMP/plumivox-setup"
+      - name: Set up Sigilune
+        id: sigilune
+        uses: 1llum1n4t1s/Sigilune@05006dcad019e5e863a08985b9208d72004f1b5f # v1.1.3
+      - name: Pack, sign and verify the Setup
+        # 署名用 Secrets はこの step だけへ渡す。cargo を動かさず、ビルド済みの xtask を直接実行する。
+        # 失敗時は自動再試行せず、配信へ進まない。
+        env:
+          SIGILUNE_EMAIL: ${{ secrets.SIGILUNE_EMAIL }}
+          SIGILUNE_TOTP_URI: ${{ secrets.SIGILUNE_TOTP_URI }}
+        run: |
+          "$RUNNER_TEMP/plumivox-tools/xtask.exe" velopack-pack --work "$(cygpath -w "$RUNNER_TEMP/plumivox-setup")" --sign --binary "$(cygpath -w "$RUNNER_TEMP/plumivox-tools/plumivox.exe")"
+      - name: Sign out of Sigilune
+        # ランナー上のCertumセッションを残さない。
+        if: always() && steps.sigilune.outcome == 'success'
+        run: sigilune logout > /dev/null || true
+      - name: Publish the feed and Setup to R2
+        # 版付きの成果物は新規作成のみ（既存なら内容を照合）、固定名は置き換え、releases.win.json は最後。
+        env:
+          PLUMIVOX_UPDATES_R2_ACCOUNT_ID: ${{ vars.PLUMIVOX_UPDATES_R2_ACCOUNT_ID }}
+          PLUMIVOX_UPDATES_R2_BUCKET: ${{ vars.PLUMIVOX_UPDATES_R2_BUCKET }}
+          PLUMIVOX_UPDATES_R2_ACCESS_KEY_ID: ${{ secrets.PLUMIVOX_UPDATES_R2_ACCESS_KEY_ID }}
+          PLUMIVOX_UPDATES_R2_SECRET_ACCESS_KEY: ${{ secrets.PLUMIVOX_UPDATES_R2_SECRET_ACCESS_KEY }}
+        run: |
+          "$RUNNER_TEMP/plumivox-tools/xtask.exe" velopack-publish --packages "$(cygpath -w "$RUNNER_TEMP/plumivox-setup/packages")" --channel win

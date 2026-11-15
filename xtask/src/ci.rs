@@ -330,7 +330,7 @@ pub fn execute(command: &str) -> Result {
             crate::windows_signing::verify(&root().join("dist/plumivox.exe"))
         }
         "ci-artifact-upload" => artifact_upload(),
-        // release-velopack.yml の最初の確認。`release/<版>` のブランチで、版が Cargo.toml と一致するときだけ進める
+        // distribution.yml の velopack job の最初の確認。`release/<版>` のブランチで、版が Cargo.toml と一致するときだけ進める
         // （配信する版を取り違えないため。版の読み取りは cargo を動かさない）。
         "ci-velopack-branch" => {
             let branch = required("GITHUB_REF_NAME")?;
