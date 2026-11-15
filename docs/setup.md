@@ -26,7 +26,9 @@ PCからVPSへSSH接続するため、自宅ルーターのポート開放は不
 
 ## 1. プラグインと専用SSH鍵を準備する
 
-取得元はGitHubの最新`main`です。Windows・macOSとも、同梱の実行ファイルの`--setup`が端末の対話入力を処理します。WindowsのPowerShell 7は不要です。次のWindows向けコマンド例はPowerShellで実行します。
+WindowsでSetup（[README](../README.ja.md#windows-setupで導入する推奨)）を使って導入した場合は、プラグインの追加は不要です。以下の手順の`dist/plumivox.exe`の代わりに`%LOCALAPPDATA%\PlumivoxApp\current\plumivox.exe`を使います（PowerShellでは`& "$env:LOCALAPPDATA\PlumivoxApp\current\plumivox.exe" --setup --prepare-key`）。設定・鍵・セッションの保存先はプラグイン版と同じです。Setupの導入先（`%LOCALAPPDATA%\PlumivoxApp`）は更新で中身が入れ替わるため、そこを`--settings-path`・`--private-key-path`に指定すると拒否します。
+
+プラグインの取得元はGitHubの最新`main`です。Windows・macOSとも、同梱の実行ファイルの`--setup`が端末の対話入力を処理します。WindowsのPowerShell 7は不要です。次のWindows向けコマンド例はPowerShellで実行します。
 
 ```powershell
 codex plugin marketplace add https://github.com/1llum1n4t1s/Plumivox.git --ref main

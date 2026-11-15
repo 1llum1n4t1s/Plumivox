@@ -23,8 +23,18 @@ name = "plumivox-fixture"
 path = "tests/native-fixture.rs"
 required-features = ["test-fixture"]
 
+# Setup（Velopack）の隔離E2Eで PATH の先頭に置く claude/codex の代役。引数を記録し、
+# `mcp get/add/remove` を状態ファイルで模倣する（遅延・失敗の注入つき）。本番ビルドには入らない。
+[[bin]]
+name = "plumivox-cli-stub"
+path = "tests/cli-stub.rs"
+required-features = ["update-feed-test"]
+
 [features]
 test-fixture = []
+# 隔離したSetup（Velopack）E2E専用。更新元をローカルフォルダーへ差し替える PLUMIVOX_UPDATE_FEED_DIR と、
+# 未署名パッケージの適用許可 PLUMIVOX_UPDATE_ALLOW_UNSIGNED=1 を有効にする。本番ビルド・署名梱包には含めない。
+update-feed-test = []
 
 [dependencies]
 tokio = { version = "1", features = ["full"] }
@@ -47,6 +57,10 @@ dirs = "7"
 rand = "0.10"
 zeroize = "1"
 russh = { version = "0.65.1", default-features = false, features = ["ring", "rsa", "flate2"] }
+# Setup（Velopack）導入版の起動時処理・更新の取得と適用（Remnifold と同じ固定版）。
+# public-utils は依存を増やさず `velopack::bundle` を公開するだけの機能で、macOS の署名検証で
+# UpdateMac と同じ展開関数を使うために要る。既定機能（file-logging）は使わない。
+velopack = { version = "=1.2.161", default-features = false, features = ["public-utils"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["test-util"] }
@@ -86,8 +100,16 @@ name = "setup_vps_e2e"
 path = "tests/setup_vps_e2e.rs"
 required-features = ["test-fixture"]
 
+# Setup（Velopack）の隔離E2E（Windows）。`cargo xtask test-setup-velopack-e2e` が梱包・導入物を用意してから起動する。
+[[test]]
+name = "setup_velopack_e2e"
+path = "tests/setup_velopack_e2e.rs"
+required-features = ["test-fixture", "update-feed-test"]
+
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Globalization", "Win32_Security", "Win32_Security_Authorization", "Win32_Security_Cryptography", "Win32_System_Console", "Win32_System_Threading", "Win32_Storage_FileSystem"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Globalization", "Win32_Security", "Win32_Security_Authorization", "Win32_Security_Cryptography", "Win32_Security_WinTrust", "Win32_System_Console", "Win32_System_Diagnostics_ToolHelp", "Win32_System_JobObjects", "Win32_System_Registry", "Win32_System_Threading", "Win32_Storage_FileSystem"] }
+# 適用前の署名者検証で nupkg（zip）の中の PE を取り出す（Windows・macOS だけで使う）。
+zip = { version = "9.4.1", default-features = false, features = ["deflate"] }
 
 # Rust 1.100 の cargo::unused_dependencies に合わせ、利用するOSだけで取得する。
 # fs2・libc は Unix の排他ロック・権限確認、rpassword は macOS セットアップの秘密入力、
@@ -97,6 +119,7 @@ fs2 = "0.4"
 libc = "0.2"
 
 [target.'cfg(target_os = "macos")'.dependencies]
+zip = { version = "9.4.1", default-features = false, features = ["deflate"] }
 security-framework = "3"
 rpassword = "7"
 aes-gcm = "0.11"

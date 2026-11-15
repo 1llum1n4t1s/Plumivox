@@ -8,7 +8,7 @@ use std::{
     process::{Command, Stdio},
 };
 
-const MAX_FILE: usize = 256 * 1024 * 1024;
+pub(crate) const MAX_FILE: usize = 256 * 1024 * 1024;
 const MAX_MANIFEST: usize = 16 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -130,15 +130,29 @@ fn quote(value: &str) -> Result<String> {
         value.replace('\\', "\\\\").replace('"', "\\\"")
     ))
 }
-struct Store {
+pub(crate) struct Store {
     endpoint: String,
     user: String,
 }
+/// 公開バケットへの書き込み方（Velopack 配信用。`velopack.rs` の `velopack-publish` が使う）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PutMode {
+    /// `If-None-Match: *` を付け、既存オブジェクトがあれば 412 で拒否させる（版付きの不変な成果物）。
+    CreateOnly,
+    /// 条件なしで置き換える（最新を指す固定名の Setup・`releases.<channel>.json` など）。
+    Overwrite,
+}
+
 impl Store {
     fn from_env() -> Result<Self> {
+        Self::from_env_prefix("PLUMIVOX_R2_")
+    }
+    /// 資格情報を `<prefix>ACCOUNT_ID`・`BUCKET`・`ACCESS_KEY_ID`・`SECRET_ACCESS_KEY` の環境変数から読む。
+    /// CI 成果物用（`PLUMIVOX_R2_`）と Velopack 配信用（`PLUMIVOX_UPDATES_R2_`）で別の名前・別の鍵を使い、
+    /// 非公開の成果物バケットと公開の配信バケットの権限を混ぜない。
+    pub(crate) fn from_env_prefix(prefix: &str) -> Result<Self> {
         let get = |name: &str| {
-            env::var(format!("PLUMIVOX_R2_{name}"))
-                .map_err(|_| format!("PLUMIVOX_R2_{name}が必要です"))
+            env::var(format!("{prefix}{name}")).map_err(|_| format!("{prefix}{name}が必要です"))
         };
         let account = get("ACCOUNT_ID")?;
         let bucket = get("BUCKET")?;
@@ -166,6 +180,116 @@ impl Store {
             user,
         })
     }
+    /// `--fail` を付けずに1回の要求を行い、HTTP status と本文（`limit` まで）を返す。
+    /// 412（条件付き PUT の既存）や 404（未作成）を呼び出し側で区別するために使う。資格情報は
+    /// [`Self::request`] と同じく curl の設定（標準入力）だけで渡し、argv・ログへ出さない。
+    fn exchange(&self, key: &str, extra: &str, limit: usize) -> Result<(u16, Vec<u8>)> {
+        let config = format!(
+            "url = {}\nuser = {}\n{extra}",
+            quote(&format!("{}{key}", self.endpoint))?,
+            quote(&self.user)?
+        );
+        let protocol = if cfg!(test) && self.endpoint.starts_with("http://127.0.0.1:") {
+            "=http"
+        } else {
+            "=https"
+        };
+        // 子プロセスのコンソール窓を出さない（CREATE_NO_WINDOW。xtask共通の quiet 経由）。
+        let mut child = crate::quiet(Command::new("curl").args([
+            "-q",
+            "--config",
+            "-",
+            "--silent",
+            "--proto",
+            protocol,
+            "--noproxy",
+            "*",
+            "--aws-sigv4",
+            "aws:amz:auto:s3",
+            "--connect-timeout",
+            "20",
+            "--max-time",
+            "300",
+            "--write-out",
+            "\n%{http_code}",
+        ]))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|_| "curlを起動できません（AWS SigV4対応curlが必要です）")?;
+        let write_result = child.stdin.take().unwrap().write_all(config.as_bytes());
+        if write_result.is_err() {
+            let _ = child.kill();
+            child.wait().map_err(|_| "R2転送プロセスを回収できません")?;
+            return Err("R2転送設定を渡せません".into());
+        }
+        let mut bytes = Vec::new();
+        let read_result = child
+            .stdout
+            .take()
+            .unwrap()
+            .take(limit as u64 + 5)
+            .read_to_end(&mut bytes);
+        if read_result.is_err() || bytes.len() > limit + 4 {
+            let _ = child.kill();
+            child.wait().map_err(|_| "R2転送プロセスを回収できません")?;
+            return Err(if read_result.is_err() {
+                "R2応答を読み取れません"
+            } else {
+                "R2応答がサイズ上限を超えています"
+            }
+            .into());
+        }
+        let status = child
+            .wait()
+            .map_err(|_| "R2転送プロセスの完了を確認できません")?;
+        if !status.success() || bytes.len() < 4 || bytes[bytes.len() - 4] != b'\n' {
+            return Err("R2転送失敗（接続を確認してください）".into());
+        }
+        let code = std::str::from_utf8(&bytes[bytes.len() - 3..])
+            .ok()
+            .and_then(|text| text.parse::<u16>().ok())
+            .ok_or("R2応答のstatusを読み取れません")?;
+        bytes.truncate(bytes.len() - 4);
+        Ok((code, bytes))
+    }
+
+    /// ファイルを1つ置く。`CreateOnly` で既存なら 412 を返す（呼び出し側が内容を照合する）。
+    /// 成功（200・201・204）と 412 以外は失敗にする。
+    pub(crate) fn put_object(
+        &self,
+        key: &str,
+        path: &Path,
+        mode: PutMode,
+        content_type: &str,
+        cache_control: &str,
+    ) -> Result<u16> {
+        let mut extra = format!(
+            "upload-file = {}\nheader = {}\nheader = {}\n",
+            quote(path.to_str().ok_or("成果物パスがUTF-8ではありません")?)?,
+            quote(&format!("Content-Type: {content_type}"))?,
+            quote(&format!("Cache-Control: {cache_control}"))?
+        );
+        if mode == PutMode::CreateOnly {
+            extra.push_str("header = \"If-None-Match: *\"\n");
+        }
+        match self.exchange(key, &extra, MAX_MANIFEST)?.0 {
+            code @ (200 | 201 | 204) => Ok(code),
+            412 if mode == PutMode::CreateOnly => Ok(412),
+            _ => Err("R2への保存に失敗しました（認証・権限・接続を確認してください）".into()),
+        }
+    }
+
+    /// オブジェクトを取得する。無ければ None（404）。それ以外の失敗は Err。
+    pub(crate) fn get_object(&self, key: &str, limit: usize) -> Result<Option<Vec<u8>>> {
+        match self.exchange(key, "", limit)? {
+            (200, body) => Ok(Some(body)),
+            (404, _) => Ok(None),
+            _ => Err("R2からの取得に失敗しました（認証・権限・接続を確認してください）".into()),
+        }
+    }
+
     fn request(
         &self,
         key: &str,
@@ -198,31 +322,31 @@ impl Store {
         } else {
             "=https"
         };
-        let mut child = Command::new("curl")
-            .args([
-                "-q",
-                "--config",
-                "-",
-                "--silent",
-                "--fail",
-                "--proto",
-                protocol,
-                "--noproxy",
-                "*",
-                "--aws-sigv4",
-                "aws:amz:auto:s3",
-                "--connect-timeout",
-                "20",
-                "--max-time",
-                "300",
-                "--write-out",
-                "\n%{http_code}",
-            ])
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .map_err(|_| "curlを起動できません（AWS SigV4対応curlが必要です）")?;
+        // 子プロセスのコンソール窓を出さない（CREATE_NO_WINDOW。xtask共通の quiet 経由）。
+        let mut child = crate::quiet(Command::new("curl").args([
+            "-q",
+            "--config",
+            "-",
+            "--silent",
+            "--fail",
+            "--proto",
+            protocol,
+            "--noproxy",
+            "*",
+            "--aws-sigv4",
+            "aws:amz:auto:s3",
+            "--connect-timeout",
+            "20",
+            "--max-time",
+            "300",
+            "--write-out",
+            "\n%{http_code}",
+        ]))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|_| "curlを起動できません（AWS SigV4対応curlが必要です）")?;
         let write_result = child.stdin.take().unwrap().write_all(config.as_bytes());
         if write_result.is_err() {
             let _ = child.kill();
@@ -782,7 +906,7 @@ fn transfer_from(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::{
         io::Read,
@@ -827,7 +951,7 @@ mod tests {
         (id, serde_json::to_vec(&m).unwrap(), files)
     }
     // 実curlを別プロセスで動かし、署名付き要求と実際の転送内容を確認する。
-    fn server(
+    pub(crate) fn server(
         responses: Vec<(&'static str, Vec<u8>)>,
     ) -> (Store, thread::JoinHandle<Vec<Vec<u8>>>) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();

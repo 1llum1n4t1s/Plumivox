@@ -27,6 +27,7 @@ Plumivox は設定ファイルの `twitterapi_io` 以下にある各プロファ
 | 設定ファイル | `PLUMIVOX_SECRETS_FILE` → 内部起動設定の`secrets_path` → 存在する`~/dev/Secret/secrets.json` → OS別の標準保存先 |
 | アカウント | ツールの`account`引数 → `PLUMIVOX_DEFAULT_ACCOUNT` → 内部起動設定の`profile` → `twitterapi_io.default_account` → 唯一のプロファイル |
 | 複数アカウント | `default_account`に省略時の設定名を保存。別の設定を使う呼出しでは`account`を明示 |
+| 表示言語 | `PLUMIVOX_LANGUAGE` → `LC_ALL` → `LC_MESSAGES` → `LANG`（空・`C`・`POSIX`は飛ばす）→ OSの表示言語 → 英語。対応はja・en・zh-CN・zh-TW・ko・es・fr・de・pt-BR。対象はCLIの使い方・ヘルプ、`--setup`の質問・表示・エラー、Setup版の案内、`--uninstall-setup`の説明。MCPのツール定義と応答（エラー文を含む）は言語によらず英語 |
 
 `default_account`はXユーザー名ではなく、`main`・`blog_posting`など登録済みプロファイルの設定名です。初回セットアップは登録したアカウントを既定にします。既存利用者は実行ファイルの`--setup --set-default-account blog_posting`で既定だけを変更できます。不正な型・空文字・未登録名の既定では、省略呼出しを`ACCOUNT_DEFAULT_INVALID`として通信前に拒否します。明示した`account`は既定より優先します。複数登録・既定なしの既存設定は`ACCOUNT_REQUIRED`を返し、先頭の登録先へ自動では送信しません。
 
@@ -78,3 +79,16 @@ Plumivoxの新しい保存セッションを最優先で読みます。新しい
 アカウントの `proxy_mode` は省略時 `external` で、既存プロキシをそのまま使います。`managed` を指定したアカウントは、共通の `plumivox.managed_proxy` 設定から住宅回線出口とSSH中継を起動します。APIキー、ログインCookie、proxy URLの保存形式と優先順位は変わりません。
 
 中継設定・初回準備・停止時の動作は [管理するプロキシ](managed-proxy.md) を参照してください。接続先やSSH鍵はMCP引数へ渡しません。`list_accounts` の `proxyMode` は設定の方式で、通信成功やX上の認証を保証しません。
+
+## Setup版の自動更新の設定
+
+WindowsのSetup版は、データフォルダーの子`%LOCALAPPDATA%\Kagayoi\Plumivox\app-update\`に更新の状態を置きます（macOSのSetup版は`~/Library/Application Support/Kagayoi/Plumivox/app-update/`の予定）。秘密値は含みません。
+
+| ファイル | 内容 |
+| --- | --- |
+| `app-update.json` | `auto_update`（既定`true`。`false`で確認・取得・適用を止める）と、前回の確認・失敗の時刻（UNIX秒）。壊れた値は項目ごとに既定へ戻す |
+| `app-update.log` | 確認・取得・適用・登録の結果の短い記録（64KiBを超えると作り直す） |
+| `setup-registration.json` | 登録した実行ファイル・版・登録を済ませたCLI（`claude`・`codex`）・ログオン時の適用の登録の有無 |
+| `app-update.lock`・`setup-registration.lock` | 複数のPlumivoxが同時に確認・登録しないための排他 |
+
+確認は前回の確認（成功・失敗とも）から24時間たってから行います。利用者が足したキーは時刻の更新で消しません。アンインストールしてもこのフォルダーと設定・セッションは残ります。

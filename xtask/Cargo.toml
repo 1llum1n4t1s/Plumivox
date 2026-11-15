@@ -9,6 +9,8 @@ serde_json = "1"
 regex = "1"
 serde = { version = "1", features = ["derive"] }
 sha2 = "0.11"
+# Setup（Velopack）の nupkg の中身（PE の一覧と署名の検証用の取り出し）を読む。
+zip = { version = "9.4.1", default-features = false, features = ["deflate"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_Threading"] }

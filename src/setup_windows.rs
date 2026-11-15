@@ -99,6 +99,8 @@ pub(super) fn path_ok(path: &Path) -> Result<()> {
     let mut blocked = crate::agent_dirs::agent_user_roots(&home());
     blocked.push(PathBuf::from(env!("CARGO_MANIFEST_DIR")));
     blocked.extend(crate::agent_dirs::executable_plugin_root());
+    // Setup（Velopack）の導入先は更新で `current\` が入れ替わり、アンインストールで消えるため保存先にしない。
+    blocked.extend(crate::agent_dirs::velopack_install_roots());
     let candidate = canonical_with_missing_tail(path)?;
     let candidate = PathBuf::from(candidate.to_string_lossy().to_lowercase());
     for root in blocked {

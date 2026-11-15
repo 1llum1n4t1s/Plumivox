@@ -46,6 +46,8 @@ fn terminal_wizard(
     ] {
         command.env_remove(name);
     }
+    // 質問文を日本語の期待値で照合するため、表示言語を固定する（OS・CI の言語に依存させない）。
+    command.env("PLUMIVOX_LANGUAGE", "ja");
     command
         .stdin(Stdio::from(slave.try_clone()?))
         .stdout(Stdio::from(slave.try_clone()?))

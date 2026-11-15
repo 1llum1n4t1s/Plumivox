@@ -2,13 +2,15 @@
 
 ## 目的と境界
 
-PlumivoxはTwitterAPI.ioを経由してXへの投稿・認証更新・公開投稿の読取りを提供するローカルMCPサーバーである。Codexプラグインとしてstdioで起動し、ブラウザ操作は製品の実行経路に持たない。managedモードではloopback限定のCONNECT出口を起動し、既存の公開プロキシへSSH逆転送を張る。操作一覧と取得範囲は [README.md](README.md)、設定・保存形式は [docs/configuration.md](docs/configuration.md)、開発時の作業手順は [AGENTS.md](AGENTS.md) を参照する。
+PlumivoxはTwitterAPI.ioを経由してXへの投稿・認証更新・公開投稿の読取りを提供するローカルMCPサーバーである。WindowsではSetup（Velopack）で導入した実行ファイルを、macOSと従来の利用者はCodexプラグインの同梱実行ファイルを、いずれもstdioで起動し、ブラウザ操作は製品の実行経路に持たない。managedモードではloopback限定のCONNECT出口を起動し、既存の公開プロキシへSSH逆転送を張る。操作一覧と取得範囲は [README.md](README.md)、設定・保存形式は [docs/configuration.md](docs/configuration.md)、開発時の作業手順は [AGENTS.md](AGENTS.md) を参照する。
 
 ## 主要コンポーネント
 
 | コンポーネント | 責務 |
 | --- | --- |
-| `src/main.rs` / `src/lib.rs` | 引数なし／`--stdio`で本体を起動する。`--setup`と内部の`--proxy-daemon`を同じネイティブ実行ファイルへ接続する |
+| `src/main.rs` / `src/lib.rs` | 同期の`main`で最初にVelopackの起動時処理を行ってからtokioのランタイムを作る。引数なし／`--stdio`で本体を起動し、`--setup`・内部の`--proxy-daemon`・Setup版の`--update-apply`・`--uninstall-setup`・`--help`を同じネイティブ実行ファイルへ接続する |
+| `src/locale.rs` / `src/locales/<タグ>.json` | 人が読む文言の言語判定と9言語の辞書（[ローカライズ](#ローカライズ)）。辞書の整合テストも持つ |
+| `src/app_update.rs` / `src/app_update/` / `src/connect.rs` | Setup（Velopack）導入版のフック、背景の更新確認・取得、ログオン時の適用（他プロセスの検出・署名者検証）、Run値、登録状態、Claude Code・Codexへの`plumivox`登録。管理外のビルドでは何もしない |
 | `src/server.rs` / `src/tool-definitions.json` | stdioのMCP JSON-RPC、11ツールの入力スキーマと検証、MCP注釈、アカウント選択、認証処理、定型エラー応答 |
 | `src/config.rs` | 呼出し時の設定再読込み、アカウント・資格情報の検証、Cookieの選択、秘密を除いた準備状態の公開 |
 | `src/setup.rs` / `src/setup_windows.rs` / `setup/vps/` | Windows・macOSのネイティブ設定ウィザード、Windowsの保存先・ACL・排他制御、VPSの認証付き公開プロキシの初回構築。通常の投稿処理から独立する |
@@ -21,6 +23,7 @@ PlumivoxはTwitterAPI.ioを経由してXへの投稿・認証更新・公開投�
 | `src/client.rs` / `src/api_rejection.rs` / `src/client_emoji.txt` | HTTP通信、応答検証・正規化、秘密を含まない拒否理由の固定分類、画像検証・アップロード、投稿、フィード再構成、検索条件と継続cursor、Unicode 17絵文字の検証 |
 | `Cargo.toml` / `Cargo.lock` / `rust-toolchain.toml` / `.cargo/config.toml` / `xtask/` | 本体と開発ツールの依存・toolchain固定、Windows x64とmacOS ARM64のビルド、ライセンス生成、検査・E2E実行。Node.jsを使わない |
 | `dist/plumivox.exe` / `dist/plumivox` | 正式なネイティブ実行ファイル |
+| `.github/workflows/release-velopack.yml` / `xtask/src/velopack.rs` | Setupの梱包・署名・署名者検証、公開R2（`plumivox-updates`の`velopack/`）への配信、隔離E2E（`tests/setup_velopack_e2e.rs`・`tests/cli-stub.rs`） |
 | `.github/workflows/distribution.yml` / `xtask/src/ci.rs` / `xtask/src/r2.rs` | RustによるWindows・macOS本体とLinux x86_64・aarch64のVPSインストーラーの検証とビルド、R2への成果物保存・検証付き取得。利用者のMCP実行から独立する |
 | `tests/api_e2e.rs` / `tests/native_e2e.rs` / `tests/tls_e2e.rs` / `tests/support/` / `tests/native-fixture.rs` | Rustの偽HTTP・HTTPS APIと別プロセスのMCPを使い、通信内容・回数・失敗状態を検証する。失敗注入は`test-fixture`ビルドに限定する |
 | `tests/proxy_e2e.rs`と`src/proxy.rs` / `src/proxy_egress.rs` / `src/proxy_ipc.rs`内のテスト | Rustの偽SSH・echo、認証付きIPCとCONNECT出口の境界を検証する |
@@ -28,7 +31,7 @@ PlumivoxはTwitterAPI.ioを経由してXへの投稿・認証更新・公開投�
 
 `mcp.json`は作業ディレクトリを`${PLUGIN_ROOT}`として`./dist/plumivox --stdio`を起動する。Windowsは`.exe`を解決し、macOSはApple Silicon向けARM64実行ファイルを使う。本体と開発ツール・E2EはRustで、Node.jsのインストールや起動時のコード取得を必要としない。旧Nodeランチャーは廃止し、旧登録はネイティブ実行ファイルへ変更する。マーケットプレイスは`.agents/plugins/marketplace.json`、プラグイン情報は`plugin.json`に置く。
 
-開発用の成果物は、既定ブランチで手動起動する配布CIが各OSの実行環境で検証してから非公開R2へ保存する。`plumivox/ci/{commit}/{run}/{attempt}/{target}/`に実行ファイル・第三者ライセンスを保存し、サイズとSHA256を含むmanifestを最後に保存する。既存オブジェクトの上書きを拒否し、取得ではidentity・ファイル名・サイズ・SHA256を照合する。R2は配布準備の受け渡しであり、GitHub mainの同梱`dist`を使うプラグインの導入・更新経路は維持する。CIは`dist`を自動コミットせず、latestの差替えや過去成果物の自動削除も行わない。操作・保持方針は [docs/distribution.md](docs/distribution.md) を参照する。
+開発用の成果物は、既定ブランチで手動起動する配布CIが各OSの実行環境で検証してから非公開R2へ保存する。`plumivox/ci/{commit}/{run}/{attempt}/{target}/`に実行ファイル・第三者ライセンスを保存し、サイズとSHA256を含むmanifestを最後に保存する。既存オブジェクトの上書きを拒否し、取得ではidentity・ファイル名・サイズ・SHA256を照合する。この非公開R2は配布準備の受け渡しであり、GitHub mainの同梱`dist`を使うプラグインの導入・更新経路は、Setupの配信を確かめて縮小するまで維持する。Setupの配信は別の公開バケットで行う（[Setup（Velopack）](#setupvelopack)）。CIは`dist`を自動コミットせず、latestの差替えや過去成果物の自動削除も行わない。操作・保持方針は [docs/distribution.md](docs/distribution.md) を参照する。
 
 ## 初期設定と公開中継の構築
 
@@ -47,6 +50,32 @@ Bash互換経路の新規導入にも同じ属性・capabilityの安全条件と
 SSH設定の交換中は同時管理操作を避ける。Rust版・Bash版とも交換した旧inodeをroot限定のバックアップディレクトリに保持し、旧ファイル記述子を利用する処理の終了、新旧内容、SSH管理接続の動作を本人が確認してから整理する。自動復元・自動清掃を行わず、安全条件をBash版への切替えで迂回しない。
 
 配布CIはWindows・macOS本体に加え、Linux x86_64・aarch64で静的VPSインストーラーをビルドして対象CPUで起動を確認する。処理は`xtask/src/ci.rs`のRustコマンドへ集約し、PowerShellスクリプトは使わない。VPS成果物も既存R2経路で受け渡し、GitHub mainの同梱資材から導入する。ローカルのCLI・fixture検証と、実システムへの導入・実R2通信・CI起動の結果は区別する。
+
+## Setup（Velopack）
+
+本人の決定（2026-11-15）により、Windowsの既定の配布をSetup（Velopack）へ移した。共通仕様は`D:\Dev\APP-DISTRIBUTION.md`の多プロセス型、参考実装はRemnifold。packIdは`PlumivoxApp`、導入先は既定で`%LOCALAPPDATA%\PlumivoxApp`（`current\plumivox.exe`）、ユーザー単位で管理者権限を要求しない。
+
+- **起動時処理**：`main`は全サブコマンドの最初に`VelopackApp`を自動適用オフで実行する。Velopackのフック引数（`--veloapp-install`など）はここで処理して終了コード0で終える。Velopackは環境変数を書き換えるため、tokioのスレッドを作る前の同期処理で行う。
+- **多プロセス型の適用**：Velopackの適用は導入先の自分以外の全プロセスを強制終了する。Plumivoxはセッションごとのstdio MCPと、MCPが`current_exe()`から起動する共有中継daemonが導入先から動くため、日中には適用しない。確認・取得はstdio MCPの背景スレッドだけが行い（24時間の間引き、失敗も24時間は再試行しない、`app-update.lock`で複数MCPの重複取得を防ぐ）、適用はログオン時のRun値から起動する`--update-apply`だけが行う。導入先から他のプロセスが1つでも動いていれば`busy`として次のログオンへ回し、強制終了しない。
+- **信頼**：取得はR2からのHTTPSとVelopackのフィードのハッシュ照合で守り、適用前にnupkg内の全PE（.exe・.dll）のAuthenticode署名が有効で、署名者のCNが本人の証明書（`Open Source Developer Yuichiro Shinozaki`）であることを確かめる。主実行ファイル`lib/app/plumivox.exe`と更新器`Squirrel.exe`はちょうど1つずつ、曖昧な名前を含むパッケージは拒否する。失効確認はしない（ログオン時のオフラインでも適用できるようにするため）。配信元へ別のビルドを置かれた場合も、署名者が違えば適用しない。
+- **登録**：インストールフックと、フック以外の起動（`--update-apply`・引数なしの起動・stdio起動）で、Claude Code（`claude mcp add --scope user plumivox -- <exe> --stdio`）とCodex（`codex mcp add plumivox -- <exe> --stdio`）へ公式CLIで登録する。設定ファイルを直接書き換えない。`mcp get`でこの実行ファイルを指す登録は触らず、旧プラグインの`dist`など別の場所を指す同名の登録だけを置き換える。フックはCLI 1回を3秒で子孫ごと打ち切り（Velopackはフックを15～30秒で打ち切る）、終わらなかったCLIは`setup-registration.json`に未完了と残して30秒の上限でやり直す。更新の後は、パスが同じならMCPの登録を触らずRun値だけを張り直す（使用中のセッションの登録を外さないため）。CLIはPATH上の`.exe`だけを探す。
+- **状態の置き場**：`auto_update`（既定ON）、確認・失敗時刻、ロック、診断ログ、登録状態は、データフォルダー（セッション保存の既定の親）の子`app-update\`に置く。インストールフックが`--setup`より先にデータフォルダーを作っても、セッション保存と同じ本人限定の権限（Windowsは保護付きDACL、macOSは0700）で作る。導入先の`current\`は更新で入れ替わるため使わない。
+- **保存先の保護**：セッション・設定・SSH鍵の保存先の禁止先に、Velopackの導入先（実行中の導入の`get_root_dir()`と、既定の`%LOCALAPPDATA%\PlumivoxApp`・`/Applications/Plumivox.app`・`~/Applications/Plumivox.app`）を加えた。プラグインルートの判定は変えていない。
+- **解除**：アンインストールフックと`--uninstall-setup --apply`は、この実行ファイルを指すMCP登録とRun値だけを外し、データフォルダー（設定・セッション・`app-update.json`）を残す。macOSにはVelopackのフックとアンインストーラーが無いため、引数なしの起動・stdio起動で登録し、解除は`--uninstall-setup --apply`で行う（`osx`チャネルは未配信）。
+- **案内**：管理下のビルドを端末から引数なしで起動した場合とSetup直後の初回起動は、stdioを待たずに導入済み・登録済みであることと、未設定なら`--setup`の実行を案内する。初回起動と、コンソールに付いているのが自分だけ（スタートメニューからの起動など、終了とともに窓が閉じる）のときは、Enterを待ってから閉じる。秘密値を扱う`--setup`は自動で始めない。silentのSetupは導入後にアプリを起動しない（Velopack 1.2.161で確認）。MCPクライアントはstdinをパイプで渡すため従来どおりstdioで動き、管理外のビルドの素の起動もstdioのまま。
+- **配信**：`release-velopack.yml`（手動起動・`release/*`だけ・Environment `r2-velopack`）が、cargoのビルドを済ませた後に、署名用Secretsを渡すstepでは事前にビルドしたxtaskだけを実行して梱包・署名・署名者検証を行い、公開R2の`velopack/`へ置く。版付きの成果物は新規作成のみ（既存なら内容を照合し、違えば失敗）、固定名のSetup・`releases.win.json`などは置き換え、`releases.win.json`を最後に置く。
+- **範囲外**：Linuxは対象外（VPSインストーラーはそのまま）。プラグインの縮小（`mcp.json`と`dist/`の削除）とToolport登録の自動書き換えは行わない。
+
+## ローカライズ
+
+本人の決定（2026-11-15）により、共通仕様`D:\Dev\APP-DISTRIBUTION.md`の「8. ローカライズ」に揃えた。手本はRemnifoldの`native/src/locale.rs`。
+
+- **人が読む文言は9言語**：ja・en・zh-CN・zh-TW・ko・es・fr・de・pt-BR。対象はCLIの使い方（不明な引数）と`--help`、`--setup`の質問・表示・エラー（`--check`で設定読込みから返ったエラーもコードに応じて訳す）、Setup版の案内（welcome）、`--uninstall-setup`の`description`・`reason`・`next`の値。JSONのキー・`status`・エラーコードは訳さない。
+- **言語の決め方**：`PLUMIVOX_LANGUAGE` → `LC_ALL` → `LC_MESSAGES` → `LANG`（空・`C`・`POSIX`は飛ばす）→ OSの表示言語（Windowsは`GetUserDefaultUILanguage`、macOSは`AppleLanguages`の先頭）→ 英語。タグは`zh-Hans`・`zh-CN`・`zh-SG`をzh-CN、`zh-Hant`・`zh-TW`・`zh-HK`・`zh-MO`をzh-TW、`pt-*`をpt-BR、それ以外を主言語で照合する。判定は1プロセスで1回だけ、最初に文言を引いたときに行う。
+- **辞書**：`src/locales/<タグ>.json`を`include_str!`で埋め込み、コードは安定した識別子のキー（`setup.prompt.x_user`など）を文字列リテラルで`locale::tr`・`tr_with`に渡す。プレースホルダーは`{name}`。辞書に無いキーは英語、英語にも無ければキーそのものを返す。
+- **AIが読む文言は英語**：MCPのツールの説明・入力スキーマの説明（`src/tool-definitions.json`）と、MCP応答のエラー文（`client.rs`・`config.rs`・`server.rs`・`session.rs`・`proxy.rs`）は英語に統一し、辞書を通さない。stdio MCPの経路では言語判定（macOSでは子プロセスを起動する）も行わない。ツール名・引数・応答の形・エラーコード・段階情報（`stage`・`postAttempted`など）は変えていない。投稿本文など利用者のデータは訳さない。
+- **整合テスト**（`src/locale.rs`のテスト、`cargo test --lib`で実行）：全言語の辞書のキー集合とプレースホルダーの一致、空の訳がないこと、`src/`のコードが参照するキーがすべて辞書にあり辞書のキーがすべて使われていること、タグ照合とWindowsのLANGID変換、`tool-definitions.json`がASCIIだけであること。実行ファイルでの切替は`tests/setup_e2e.rs`の`cli-text-follows-language-settings`で確かめる。ウィザードのE2Eは`PLUMIVOX_LANGUAGE=ja`に固定して日本語の質問文で照合する。
+- **範囲外**：VPSインストーラー（`vps-installer/`・`setup/vps/install.sh`）の表示と、開発用の`xtask`の表示は日本語のまま。`docs/`・AGENTS.md・DESIGN.md・CHANGELOG.mdは訳さない。READMEは英語の`README.md`を正本に、`README.<タグ>.md`の8言語版を置く。
 
 ## データフロー
 

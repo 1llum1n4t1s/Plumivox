@@ -1,5 +1,7 @@
 mod ci;
 mod r2;
+// Setup（Velopack）の梱包・公開・隔離E2E（velopack-pack / velopack-publish / test-setup-velopack-e2e）。
+mod velopack;
 #[cfg(windows)]
 mod windows_signing;
 
@@ -371,13 +373,14 @@ fn build_vps(arch: &str) -> Result {
 
 fn check() -> Result {
     cargo_run(&["fmt", "--all", "--", "--check"])?;
+    // update-feed-test も付け、Setup（Velopack）E2E 用のスタブ・テスト用の分岐も型検査する。
     cargo_run(&[
         "check",
         "--locked",
         "--workspace",
         "--all-targets",
         "--features",
-        "test-fixture",
+        "test-fixture,update-feed-test",
     ])?;
     for file in [
         "plugin.json",
@@ -607,6 +610,12 @@ fn main() -> Result {
     ) {
         return r2::execute(&args);
     }
+    if matches!(
+        args.first().map(String::as_str),
+        Some("velopack-pack" | "velopack-publish" | "test-setup-velopack-e2e")
+    ) {
+        return velopack::execute(&args);
+    }
     if args.first().map(String::as_str) == Some("build-vps") {
         if args.len() != 2 {
             return Err("cargo xtask build-vps <x86_64|aarch64>".into());
@@ -625,7 +634,7 @@ fn main() -> Result {
 }
 
 /// 引数なし・不明なコマンドで示す一覧。main の分岐と r2・ci の入口を合わせて載せる。
-const USAGE: &str = "cargo xtask build | build-unsigned | build-vps <x86_64|aarch64> | check | licenses | test-e2e | test-api-e2e | test-proxy-e2e | test-proxy-shared-e2e | test-setup-e2e | artifact-upload | artifact-download | ci-<command>";
+const USAGE: &str = "cargo xtask build | build-unsigned | build-vps <x86_64|aarch64> | check | licenses | test-e2e | test-api-e2e | test-proxy-e2e | test-proxy-shared-e2e | test-setup-e2e | test-setup-velopack-e2e | velopack-pack --work <dir> [--sign] [--binary <exe>] [--pack-id <id> --version <x.y.z>] | velopack-publish --packages <dir> [--channel win] [--dry-run] | artifact-upload | artifact-download | ci-<command>";
 
 #[cfg(test)]
 mod artifact_tests {

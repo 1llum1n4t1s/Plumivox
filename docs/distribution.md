@@ -1,6 +1,6 @@
 # 配布成果物の保存と取得
 
-開発用の配布CIはWindows x64、macOS ARM64（Apple Silicon）、Linux x86_64・aarch64の静的リンクVPSインストーラーをCloudflare R2へ保存します。OSごとのビルド・検証結果を配布準備へ渡すための保管先です。利用者向けプラグインはGitHubの最新`main`に同梱した`dist`から起動し、VPSインストーラーは同梱した`setup/vps`の実行物を使います。R2の資格情報、Rust、Node.js、Wrangler、起動時ダウンロードは要求しません。
+開発用の配布CIはWindows x64、macOS ARM64（Apple Silicon）、Linux x86_64・aarch64の静的リンクVPSインストーラーをCloudflare R2へ保存します。OSごとのビルド・検証結果を配布準備へ渡すための保管先です。WindowsのSetup版は別の公開バケットから配信し（[Setup（Velopack）の配信](#setupvelopackの配信)）、プラグイン版はGitHubの最新`main`に同梱した`dist`から起動し、VPSインストーラーは同梱した`setup/vps`の実行物を使います。R2の資格情報、Rust、Node.js、Wrangler、起動時ダウンロードは要求しません。
 
 ## 管理者の設定
 
@@ -78,3 +78,42 @@ CIはlatestを更新せず、古い成果物を自動削除しません。管理
 ローカルでは`cargo test --locked --package xtask`で入力・manifest・サイズ・ハッシュと、偽HTTPサーバーを使うcurl転送の条件を確認できます。実R2への認証・保存・取得とGitHub Actionsの全工程は実行結果で確認する必要があります。この構成の追加だけでは実クラウド・CIの実行確認は完了していません。
 
 過去の`macos-universal` identityは既存成果物のダウンロードにのみ対応します。新規アップロードは`macos-arm64`を使用し、旧identityへのアップロードは拒否します。
+
+## Setup（Velopack）の配信
+
+WindowsのSetupは、上記の非公開成果物とは別の公開バケット`plumivox-updates`の`velopack/`から配信します（`https://plumivox-updates.kagayoi.com/velopack/`）。アプリはこの`releases.win.json`と`*-full.nupkg`を読んで自動更新します。macOS用の`releases.osx.json`はまだ配信しません。
+
+### 管理者が用意するもの
+
+| 項目 | 値 |
+| --- | --- |
+| R2バケット | `plumivox-updates`（公開。カスタムドメイン`plumivox-updates.kagayoi.com`を割り当てる） |
+| アクセスキー | `plumivox-updates`だけに限定したObject Read & Write権限。成果物用`plumivox-artifacts`のキーと分ける |
+| GitHub Environment | `r2-velopack`。Deployment branchesは`release/*`だけ（Selected branches）。承認者なし |
+| `r2-velopack`のVariables | `PLUMIVOX_UPDATES_R2_ACCOUNT_ID`（32桁）、`PLUMIVOX_UPDATES_R2_BUCKET`（`plumivox-updates`） |
+| `r2-velopack`のSecrets | `PLUMIVOX_UPDATES_R2_ACCESS_KEY_ID`、`PLUMIVOX_UPDATES_R2_SECRET_ACCESS_KEY`、`SIGILUNE_EMAIL`、`SIGILUNE_TOTP_URI` |
+
+署名はWindows配布物と同じSigilune（本人のCertum証明書`Open Source Developer Yuichiro Shinozaki`）です。アプリは適用前にnupkg内の全PEの署名者をこのCNで照合するため、未署名・別の署名者の一式を配信すると、利用者の更新は適用前に拒否されます。
+
+### CIで梱包・公開する
+
+`release/<版>`ブランチ（Cargo.tomlの版と一致）で、GitHub Actionsの「Release Velopack」を手動実行します。pushでは起動しません。ジョブは次を順に行います。
+
+1. 固定Git URLから対象commitを取得・照合し、Rust 1.100.0とVelopack CLI 1.2.161（`dotnet tool install --global vpk --version 1.2.161`）を用意する。
+2. `cargo xtask ci-velopack-branch`でブランチ名と版の一致、`cargo xtask check`、`cargo xtask test-setup-velopack-e2e`（未署名のテスト用packIdで隔離E2E）。
+3. 既定の機能だけで`plumivox.exe`をreleaseビルドし、`cargo xtask licenses`とxtask自体のビルドも済ませる。
+4. 署名用Secretsを渡すstepでは**cargoを動かさず**、先にビルドしたxtaskを直接実行して`velopack-pack --sign --binary <plumivox.exe>`を行う（Sigiluneの署名テンプレートで全PEとSetupに署名し、Setupとnupkg内の全PEの署名者・Certumの発行者・タイムスタンプを検証する）。
+5. Sigiluneからサインアウトし、R2のSecretsだけを渡すstepで`velopack-publish`を実行する。版付きの成果物（nupkg・版付きSetup）は`If-None-Match: *`の新規作成のみで、既存なら内容を照合して違えば失敗する。固定名（`PlumivoxApp-win-Setup.exe`・`assets.win.json`・`RELEASES`）は置き換え、`releases.win.json`を最後に置く。置いた全オブジェクトを読み直してSHA256を照合する。
+
+### 手元で確認する
+
+```powershell
+cargo xtask velopack-pack --work D:\tmp\plumivox-pack            # 未署名の本番packId（配信には使えない）
+cargo xtask velopack-pack --work D:\tmp\plumivox-pack --sign     # Sigilune で署名・検証
+cargo xtask velopack-publish --packages D:\tmp\plumivox-pack\packages --dry-run
+cargo xtask test-setup-velopack-e2e
+```
+
+`--work`は空の既存フォルダー（リポジトリの外、リンクを含まない）にします。`--sign`は`--pack-id`・`--version`（隔離検証用）と併用できず、`update-feed-test`機能付きのビルドを`--binary`に渡すと拒否します。`velopack-publish`は`--dry-run`以外では`PLUMIVOX_UPDATES_R2_*`の4つの環境変数を要求し、バケット名が`plumivox-updates`でなければ書き込みません。実際の公開は明示の依頼があるときだけ行います。
+
+`cargo xtask test-setup-velopack-e2e`はテスト用packId`PlumivoxVelopackTest`の9.0.0・9.0.1を未署名で梱包し、本物の`Setup.exe --silent --installto`で`PLUMIVOX_SETUP_VELOPACK_E2E_OUTPUT_DIR`（未指定時は一時フォルダーの`Codex/Plumivox/velopack-*`）の配下へ導入して、登録・更新の取得と適用・busy・未署名の拒否・アンインストールを確かめます。隔離の方法と項目は[検証方針](verification.md#setupvelopackの隔離e2e)を参照してください。ローカルの合格は、署名済みパッケージ・R2からの実取得・実際のClaude Code／Codex CLIでの動作を確かめたことになりません。

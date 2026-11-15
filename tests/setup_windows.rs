@@ -307,10 +307,15 @@ impl Drop for ConsoleCodePage {
         }
     }
 }
+// 専用コンソールが窓を持たないことを確かめるために使う（入力は WriteConsoleInputW で窓に依存せず与える）。
+#[link(name = "user32")]
+unsafe extern "system" {
+    fn IsWindowVisible(window: *mut std::ffi::c_void) -> i32;
+}
 #[link(name = "kernel32")]
 unsafe extern "system" {
-    fn FreeConsole() -> i32;
-    fn AllocConsole() -> i32;
+    fn GetConsoleWindow() -> *mut std::ffi::c_void;
+    fn GetConsoleProcessList(list: *mut u32, count: u32) -> u32;
     fn GetStdHandle(kind: u32) -> *mut std::ffi::c_void;
     fn GetConsoleOutputCP() -> u32;
     fn SetConsoleOutputCP(code_page: u32) -> i32;
@@ -546,6 +551,29 @@ fn send_console(console: &fs::File, value: &str, secret: bool, submit: bool) -> 
     Ok(())
 }
 
+/// fixture が持つコンソールが「窓を持たない専用コンソール」であることを確かめる。
+/// `terminal()` は fixture を CREATE_NO_WINDOW で起動するため、fixture は窓の無い専用コンソールを
+/// 持つ前提になる（ここで AllocConsole で見えるコンソールを作ってはならない。作成直後に窓が一瞬でも
+/// 表示され、フォーカスを奪って本人のキー入力が入力バッファへ流れ込み、本人の画面も塞ぐため）。
+/// 前提が崩れていれば、入力を送る前にここで失敗させる:
+/// - 窓があるなら見えていないこと（通常は GetConsoleWindow が NULL）。
+/// - このコンソールに接続しているプロセスが fixture 自身だけであること
+///   （親・テストランナーのコンソールを共有していると、Ctrl+C の合成イベントが親へ届き、入力も奪い合う）。
+fn verify_private_console() -> Result<()> {
+    let window = unsafe { GetConsoleWindow() };
+    ensure!(
+        window.is_null() || unsafe { IsWindowVisible(window) } == 0,
+        "The fixture console has a visible window; refusing to send input"
+    );
+    let mut attached = [0u32; 8];
+    let count = unsafe { GetConsoleProcessList(attached.as_mut_ptr(), attached.len() as u32) };
+    ensure!(
+        count == 1,
+        "The fixture console is not private to the fixture (attached processes: {count}); refusing to send input"
+    );
+    Ok(())
+}
+
 #[test]
 #[ignore = "Dedicated subprocess fixture, invoked explicitly by the setup suite"]
 fn terminal_fixture() -> Result<()> {
@@ -553,7 +581,7 @@ fn terminal_fixture() -> Result<()> {
         return Ok(());
     }
     let request: Value = serde_json::from_reader(std::io::stdin())?;
-    // AllocConsoleで標準ハンドルが変わっても、結果は親の元のpipeへ返す。
+    // 結果は親が受ける元のpipe（標準出力）へ返す。
     let output_handle = unsafe { GetStdHandle((-11i32) as u32) };
     ensure!(
         !output_handle.is_null() && output_handle as isize != -1,
@@ -561,13 +589,10 @@ fn terminal_fixture() -> Result<()> {
     );
     let mut result_output =
         fs::File::from(unsafe { BorrowedHandle::borrow_raw(output_handle) }.try_clone_to_owned()?);
-    unsafe {
-        FreeConsole();
-    }
-    ensure!(
-        unsafe { AllocConsole() } != 0,
-        "Cannot allocate dedicated fixture console"
-    );
+    // 親(`terminal()`)が CREATE_NO_WINDOW で起動しているので、fixture は窓を持たない専用コンソールを持つ。
+    // AllocConsole/FreeConsole で見えるコンソールを作らない。以後の入力はすべて
+    // WriteConsoleInputW（窓・フォーカスに依存しない）で与える。前提が崩れていれば入力前に失敗させる。
+    verify_private_console()?;
     // fixture自身だけは制御イベントを受け流す。子にはこのcallbackは継承されない。
     ensure!(
         unsafe { SetConsoleCtrlHandler(Some(fixture_ctrl_handler), 1) } != 0,
@@ -625,9 +650,15 @@ fn terminal_fixture() -> Result<()> {
     ] {
         command.env_remove(name);
     }
+    // 質問文を日本語の期待値で照合するため、表示言語を固定する（OS・CI の言語に依存させない）。
+    // request["env"] で別の言語を指定したケースはそちらが優先される。
+    command.env("PLUMIVOX_LANGUAGE", "ja");
     for (name, value) in request["env"].as_object().unwrap() {
         command.env(name, value.as_str().unwrap());
     }
+    // 製品の起動には CREATE_NO_WINDOW を付けない（付けると別のコンソールになり、CONIN$への入力・
+    // Ctrl+Cの合成イベントが製品へ届かない）。fixture の窓の無い専用コンソールを継承するので、窓は出ない。
+    // 同じ理由で、下の bounded_output の子（busy_at）も継承に任せる。
     command
         .stdin(Stdio::from(console.try_clone()?))
         .stdout(Stdio::piped())
@@ -810,6 +841,11 @@ async fn terminal(mut request: Value) -> Result<Value> {
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    // CREATE_NO_WINDOW: fixture は窓を持たない専用コンソール（親のコンソールとは別）を得る。
+    // CONIN$/CONOUT$・WriteConsoleInputW・コンソールモード・コードページ・GenerateConsoleCtrlEvent は
+    // この専用コンソール内だけで成り立つ。見えるコンソールを作らないので、本人の画面に窓は出ない。
+    // 専用コンソールを持たせたいときは AllocConsole ではなくこのフラグを使う（AGENTS.md参照）。
+    command.creation_flags(0x0800_0000);
     let mut child = command.spawn()?;
     // request受信までfixtureは製品を起動しない。先にJobへ所属させ、timeout時も全子孫を回収する。
     let _job = fixture_job(
@@ -952,7 +988,22 @@ pub async fn run(suite: &mut Suite) -> Result<()> {
     acl(&wide_parent, true)?;
     let key = wide_parent.join("keys/plumivox_ed25519");
     let settings = wide_parent.join("native-settings.json");
-    macro_rules! case {($name:expr,$body:block)=>{{let result:Result<()>=async $body.await;suite.record($name,result);}};}
+    // PLUMIVOX_SETUP_CASES（カンマ区切りのケース名）を指定すると、そのケースと前提の鍵作成だけを実行する
+    // （専用コンソールを使うケースを単独で確かめる用。未設定なら全件。全件検証では未設定にする）。
+    let only: Option<Vec<String>> = std::env::var("PLUMIVOX_SETUP_CASES")
+        .ok()
+        .filter(|value| !value.is_empty())
+        .map(|value| value.split(',').map(str::to_owned).collect());
+    macro_rules! case {($name:expr,$body:block)=>{{
+        let name: &str = $name;
+        let selected = only.as_ref().is_none_or(|names| {
+            name == "native-prepare-key-and-refuse-replacement" || names.iter().any(|n| n == name)
+        });
+        if selected {
+            let result:Result<()>=async $body.await;
+            suite.record(name,result);
+        }
+    }};}
     case!("native-broad-parent-actually-inherits-everyone-read", {
         let probe = wide_parent.join("inherited-probe.txt");
         fs::write(&probe, "non-secret fixture")?;

@@ -11,7 +11,14 @@ const BINARY: &str = env!("CARGO_BIN_EXE_plumivox-vps-setup");
 
 // 実バイナリを使い、入力待ちや意図しない長時間処理も失敗として検出する。
 fn cli(args: &[&str]) -> Output {
-    let mut child = Command::new(BINARY)
+    let mut command = Command::new(BINARY);
+    // Windowsでもテストの子がコンソール窓を出さないようにする（CREATE_NO_WINDOW）。
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x0800_0000);
+    }
+    let mut child = command
         .args(args)
         .env("PLUMIVOX_PROXY_PASSWORD", SECRET)
         .stdin(Stdio::null())

@@ -12,7 +12,7 @@ const SUBJECT: &str = "Open Source Developer Yuichiro Shinozaki";
 
 /// sigilune.exeを 環境変数SIGILUNE_EXE → PATH → %USERPROFILE%\.local\Sigilune\bin の順に探す。
 /// 同じフォルダーにsigilune_dlib.dllが必要。見つからなければ未署名へ切り替えずに失敗する。
-fn sigilune() -> Result<PathBuf> {
+pub(crate) fn sigilune() -> Result<PathBuf> {
     let candidate = if let Some(explicit) = env::var_os("SIGILUNE_EXE") {
         PathBuf::from(explicit)
     } else if let Some(found) = env::var_os("PATH").and_then(|paths| {

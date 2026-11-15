@@ -4,6 +4,8 @@
 
 macOSの対話セットアップE2EはRustから`libc::openpty`で制御TTYを作り、入力時のECHO無効化を確認する。PythonやNode.jsは使わない。
 
+Windowsの対話セットアップE2Eは、テストが`AllocConsole`で見えるコンソールを作らず、`CREATE_NO_WINDOW`で起動した子（`terminal_fixture`）の窓を持たない専用コンソールで`CONIN$`・`WriteConsoleInputW`・コードページ・Ctrl+Cを検証する。fixtureは入力前に窓が無いこと・コンソールに接続しているのが自分だけであることを確かめ、満たさなければ失敗する。
+
 Windowsの`cargo xtask build`はSigiluneで署名し、本人の発行者・信頼チェーン・タイムスタンプの検証後に配布物を置換する。Sigilune不在・認証・署名・検証の各失敗ではビルドを失敗させ、既存配布物を保持する。`SIGILUNE_EXE`に存在しないパスと失敗終了するfixtureを指定し、実際の`cargo xtask build`が非ゼロ終了し既存配布物のハッシュが不変であることを確認する。通常の`cargo xtask build`で署名済み配布物を生成して`sigilune verify --signer "Open Source Developer Yuichiro Shinozaki"`、Defender個別スキャン、MCP起動で確認する。`build-unsigned`と`ci-distribution-build`単体はWindowsの署名を省く準備物を生成し、配布CIでは後続の署名・`ci-windows-verify-signature`の成功をもって署名済みとする。
 
 手動起動の配布CIはWindowsとmacOSそれぞれで`cargo xtask check`・`cargo xtask test-e2e`を実行し、fixture機能を含まないWindows x64／macOS ARM64の準備用成果物を最後に再ビルドしてR2へ保存する。WindowsのCI成果物は、Sigiluneで署名し、`cargo xtask ci-windows-verify-signature`で本人の署名・タイムスタンプを確認してから保存する。macOSでは同じジョブ内で専用Keychainを作成・unlockして`PLUMIVOX_TEST_KEYCHAIN`へ渡し、既定Keychain・検索一覧を変更せず、終了時に専用Keychainを削除する。CIの起動・実R2通信は別途実行結果が必要で、ローカルの構文・Rustテストの成功を代用しない。手順は [配布成果物](distribution.md) を参照する。
@@ -152,11 +154,34 @@ SSH停止では、転送解除の応答まで旧リスナーの解放を遅ら�
 
 `cargo xtask test-proxy-e2e`と`cargo xtask test-proxy-shared-e2e`は、検証用バイナリのビルドとプロキシのRustテストに続いて、同じプロキシE2Eを実行します。二つの別プロセスのMCP、独立したdaemon、Rustの偽SSH・HTTPサーバーで共有ライフサイクルを確認します。DNS・TCPの製品実装は置き換えません。出力先は`PLUMIVOX_PROXY_NATIVE_E2E_OUTPUT_DIR`またはユーザーの一時ディレクトリ配下`Codex/Plumivox/<UUID>`で、`summary.json`と`ssh-trace.json`を読みます。偽鍵・設定の清掃は呼び出し側が担当します。
 
+## Setup（Velopack）の隔離E2E
+
+`cargo xtask test-setup-velopack-e2e`（Windows）は、`update-feed-test`と`test-fixture`の機能付きで`--version`の表示だけを変えた実行ファイルを2つビルドし、テスト用packId`PlumivoxVelopackTest`の9.0.0・9.0.1を未署名で梱包してから、`tests/setup_velopack_e2e.rs`で本物の`Setup.exe --silent --installto <出力先配下>`を使って検証します。出力先は`PLUMIVOX_SETUP_VELOPACK_E2E_OUTPUT_DIR`（未指定時は一時フォルダーの`Codex/Plumivox/velopack-*`）で、`suite/summary.json`と`suite/velopack-evidence.json`（CLIスタブの呼び出し、Run値、登録状態、診断ログ、本番の値の前後）を読みます。
+
+隔離: 子プロセスの`LOCALAPPDATA`・`APPDATA`・`USERPROFILE`・`HOME`・`CODEX_HOME`・`CLAUDE_CONFIG_DIR`・`TEMP`/`TMP`・`PLUMIVOX_SECRETS_FILE`を出力先の配下へ向け、`PATH`は`claude.exe`・`codex.exe`として置いたスタブ（`tests/cli-stub.rs`）とSystem32だけにします。導入先と差し替えた`LOCALAPPDATA`は兄弟のフォルダーです。テスト用梱包はショートカットを作りません。HKCUのRun値`PlumivoxVelopackTest Update`とUninstallの項目だけが一時的に作られ、終わりに本物のアンインストーラーで外します（失敗した場合も残っている導入を外します）。管理プロキシは`tests/proxy_support.rs`の偽SSHだけへ接続します。
+
+| 項目 | 期待する結果 |
+| --- | --- |
+| (1) 新規の導入 | フックで両CLIに`mcp get`→`mcp add ...current\plumivox.exe --stdio`、Run値`PlumivoxVelopackTest Update`、状態`done=[claude,codex]`・`logon=true`・版9.0.0 |
+| (2) 既存の同名登録 | 旧`dist`を指すclaudeの登録はget→remove→add、自分を指すcodexの登録はgetだけ |
+| (3) フック中の遅いCLI | addを3秒超遅らせると打ち切られて`done`に入らず、登録も残らない。続く`--update-apply`（30秒の上限）でget→addして完了 |
+| (4) 変化のない再起動 | `--update-apply`とstdio MCPの起動でCLIの呼び出しが0回 |
+| (5) MCPの実行中 | `--update-apply`は`busy`、`--version`は9.0.0のまま。登録されたRun値のコマンドそのもの（`conhost.exe --headless "<exe>" --update-apply`）でも診断ログに`busy`の記録が残る。`conhost --headless`は標準ハンドルを渡されると（パイプでもNULでも）子を道連れにして終わるため、E2Eではログオン時のExplorerと同じく標準ハンドルを渡さない`CreateProcessW`で起動する |
+| (6) daemonだけが残る | MCPを閉じてもdaemonがあれば`busy`。daemonの終了後に`applied`、`--version`が9.0.1 |
+| (7) 未署名 | テスト用の許可（`PLUMIVOX_UPDATE_ALLOW_UNSIGNED=1`）が無ければ`untrusted`（終了コード2）、版は変わらない |
+| (8) 更新後のフック | MCPのremove/addは0回、状態の版が9.0.1、Run値は同じ導入先を指す |
+| (9) MCPの同時起動 | 3つ同時に起動しても確認・取得は1回 |
+| (10) アンインストール | 自分を指す登録とRun値だけを外し、別の場所を指す登録とデータフォルダーは残る |
+| (11) stdio | 導入した実行ファイルのMCPがinitializeに成功し、標準出力はJSON-RPCだけ |
+| (12) 後片付け | テスト用のRun値・Uninstallの項目が残らず、本番（`PlumivoxApp`・`Plumivox`）のRun値・Uninstallの項目と、本物のClaude Code・Codexの`plumivox`登録が前後で同じ |
+
+このE2Eの合格は、署名済みパッケージの適用、R2からの実取得、実際のClaude Code・Codex CLIでの登録、macOSでの動作を確かめたことにはなりません。署名者の照合は`cargo test --locked --lib`の未署名拒否と、`PLUMIVOX_TEST_SIGNED_FILE`・`PLUMIVOX_TEST_SIGNED_CN`を指定したときだけ走る照合テストで確認します。Run値の単体テストは非公開のapp hive（`RegLoadAppKeyW`）を使い、本物のRunキーに触れません。
+
 ## ビルドと実行
 
 VPSの正式成果物は`cargo xtask build-vps x86_64`・`cargo xtask build-vps aarch64`で生成する静的ネイティブ実行ファイルです。配布CIでは対応するLinux CPUで実行ファイルの起動を確認し、Windows・macOS本体とともに既存R2経路へ保存します。CI処理はRustに集約します。ローカルの検査成功は実R2通信・CI起動の成功とは別で、実R2/CIは未確認です。設定と取得手順は[配布手順](distribution.md)を参照してください。
 
-開発時だけリポジトリをクローンします。プラグインのインストール元にはこの作業ディレクトリを登録せず、[GitHubの最新mainを参照する手順](../README.md#インストール)を使います。
+開発時だけリポジトリをクローンします。プラグインのインストール元にはこの作業ディレクトリを登録せず、[GitHubの最新mainを参照する手順](../README.ja.md#インストール)を使います。
 
 ```powershell
 git clone https://github.com/1llum1n4t1s/Plumivox.git

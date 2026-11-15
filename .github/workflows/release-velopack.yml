@@ -1,0 +1,124 @@
+name: Release Velopack
+
+# Windows の Setup（Velopack）を梱包・署名し、公開 R2（https://plumivox-updates.kagayoi.com/velopack/）へ配信する。
+# 非公開の成果物バケットへ保存する distribution.yml とは別のワークフローで、互いのオブジェクトに触れない。
+#
+# 方針:
+# - 手動起動（workflow_dispatch）だけで、release/* ブランチ上でだけ動く。Environment `r2-velopack` の
+#   deployment branch policy も release/* に限る。push では起動しない（公開バケットへの書き込みを明示の操作に限る）。
+# - CI の手順は Rust（cargo xtask）で行い、PowerShell スクリプトを使わない（AGENTS.md）。
+# - 署名用 Secrets（SIGILUNE_*）を渡す step では cargo を動かさない（依存 crate の build script に Secrets を
+#   見せないため。docs/distribution.md の約束）。xtask は先の step でビルドした実行ファイルを直接実行する。
+# - R2 の Secrets は配信の step だけへ渡す。
+# - 本人が事前に用意するもの（値はここに書かない）: Environment `r2-velopack`（release/* のみ）に
+#   Variables `PLUMIVOX_UPDATES_R2_ACCOUNT_ID`・`PLUMIVOX_UPDATES_R2_BUCKET`（plumivox-updates）、
+#   Secrets `PLUMIVOX_UPDATES_R2_ACCESS_KEY_ID`・`PLUMIVOX_UPDATES_R2_SECRET_ACCESS_KEY`（バケット限定キー）・
+#   `SIGILUNE_EMAIL`・`SIGILUNE_TOTP_URI`。
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-velopack
+  cancel-in-progress: false
+
+jobs:
+  windows-setup:
+    if: ${{ github.repository == '1llum1n4t1s/Plumivox' && github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/heads/release/') }}
+    runs-on: windows-latest
+    environment: r2-velopack
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: bash
+    env:
+      # vpk 1.2.161 を新しい .NET ランタイムでも動かす（ランナーに合う版が無い場合に備える）。
+      DOTNET_ROLL_FORWARD: Major
+    steps:
+      # checkout前はrunner付属stable rustcだけを使用し、以降はrust-toolchain.tomlへ従う（distribution.yml と同じ）。
+      - name: Compile native checkout bootstrap
+        shell: rustc +stable --edition=2021 --crate-name plumivox_ci_bootstrap -o plumivox-ci-bootstrap.exe {0}
+        run: |
+          use std::{env, error::Error, fs, process::Command};
+          type Result = std::result::Result<(), Box<dyn Error>>;
+          fn run(args: &[&str]) -> Result {
+              if !Command::new("git").args(args).status()?.success() {
+                  return Err("Git checkout failed".into());
+              }
+              Ok(())
+          }
+          fn main() -> Result {
+              let script = fs::read_to_string(env::args().nth(1).ok_or("Missing command")?)?;
+              if script.trim() != "checkout" { return Err("Invalid bootstrap command".into()); }
+              let sha = env::var("CHECKOUT_SHA")?;
+              if sha.len() != 40 || !sha.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)) {
+                  return Err("Invalid checkout SHA".into());
+              }
+              run(&["init", "."])?;
+              run(&["remote", "add", "origin", "https://github.com/1llum1n4t1s/Plumivox.git"])?;
+              run(&["fetch", "--no-tags", "--depth=1", "origin", &sha])?;
+              run(&["checkout", "--detach", "FETCH_HEAD"])?;
+              let head = Command::new("git").args(["rev-parse", "HEAD"]).output()?;
+              if !head.status.success() || String::from_utf8(head.stdout)?.trim() != sha {
+                  return Err("Checkout SHA mismatch".into());
+              }
+              Ok(())
+          }
+      - name: Check out the exact release commit
+        shell: rustup run stable ./plumivox-ci-bootstrap.exe {0}
+        env:
+          CHECKOUT_SHA: ${{ github.sha }}
+        run: checkout
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install --no-self-update
+      - name: Install Velopack CLI 1.2.161
+        run: dotnet tool install --global vpk --version 1.2.161
+      - name: Require release/<version> to match Cargo.toml
+        run: cargo xtask ci-velopack-branch
+      - name: Fetch locked dependencies
+        run: cargo fetch --locked
+      - name: Check sources and development tools
+        run: cargo xtask check
+      - name: Run the isolated Setup E2E (unsigned test packId)
+        env:
+          PLUMIVOX_SETUP_VELOPACK_E2E_OUTPUT_DIR: ${{ runner.temp }}\plumivox-velopack-e2e
+        run: cargo xtask test-setup-velopack-e2e
+      - name: Build the release executable and xtask without signing secrets
+        # 依存 crate の build script も動くため、この step には署名用 Secrets を渡さない。
+        # 既定の機能だけでビルドする（update-feed-test・test-fixture を含めない）。
+        run: |
+          set -euo pipefail
+          target="$RUNNER_TEMP/plumivox-target"
+          cargo build --locked --release --target x86_64-pc-windows-msvc --target-dir "$target" --bin plumivox
+          cargo xtask licenses
+          cargo build --locked --release --package xtask --target-dir "$target"
+          mkdir -p "$RUNNER_TEMP/plumivox-tools"
+          cp "$target/x86_64-pc-windows-msvc/release/plumivox.exe" "$RUNNER_TEMP/plumivox-tools/plumivox.exe"
+          cp "$target/release/xtask.exe" "$RUNNER_TEMP/plumivox-tools/xtask.exe"
+          mkdir -p "$RUNNER_TEMP/plumivox-setup"
+      - name: Set up Sigilune
+        id: sigilune
+        uses: 1llum1n4t1s/Sigilune@v1
+      - name: Pack, sign and verify the Setup
+        # 署名用 Secrets はこの step だけへ渡す。cargo を動かさず、ビルド済みの xtask を直接実行する。
+        # 失敗時は自動再試行せず、配信へ進まない。
+        env:
+          SIGILUNE_EMAIL: ${{ secrets.SIGILUNE_EMAIL }}
+          SIGILUNE_TOTP_URI: ${{ secrets.SIGILUNE_TOTP_URI }}
+        run: |
+          "$RUNNER_TEMP/plumivox-tools/xtask.exe" velopack-pack --work "$(cygpath -w "$RUNNER_TEMP/plumivox-setup")" --sign --binary "$(cygpath -w "$RUNNER_TEMP/plumivox-tools/plumivox.exe")"
+      - name: Sign out of Sigilune
+        # ランナー上のCertumセッションを残さない。
+        if: always() && steps.sigilune.outcome == 'success'
+        run: sigilune logout > /dev/null || true
+      - name: Publish the feed and Setup to R2
+        # 版付きの成果物は新規作成のみ（既存なら内容を照合）、固定名は置き換え、releases.win.json は最後。
+        env:
+          PLUMIVOX_UPDATES_R2_ACCOUNT_ID: ${{ vars.PLUMIVOX_UPDATES_R2_ACCOUNT_ID }}
+          PLUMIVOX_UPDATES_R2_BUCKET: ${{ vars.PLUMIVOX_UPDATES_R2_BUCKET }}
+          PLUMIVOX_UPDATES_R2_ACCESS_KEY_ID: ${{ secrets.PLUMIVOX_UPDATES_R2_ACCESS_KEY_ID }}
+          PLUMIVOX_UPDATES_R2_SECRET_ACCESS_KEY: ${{ secrets.PLUMIVOX_UPDATES_R2_SECRET_ACCESS_KEY }}
+        run: |
+          "$RUNNER_TEMP/plumivox-tools/xtask.exe" velopack-publish --packages "$(cygpath -w "$RUNNER_TEMP/plumivox-setup/packages")" --channel win

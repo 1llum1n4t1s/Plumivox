@@ -28,6 +28,9 @@ fn clean(command: &mut tokio::process::Command) {
     ] {
         command.env_remove(key);
     }
+    // 人が読む文言を照合するケースがあるため、表示言語を固定する（OS・CI の言語に依存させない）。
+    // ケースごとの env で別の言語を指定した場合はそちらが優先される。
+    command.env("PLUMIVOX_LANGUAGE", "ja");
     command.stdin(Stdio::null()).kill_on_drop(true);
 }
 async fn execute(
@@ -165,9 +168,56 @@ async fn frozen_selection(suite: &Suite) -> Result<()> {
     Ok(())
 }
 
+/// 人が読む CLI の文言が実行時の言語設定で切り替わることを、実際の実行ファイルで確かめる（全OS共通）。
+/// PLUMIVOX_LANGUAGE が最優先で、空なら LC_ALL → LC_MESSAGES → LANG、未対応の言語は英語。
+/// エラーコード（MODE_INVALID）は言語によらず英字のまま。
+async fn localized_cli() -> Result<()> {
+    let bogus = vec!["--setup".to_string(), "--no-such-option".to_string()];
+    let language = |tag: &str| vec![("PLUMIVOX_LANGUAGE".to_string(), tag.to_string())];
+    for (env, expected) in [
+        (language("en"), "MODE_INVALID: Check the setup options"),
+        (language("ja"), "MODE_INVALID: セットアップのオプション"),
+        (
+            language("de"),
+            "MODE_INVALID: Prüfen Sie die Setup-Optionen",
+        ),
+        (language("zh-Hant-TW"), "MODE_INVALID: 請檢查設定選項"),
+        (language("pt_PT.UTF-8"), "MODE_INVALID: Verifique as opções"),
+        // 未対応の言語は英語。
+        (language("it"), "MODE_INVALID: Check the setup options"),
+        // 明示の上書きが空なら POSIX のロケール変数（空・C は飛ばして LANG）で決まる。
+        (
+            vec![
+                ("PLUMIVOX_LANGUAGE".into(), String::new()),
+                ("LC_ALL".into(), "C".into()),
+                ("LC_MESSAGES".into(), String::new()),
+                ("LANG".into(), "ko_KR.UTF-8".into()),
+            ],
+            "MODE_INVALID: 설정 옵션",
+        ),
+    ] {
+        let out = execute(&binary(), &bogus, &env).await?;
+        let text = text(&out);
+        ensure!(
+            out.status.code() == Some(1) && text.contains(expected),
+            "Localized setup error mismatch for {env:?}: {text}"
+        );
+    }
+    // ヘルプは標準出力へ利用者の言語で出し、終了コードは 0。
+    let out = execute(&binary(), &["--help".to_string()], &language("fr")).await?;
+    let help = String::from_utf8_lossy(&out.stdout);
+    ensure!(
+        out.status.success() && help.contains("Utilisation : plumivox") && help.contains("--setup"),
+        "Localized help mismatch: {help}"
+    );
+    Ok(())
+}
+
 #[tokio::test]
 async fn platform_setup_contract() -> Result<()> {
     let mut suite = Suite::new("PLUMIVOX_SETUP_E2E_OUTPUT_DIR", "setup")?;
+    let result = localized_cli().await;
+    suite.record("cli-text-follows-language-settings", result);
     let result = frozen_selection(&suite).await;
     suite.record("portable-source-priority-and-frozen-selection", result);
     #[cfg(windows)]

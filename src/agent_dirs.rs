@@ -60,3 +60,51 @@ pub(crate) fn has_agent_dir_component(path: &Path) -> bool {
             .any(|blocked| name.eq_ignore_ascii_case(blocked))
     })
 }
+
+/// Setup（Velopack）の導入先。更新で `current\` が入れ替わり、アンインストールで消えるため、
+/// 秘密値を含む設定・セッション・SSH鍵の保存先として拒否する（プラグインルートと同じ扱い）。
+///
+/// - 実行中の実行ファイルが Velopack 管理下なら、その導入先（`get_root_dir()`。`--installto` で
+///   既定以外の場所へ導入した場合も含む）。
+/// - 本番の packId の既定の導入先（Windows `%LOCALAPPDATA%\PlumivoxApp`、macOS
+///   `/Applications/Plumivox.app` と `~/Applications/Plumivox.app`）。プラグイン経路や開発ビルドから
+///   セットアップした場合にも、後から Setup で導入される場所へ保存しないため、存在しなくても含める。
+pub(crate) fn velopack_install_roots() -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    if let Some(locator) = crate::app_update::locate() {
+        roots.push(locator.get_root_dir());
+    }
+    #[cfg(windows)]
+    if let Some(local) = std::env::var_os("LOCALAPPDATA").filter(|value| !value.is_empty()) {
+        roots.push(PathBuf::from(local).join(crate::app_update::PACK_ID));
+    }
+    #[cfg(target_os = "macos")]
+    {
+        roots.push(PathBuf::from("/Applications/Plumivox.app"));
+        if let Some(home) = dirs::home_dir() {
+            roots.push(home.join("Applications").join("Plumivox.app"));
+        }
+    }
+    // 相対パスは全パスの接頭辞と誤判定され得るため除く。
+    roots.retain(|root| root.is_absolute());
+    roots
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn velopack_install_roots_cover_the_default_setup_location() {
+        let roots = velopack_install_roots();
+        assert!(roots.iter().all(|root| root.is_absolute()));
+        #[cfg(windows)]
+        if let Some(local) = std::env::var_os("LOCALAPPDATA").filter(|v| !v.is_empty()) {
+            assert!(roots.contains(&PathBuf::from(local).join("PlumivoxApp")));
+            // 旧来の作業フォルダー（packId を変えた理由）は含めない。
+            assert!(!roots.iter().any(|root| root.ends_with("Plumivox")));
+        }
+        #[cfg(target_os = "macos")]
+        assert!(roots.contains(&PathBuf::from("/Applications/Plumivox.app")));
+    }
+}

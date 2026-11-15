@@ -186,12 +186,20 @@ async fn main() {
                 Ok(guard) => guard,
                 Err(_) => std::process::exit(1),
             };
-            let launched = Command::new(executable)
+            let mut command = Command::new(executable);
+            command
                 .args(["--hold-stderr", "1500"])
                 .stdin(Stdio::null())
                 .stdout(Stdio::null())
-                .stderr(Stdio::inherit())
-                .spawn();
+                .stderr(Stdio::inherit());
+            // 親にコンソールが無い場合に新しい見える窓を作らせない（CREATE_NO_WINDOW）。stderrは
+            // 明示したpipeを継承するので、コンソールの有無に関係なく保持の検証は変わらない。
+            #[cfg(windows)]
+            {
+                use std::os::windows::process::CommandExt;
+                command.creation_flags(0x0800_0000);
+            }
+            let launched = command.spawn();
             #[cfg(windows)]
             let restored = inheritance.restore().is_ok();
             #[cfg(not(windows))]

@@ -1,39 +1,50 @@
 //! 対話式セットアップ。秘密値は端末から読み、コマンド引数には受け取らない。
 use crate::error::{AppError, Result};
+use crate::locale::tr;
 use std::path::PathBuf;
 
+/// セットアップの失敗。端末の利用者が読むので、文言は利用者の言語の辞書から引く（コードは英字のまま）。
+/// 整合テストがキーを拾えるよう、キーは match の各腕に文字列リテラルで書く。
 fn fail(code: &str) -> AppError {
     let message = match code {
-        "SETTINGS_EXISTS" => {
-            "同名アカウントまたは共有中継設定が存在します。既存設定は上書きしません。"
-        }
-        "SETTINGS_CHANGED" => "入力中に設定が変更されました。設定を確認して再実行してください。",
-        "SETTINGS_SAVE_UNCERTAIN" => {
-            "設定の保存結果を確認できませんでした。正本と同じフォルダーの.plumivox-*.tmpを確認し、今回の未使用ファイルと本人が確認できたものだけを退避してから再実行してください。"
-        }
-        "SETTINGS_TEMP_RETAINED" => {
-            "今回の一時設定ファイルを回収できませんでした。正本と同じフォルダーの.plumivox-*.tmpを確認し、今回の未使用ファイルと本人が確認できたものだけを退避してから再実行してください。"
-        }
-        "SETUP_BUSY" => "同じ保存先のセットアップが実行中です。完了後に再実行してください。",
-        "KEY_EXISTS" => "専用SSH鍵が既に存在します。上書きしません。",
-        "KEY_GENERATION_INCOMPLETE" => {
-            "鍵の生成先にファイルが残った状態で処理に失敗しました。指定した秘密鍵と.pubを確認し、本人が今回の未使用・未完了ファイルと確認できたものだけを退避してから再実行してください。自動削除・上書きはしません。"
-        }
-        "ACL_UNSAFE" => "保存先は本人所有で、他の利用者がアクセスできない権限にしてください。",
-        "DEFAULT_ACCOUNT_INVALID" => {
-            "既定アカウントには登録済みのアカウント設定名を指定してください。"
-        }
-        "PATH_INVALID" => {
-            "プラグインとCodex・Claudeなどのユーザー設定フォルダーの外に、リンクを含まない絶対パスを指定してください。"
-        }
-        "SSH_KEYGEN_REQUIRED" => "ssh-keygenで専用のパスフレーズなしSSH鍵を準備してください。",
-        "INPUT_REQUIRED" => "必須項目を入力してください。",
-        "MODE_INVALID" => "セットアップのオプションと組合せを確認してください。",
-        _ => {
-            "セットアップを完了できませんでした。入力形式・SSH鍵・設定・保存先の権限を確認してください。秘密値は表示しません。"
-        }
+        "SETTINGS_EXISTS" => tr("setup.error.settings_exists"),
+        "SETTINGS_CHANGED" => tr("setup.error.settings_changed"),
+        "SETTINGS_SAVE_UNCERTAIN" => tr("setup.error.settings_save_uncertain"),
+        "SETTINGS_TEMP_RETAINED" => tr("setup.error.settings_temp_retained"),
+        "SETUP_BUSY" => tr("setup.error.setup_busy"),
+        "KEY_EXISTS" => tr("setup.error.key_exists"),
+        "KEY_GENERATION_INCOMPLETE" => tr("setup.error.key_generation_incomplete"),
+        "ACL_UNSAFE" => tr("setup.error.acl_unsafe"),
+        "DEFAULT_ACCOUNT_INVALID" => tr("setup.error.default_account_invalid"),
+        "PATH_INVALID" => tr("setup.error.path_invalid"),
+        "SSH_KEYGEN_REQUIRED" => tr("setup.error.ssh_keygen_required"),
+        "INPUT_REQUIRED" => tr("setup.error.input_required"),
+        "MODE_INVALID" => tr("setup.error.mode_invalid"),
+        _ => tr("setup.error.generic"),
     };
     AppError::new(code, message)
+}
+
+/// `--setup --check` で設定の読込み（`config.rs`）から返ったエラーを、利用者の言語の文言に置き換える。
+/// `config.rs` の文言は MCP 応答として AI が読むため英語のままにしてあり、端末に出すここでだけ訳す。
+/// 辞書に対応の無いコードは元のエラー（英語）をそのまま返す。
+#[cfg(any(windows, target_os = "macos"))]
+fn localize_check_error(error: AppError) -> AppError {
+    let message = match error.code.as_str() {
+        "ACCOUNT_INVALID" => tr("setup.check.account_invalid"),
+        "CONFIG_UNAVAILABLE" => tr("setup.check.config_unavailable"),
+        "ACCOUNT_DEFAULT_INVALID" => tr("setup.check.account_default_invalid"),
+        "ACCOUNT_REQUIRED" => tr("setup.check.account_required"),
+        "ACCOUNT_UNKNOWN" => tr("setup.check.account_unknown"),
+        "LOGIN_CREDENTIALS_INVALID" => tr("setup.check.login_credentials_invalid"),
+        "LOGIN_UNAVAILABLE" => tr("setup.check.login_unavailable"),
+        "PROXY_CONFIG" => tr("setup.check.proxy_config"),
+        _ => return error,
+    };
+    AppError {
+        message: message.to_owned(),
+        ..error
+    }
 }
 
 /// アカウント設定名とプロキシ利用者名の書式（セットアップだけが使う）。
@@ -121,6 +132,7 @@ mod native {
     #[cfg(windows)]
     use super::windows::{lock, path_ok, private};
     use super::*;
+    use crate::locale::tr_with;
     #[cfg(target_os = "macos")]
     use fs2::FileExt;
     use serde_json::{Value, json};
@@ -157,6 +169,8 @@ mod native {
         let mut blocked = crate::agent_dirs::agent_user_roots(&home);
         blocked.push(PathBuf::from(env!("CARGO_MANIFEST_DIR")));
         blocked.extend(crate::agent_dirs::executable_plugin_root());
+        // Setup（Velopack）の導入先（.app）は更新・削除で入れ替わるため、保存先にしない。
+        blocked.extend(crate::agent_dirs::velopack_install_roots());
         if blocked.iter().any(|root| path.starts_with(root)) {
             return Err(fail("PATH_INVALID"));
         }
@@ -398,16 +412,19 @@ mod native {
             .ok_or_else(|| fail("PORT_INVALID"))
     }
     async fn keygen(args: &[&str]) -> Result<()> {
-        let result = tokio::time::timeout(
-            std::time::Duration::from_secs(30),
-            tokio::process::Command::new(keygen_executable())
-                .args(args)
-                .kill_on_drop(true)
-                .output(),
-        )
-        .await
-        .map_err(|_| fail("SSH_KEYGEN_REQUIRED"))?
-        .map_err(|_| fail("SSH_KEYGEN_REQUIRED"))?;
+        // 呼び出し側の引数は `-N ""`（パスフレーズ空）・`-P ""`・`-f` 指定で、入力を求めない非対話の形。
+        // 念のため stdin も閉じ、Windows ではコンソール窓を出さない（CREATE_NO_WINDOW）。
+        let mut command = tokio::process::Command::new(keygen_executable());
+        command
+            .args(args)
+            .stdin(std::process::Stdio::null())
+            .kill_on_drop(true);
+        #[cfg(windows)]
+        command.creation_flags(0x0800_0000);
+        let result = tokio::time::timeout(std::time::Duration::from_secs(30), command.output())
+            .await
+            .map_err(|_| fail("SSH_KEYGEN_REQUIRED"))?
+            .map_err(|_| fail("SSH_KEYGEN_REQUIRED"))?;
         if !result.status.success() {
             return Err(fail("SSH_KEYGEN_REQUIRED"));
         }
@@ -493,11 +510,11 @@ mod native {
             #[cfg(windows)]
             super::windows::protect(&public)?;
             private(&public, false)?;
+            let public_key =
+                fs::read_to_string(&public).map_err(|_| fail("SSH_KEYGEN_REQUIRED"))?;
             println!(
-                "VPS側に登録する公開鍵:\n{}",
-                fs::read_to_string(&public)
-                    .map_err(|_| fail("SSH_KEYGEN_REQUIRED"))?
-                    .trim()
+                "{}",
+                tr_with("setup.public_key", &[("key", public_key.trim())])
             );
             Ok(())
         }
@@ -565,10 +582,14 @@ mod native {
         }
         if o.check {
             let store = crate::config::AccountStore::new(Some(settings), None, None);
-            store.get_login_credentials(Some(&o.account)).await?;
+            store
+                .get_login_credentials(Some(&o.account))
+                .await
+                .map_err(localize_check_error)?;
             if store
                 .get_proxy_configuration(Some(&o.account), None)
-                .await?
+                .await
+                .map_err(localize_check_error)?
                 .is_null()
             {
                 return Err(fail("SETTINGS_INVALID"));
@@ -577,9 +598,7 @@ mod native {
                 .as_str()
                 .ok_or_else(|| fail("SETTINGS_INVALID"))?;
             validate_key(Path::new(key)).await?;
-            println!(
-                "設定形式・専用SSH鍵・所有者・権限を確認しました。ネットワーク通信は実行していません。"
-            );
+            println!("{}", tr("setup.check_ok"));
             return Ok(());
         }
         if let Some(default) = o.set_default {
@@ -601,26 +620,27 @@ mod native {
                 Some(d) => d,
                 None if accounts.len() == 1 => o.account.clone(),
                 None => {
-                    println!("アカウント設定名: {}", accounts.join(", "));
-                    ask("既定にするアカウント設定名", "")?
+                    println!(
+                        "{}",
+                        tr_with("setup.account_names", &[("names", &accounts.join(", "))])
+                    );
+                    ask(tr("setup.prompt.default_account"), "")?
                 }
             };
             if !accounts.contains(&default) {
                 return Err(fail("DEFAULT_ACCOUNT_INVALID"));
             }
-            let user = ask("Xユーザー名 (@なし)", "")?;
+            let user = ask(tr("setup.prompt.x_user"), "")?;
             if !crate::config::USER_NAME.is_match(&user) {
                 return Err(fail("USER_INVALID"));
             }
-            let host = ask("VPSホスト名/IP", "")?.to_ascii_lowercase();
-            let ssh_user = ask("SSHユーザー", "plumivox")?;
-            let ssh_port = port("SSHポート", 22, 1)?;
-            let local_port = port("PC内部ポート", 43128, 1024)?;
-            let remote_port = port("VPS内部ポート", 43129, 1024)?;
-            println!(
-                "VPSコンソールで ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub -E sha256 を実行し指紋を照合してください。"
-            );
-            let fingerprint = ask("コンソールで確認済みのSHA256指紋", "")?;
+            let host = ask(tr("setup.prompt.vps_host"), "")?.to_ascii_lowercase();
+            let ssh_user = ask(tr("setup.prompt.ssh_user"), "plumivox")?;
+            let ssh_port = port(tr("setup.prompt.ssh_port"), 22, 1)?;
+            let local_port = port(tr("setup.prompt.local_port"), 43128, 1024)?;
+            let remote_port = port(tr("setup.prompt.remote_port"), 43129, 1024)?;
+            println!("{}", tr("setup.fingerprint_hint"));
+            let fingerprint = ask(tr("setup.prompt.fingerprint"), "")?;
             if !crate::config::SSH_HOST.is_match(&host)
                 || !crate::config::SSH_USER.is_match(&ssh_user)
                 || !crate::config::HOST_KEY.is_match(&fingerprint)
@@ -628,14 +648,14 @@ mod native {
                 return Err(fail("SETTINGS_INVALID"));
             }
             validate_key(&key).await?;
-            let public_port = port("公開プロキシポート", 3128, 1024)?;
-            let proxy_user = ask("プロキシユーザー", "plumivox")?;
+            let public_port = port(tr("setup.prompt.public_port"), 3128, 1024)?;
+            let proxy_user = ask(tr("setup.prompt.proxy_user"), "plumivox")?;
             if !super::NAME.is_match(&proxy_user) {
                 return Err(fail("PROXY_USER_INVALID"));
             }
-            let mut profile = json!({"user_name":user,"api_key":secret("twitterapi.io APIキー",false)?,
-                "email":secret("Xログインメール",false)?,"password":secret("Xパスワード",false)?,"proxy_mode":"managed"});
-            let totp = secret("Base32の2FA秘密鍵 (未使用なら空欄)", true)?;
+            let mut profile = json!({"user_name":user,"api_key":secret(tr("setup.prompt.api_key"),false)?,
+                "email":secret(tr("setup.prompt.email"),false)?,"password":secret(tr("setup.prompt.password"),false)?,"proxy_mode":"managed"});
+            let totp = secret(tr("setup.prompt.totp"), true)?;
             if !totp.is_empty() {
                 if !crate::config::TOTP_SECRET.is_match(&totp)
                     || crate::config::TOTP_CODE.is_match(&totp)
@@ -644,7 +664,7 @@ mod native {
                 }
                 profile["totp_secret"] = json!(totp);
             }
-            let proxy_password = secret("プロキシパスワード", false)?;
+            let proxy_password = secret(tr("setup.prompt.proxy_password"), false)?;
             let mut proxy = url::Url::parse(&format!("http://{host}:{public_port}"))
                 .map_err(|_| fail("PROXY_INVALID"))?;
             proxy
@@ -666,7 +686,7 @@ mod native {
                 "local_port":local_port,"remote_port":remote_port,"private_key_file":key,"host_key_sha256":fingerprint});
         }
         save(&settings, &original, &doc)?;
-        println!("設定を保存しました。秘密値は表示していません。");
+        println!("{}", tr("setup.saved"));
         Ok(())
     }
 
