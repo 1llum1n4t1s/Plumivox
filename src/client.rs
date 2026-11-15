@@ -48,9 +48,12 @@ static TLS_FIXTURE: OnceLock<bool> = OnceLock::new();
 
 #[cfg(feature = "test-fixture")]
 pub fn configure_tls_fixture(trust_ca: bool) -> Result<()> {
-    TLS_FIXTURE
-        .set(trust_ca)
-        .map_err(|_| err("INVALID_FIXTURE", "TLS検証モードは設定済みです。"))
+    TLS_FIXTURE.set(trust_ca).map_err(|_| {
+        err(
+            "INVALID_FIXTURE",
+            "The TLS verification mode is already set.",
+        )
+    })
 }
 
 fn err(code: &str, message: &str) -> AppError {
@@ -63,7 +66,7 @@ fn err(code: &str, message: &str) -> AppError {
 fn unavailable(endpoint: &str, kind: Option<&str>) -> AppError {
     let e = err(
         "API_UNAVAILABLE",
-        "API通信が完了しませんでした。自動再試行はしていません。",
+        "The API request did not complete. It was not retried automatically.",
     );
     match kind {
         Some(kind) if endpoint == "upload_media_v2" => e.with_details(json!({"failureKind": kind})),
@@ -92,7 +95,10 @@ fn text_value(v: &Value) -> Value {
 }
 fn normalize(v: &Value) -> Result<Value> {
     if !v.is_object() || !numeric(&v["id"]) {
-        return Err(err("INVALID_RESPONSE", "投稿データの形式が不正です。"));
+        return Err(err(
+            "INVALID_RESPONSE",
+            "The post data has an invalid format.",
+        ));
     }
     Ok(
         json!({"id":v["id"],"url":format!("https://x.com/i/status/{}",string(&v["id"])),
@@ -104,11 +110,14 @@ fn normalize(v: &Value) -> Result<Value> {
 fn page(v: &Value, max: usize) -> Result<Value> {
     let tweets = v["tweets"]
         .as_array()
-        .ok_or_else(|| err("INVALID_RESPONSE", "投稿一覧を確認できません。"))?;
+        .ok_or_else(|| err("INVALID_RESPONSE", "The post list could not be read."))?;
     let has = v["has_next_page"] == true;
     let cursor = string(&v["next_cursor"]);
     if has && cursor.is_empty() {
-        return Err(err("INVALID_RESPONSE", "続きの取得情報が不足しています。"));
+        return Err(err(
+            "INVALID_RESPONSE",
+            "The information needed to fetch more results is missing.",
+        ));
     }
     let too_long = has && len(cursor) > max;
     let mut result = json!({"tweets":tweets.iter().map(normalize).collect::<Result<Vec<_>>>()?,"hasNextPage":has,
@@ -162,7 +171,7 @@ fn feed_decode(cursor: &str, account: &Value) -> Result<(Vec<Value>, Value)> {
     let invalid = || {
         err(
             "INVALID_CURSOR",
-            "フィードのcursorが不正、または別アカウントのものです。",
+            "The feed cursor is invalid or belongs to another account.",
         )
     };
     let data = decode(cursor, account, FEED_PREFIX, MAX_FEED).ok_or_else(invalid)?;
@@ -223,7 +232,7 @@ fn search_decode(v: &Value, a: &Value, c: &Value, kind: &str) -> Result<String> 
     let invalid = || {
         err(
             "INVALID_CURSOR",
-            "検索のcursorが不正、または検索条件・アカウントが一致しません。",
+            "The search cursor is invalid, or the search conditions or account do not match.",
         )
     };
     let d = decode(string(v), a, SEARCH_PREFIX, MAX_SEARCH).ok_or_else(invalid)?;
@@ -250,19 +259,19 @@ fn search_time(v: Option<&Value>) -> Result<Option<(i64, String)>> {
     {
         return Err(err(
             "INVALID_SEARCH",
-            "日時はタイムゾーン付きISO 8601の秒精度で指定してください。",
+            "Specify date-times in ISO 8601 with seconds precision and a time zone.",
         ));
     }
     let t = DateTime::parse_from_rfc3339(s).map_err(|_| {
         err(
             "INVALID_SEARCH",
-            "検索日時が不正です。存在する日付と時刻を指定してください。",
+            "The search date-time is invalid. Specify a date and time that exist.",
         )
     })?;
     if s.get(17..19) == Some("60") {
         return Err(err(
             "INVALID_SEARCH",
-            "検索日時が不正です。存在する日付と時刻を指定してください。",
+            "The search date-time is invalid. Specify a date and time that exist.",
         ));
     }
     Ok(Some((
@@ -357,11 +366,11 @@ impl TwitterApiClient {
                     && matches!(base.host_str(), Some("127.0.0.1" | "[::1]" | "::1")))
                 && !tls_fixture_endpoint
             {
-                return Err(err("API_UNAVAILABLE", "API通信先が不正です。"));
+                return Err(err("API_UNAVAILABLE", "The API endpoint is invalid."));
             }
             let mut url = base
                 .join(&format!("/twitter/{endpoint}"))
-                .map_err(|_| err("API_UNAVAILABLE", "API通信先が不正です。"))?;
+                .map_err(|_| err("API_UNAVAILABLE", "The API endpoint is invalid."))?;
             if let Some(q) = query.and_then(Value::as_object) {
                 for (k, v) in q {
                     if !v.is_null() {
@@ -397,7 +406,7 @@ impl TwitterApiClient {
                 return Err(network());
             }
             if !response.status().is_success() {
-                return Err(err("API_HTTP_ERROR", "APIが要求を受け付けませんでした。")
+                return Err(err("API_HTTP_ERROR", "The API did not accept the request.")
                     .with_details(crate::api_rejection::details(
                         response.status().as_u16(),
                         None,
@@ -408,19 +417,27 @@ impl TwitterApiClient {
                 if bytes.len().saturating_add(chunk.len()) > MAX_RESPONSE {
                     return Err(err(
                         "INVALID_RESPONSE",
-                        "API応答のサイズが上限を超えました。",
+                        "The API response exceeded the size limit.",
                     ));
                 }
                 bytes.extend_from_slice(&chunk);
             }
-            let v: Value = serde_json::from_str(&String::from_utf8_lossy(&bytes))
-                .map_err(|_| err("INVALID_RESPONSE", "APIからJSON応答を確認できません。"))?;
+            let v: Value =
+                serde_json::from_str(&String::from_utf8_lossy(&bytes)).map_err(|_| {
+                    err(
+                        "INVALID_RESPONSE",
+                        "No JSON response could be read from the API.",
+                    )
+                })?;
             if !v.is_object() {
-                return Err(err("INVALID_RESPONSE", "API応答の形式が不正です。"));
+                return Err(err(
+                    "INVALID_RESPONSE",
+                    "The API response has an invalid format.",
+                ));
             }
             if v["status"] == "error" || v["status"] == "failed" || v["success"] == false {
                 return Err(
-                    err("API_REJECTED", "APIが処理の失敗を返しました。").with_details(
+                    err("API_REJECTED", "The API reported that the request failed.").with_details(
                         crate::api_rejection::details(response.status().as_u16(), Some(&v)),
                     ),
                 );
@@ -440,7 +457,7 @@ impl TwitterApiClient {
             {
                 err(
                     "POST_UNCERTAIN",
-                    "投稿の成否は未確定です。投稿済みの可能性があります。自動再送はしていません。",
+                    "Whether the post succeeded is unknown. It may have been posted. It was not resent automatically.",
                 )
                 .with_details(e.details)
             } else {
@@ -466,7 +483,10 @@ impl TwitterApiClient {
             )
             .await?;
         if !numeric(&info["data"]["id"]) {
-            return Err(err("INVALID_RESPONSE", "アカウントIDを確認できません。"));
+            return Err(err(
+                "INVALID_RESPONSE",
+                "The account ID could not be confirmed.",
+            ));
         }
         let mut result=self.request(a,"user/tweet_timeline",Some(&json!({"userId":info["data"]["id"],"includeReplies":input["includeReplies"].as_bool().unwrap_or(false),"includeParentTweet":false,"cursor":input["cursor"]})),None,None,&cancel,self.timeout).await?;
         if result.get("tweets").is_none() && result["data"].is_object() {
@@ -485,7 +505,7 @@ impl TwitterApiClient {
         let mut seen = HashSet::new();
         let ids = input["tweetIds"]
             .as_array()
-            .ok_or_else(|| err("INVALID_INPUT", "投稿IDを指定してください。"))?
+            .ok_or_else(|| err("INVALID_INPUT", "Specify post IDs."))?
             .iter()
             .map(string)
             .filter(|s| seen.insert(*s))
@@ -504,7 +524,7 @@ impl TwitterApiClient {
             .await?;
         let tweets = v["tweets"]
             .as_array()
-            .ok_or_else(|| err("INVALID_RESPONSE", "投稿一覧を確認できません。"))?
+            .ok_or_else(|| err("INVALID_RESPONSE", "The post list could not be read."))?
             .iter()
             .map(normalize)
             .collect::<Result<Vec<_>>>()?;
@@ -537,7 +557,7 @@ impl TwitterApiClient {
         {
             return Err(err(
                 "LOGIN_FAILED",
-                "ログインCookieを確認できません。保存セッションは変更していません。",
+                "The login cookie could not be confirmed. The saved session was not changed.",
             ));
         }
         Ok(string(cookie).into())
@@ -561,7 +581,7 @@ impl TwitterApiClient {
         if !(20..=200).contains(&max) {
             return Err(err(
                 "INVALID_SEARCH",
-                "maxAccountsは20から200までの整数にしてください。",
+                "maxAccounts must be an integer from 20 to 200.",
             ));
         }
         let cursor = string(&input["cursor"]);
@@ -569,13 +589,13 @@ impl TwitterApiClient {
         if !cursor.is_empty() && !following.is_empty() {
             return Err(err(
                 "INVALID_CURSOR",
-                "cursorとfollowingCursorは同時に指定できません。",
+                "cursor and followingCursor cannot be specified together.",
             ));
         }
         if following.starts_with(SEARCH_PREFIX) {
             return Err(err(
                 "INVALID_CURSOR",
-                "検索用のfollowingCursorはsearch_tweetsへ渡してください。",
+                "Pass a search followingCursor to search_tweets.",
             ));
         }
         let mut requests = 0;
@@ -586,7 +606,7 @@ impl TwitterApiClient {
             requests += 1;
             let users = v["followings"]
                 .as_array()
-                .ok_or_else(|| err("INVALID_RESPONSE", "フォロー先一覧を確認できません。"))?;
+                .ok_or_else(|| err("INVALID_RESPONSE", "The following list could not be read."))?;
             let mut protection = HashMap::<String, u8>::new();
             let mut order = Vec::new();
             for user in users {
@@ -639,7 +659,7 @@ impl TwitterApiClient {
         for batch in batches {
             let users = batch["users"]
                 .as_array()
-                .ok_or_else(|| err("INVALID_CURSOR", "フィードのcursorが不正です。"))?;
+                .ok_or_else(|| err("INVALID_CURSOR", "The feed cursor is invalid."))?;
             let from = users
                 .iter()
                 .map(|v| format!("from:{}", string(v)))
@@ -732,20 +752,17 @@ impl TwitterApiClient {
         {
             return Err(err(
                 "INVALID_SEARCH",
-                "キーワードは空でない512文字以内の語句にしてください。引用符・バックスラッシュ・制御文字は使用できません。",
+                "The keyword must be a non-empty phrase of at most 512 characters. Quotes, backslashes and control characters are not allowed.",
             ));
         }
         let scope = input.get("scope").map(string).unwrap_or("all");
         if !matches!(scope, "all" | "following") {
-            return Err(err(
-                "INVALID_SEARCH",
-                "検索対象はallまたはfollowingを指定してください。",
-            ));
+            return Err(err("INVALID_SEARCH", "Set scope to all or following."));
         }
         if input.get("cursor").is_some() && input.get("followingCursor").is_some() {
             return Err(err(
                 "INVALID_CURSOR",
-                "cursorとfollowingCursorは同時に指定できません。",
+                "cursor and followingCursor cannot be specified together.",
             ));
         }
         if scope == "all"
@@ -753,7 +770,7 @@ impl TwitterApiClient {
         {
             return Err(err(
                 "INVALID_SEARCH",
-                "全体検索ではmaxAccountsとfollowingCursorを指定できません。",
+                "maxAccounts and followingCursor cannot be specified when scope is all.",
             ));
         }
         if input.get("maxAccounts").is_some()
@@ -763,7 +780,7 @@ impl TwitterApiClient {
         {
             return Err(err(
                 "INVALID_SEARCH",
-                "maxAccountsは20から200までの整数にしてください。",
+                "maxAccounts must be an integer from 20 to 200.",
             ));
         }
         let start = search_time(input.get("startTime"))?;
@@ -772,7 +789,7 @@ impl TwitterApiClient {
             if s.0 >= e.0 {
                 return Err(err(
                     "INVALID_SEARCH",
-                    "開始日時は終了日時より前にしてください。",
+                    "The start time must be earlier than the end time.",
                 ));
             }
         }
@@ -821,7 +838,7 @@ impl TwitterApiClient {
             {
                 return Err(err(
                     "INVALID_RESPONSE",
-                    "フォロー一覧の続き情報が不足しています。",
+                    "The continuation information for the following list is missing.",
                 ));
             }
             let encoded = search_encode(next, a, &conditions, "following");
@@ -863,9 +880,9 @@ impl TwitterApiClient {
             if let Some(images) = input.get("images") {
                 let images = images
                     .as_array()
-                    .ok_or_else(|| err("INVALID_IMAGE", "画像には絶対パスを指定してください。"))?;
+                    .ok_or_else(|| err("INVALID_IMAGE", "Specify absolute paths for images."))?;
                 if images.len() > 4 {
-                    return Err(err("INVALID_IMAGE", "画像は4枚以内にしてください。"));
+                    return Err(err("INVALID_IMAGE", "Attach at most 4 images."));
                 }
                 for image in images {
                     files.push(read_image(string(image)).await?);
@@ -903,7 +920,7 @@ impl TwitterApiClient {
             let mut body=json!({"login_cookies":a["loginCookies"],"proxy":a["proxy"],"tweet_text":prepared.text});
             if !ids.is_empty(){body["media_ids"]=json!(ids);}
             let v=self.request(a,"create_tweet_v2",None,Some(&body),None,&cancel,self.timeout).await?;
-            if v["status"]!="success" || !numeric(&v["tweet_id"]){return Err(err("POST_UNCERTAIN","投稿IDを確認できないため成否は未確定です。自動再送はしていません。"));}
+            if v["status"]!="success" || !numeric(&v["tweet_id"]){return Err(err("POST_UNCERTAIN","Whether the post succeeded is unknown because no post ID was returned. It was not resent automatically."));}
             Ok(json!({"account":a["account"],"tweetId":v["tweet_id"],"url":format!("https://x.com/i/status/{}",string(&v["tweet_id"])),"weightedLength":prepared.weighted}))
         }.await;
         result.map_err(|e| post_error(e, stage, attempted, attempts))
@@ -928,12 +945,12 @@ impl TwitterApiClient {
             }
             let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
-                return Err(err("API_UNAVAILABLE", "API通信が完了しませんでした。"));
+                return Err(err("API_UNAVAILABLE", "The API request did not complete."));
             }
             let part = reqwest::multipart::Part::bytes(image.bytes.clone())
                 .file_name(image.name)
                 .mime_str(image.mime)
-                .map_err(|_| err("INVALID_IMAGE", "画像ファイルを読み込めません。"))?;
+                .map_err(|_| err("INVALID_IMAGE", "The image file could not be read."))?;
             let form = reqwest::multipart::Form::new()
                 .text("login_cookies", string(&a["loginCookies"]).to_owned())
                 .text("proxy", string(&a["proxy"]).to_owned())
@@ -976,13 +993,13 @@ impl TwitterApiClient {
         let uploaded = uploaded.ok_or_else(|| {
             err(
                 "UPLOAD_FAILED",
-                "画像アップロードの成功を確認できません。投稿は送信していません。",
+                "The image upload could not be confirmed. The post was not sent.",
             )
         })?;
         if uploaded["status"] != "success" || !numeric(&uploaded["media_id"]) {
             return Err(err(
                 "UPLOAD_FAILED",
-                "画像アップロードの成功を確認できません。投稿は送信していません。",
+                "The image upload could not be confirmed. The post was not sent.",
             ));
         }
         Ok(uploaded["media_id"].clone())
@@ -1020,12 +1037,12 @@ fn upload_retry_delay(e: &AppError) -> Option<Duration> {
 fn cancelled() -> AppError {
     err(
         "CANCELLED_BEFORE_POST",
-        "処理は中止されました。投稿は送信していません。",
+        "The operation was cancelled. The post was not sent.",
     )
 }
 fn post_error(mut e: AppError, stage: &str, attempted: bool, attempts: usize) -> AppError {
     if stage == "image_upload" && e.code == "API_UNAVAILABLE" {
-        e.message = "画像アップロードの通信が完了しませんでした。投稿は送信していません。".into();
+        e.message = "The image upload request did not complete. The post was not sent.".into();
     }
     if !e.details.is_object() {
         e.details = json!({});
@@ -1037,15 +1054,15 @@ fn post_error(mut e: AppError, stage: &str, attempted: bool, attempts: usize) ->
 }
 async fn read_image(path: &str) -> Result<Image> {
     if !Path::new(path).is_absolute() {
-        return Err(err("INVALID_IMAGE", "画像には絶対パスを指定してください。"));
+        return Err(err("INVALID_IMAGE", "Specify absolute paths for images."));
     }
-    let invalid = || err("INVALID_IMAGE", "画像ファイルを読み込めません。");
+    let invalid = || err("INVALID_IMAGE", "The image file could not be read.");
     let file = tokio::fs::File::open(path).await.map_err(|_| invalid())?;
     let info = file.metadata().await.map_err(|_| invalid())?;
     if !info.is_file() || info.len() < 4 || info.len() > MAX_IMAGE as u64 {
         return Err(err(
             "INVALID_IMAGE",
-            "画像は5 MiB以下のPNGまたはJPEGファイルにしてください。",
+            "Images must be PNG or JPEG files of 5 MiB or less.",
         ));
     }
     let mut bytes = Vec::new();
@@ -1054,15 +1071,12 @@ async fn read_image(path: &str) -> Result<Image> {
         .await
         .map_err(|_| invalid())?;
     if bytes.len() > MAX_IMAGE {
-        return Err(err("INVALID_IMAGE", "画像は5 MiB以下にしてください。"));
+        return Err(err("INVALID_IMAGE", "Images must be 5 MiB or less."));
     }
     let png = bytes.starts_with(&[137, 80, 78, 71, 13, 10, 26, 10]);
     let jpeg = bytes.starts_with(&[255, 216, 255]);
     if !png && !jpeg {
-        return Err(err(
-            "INVALID_IMAGE",
-            "PNGまたはJPEG画像を指定してください。",
-        ));
+        return Err(err("INVALID_IMAGE", "Specify a PNG or JPEG image."));
     }
     Ok(Image {
         bytes,
@@ -1075,7 +1089,7 @@ fn weighted_text(text: &str) -> Result<usize> {
     let invalid = || {
         err(
             "INVALID_TEXT",
-            "投稿文は空でなく、Xの加重文字数280以内にしてください。",
+            "The post text must not be empty and must be within X's weighted length of 280.",
         )
     };
     if text.trim().is_empty() {

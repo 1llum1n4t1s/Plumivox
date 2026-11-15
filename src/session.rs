@@ -54,21 +54,21 @@ mod serialization_tests {
 fn failure(code: &str) -> AppError {
     let message = match code {
         "AUTH_BUSY" => {
-            "このアカウントは別のプロセスでログイン処理中です。完了後に再実行してください。"
+            "Another process is logging in to this account. Run again after it finishes."
         }
         "AUTH_CANCELLED" => {
-            "ログインは中止されました。この処理では保存セッションを変更していません。"
+            "The login was cancelled. This operation did not change the saved session."
         }
         "AUTH_LOCK_LOST" => {
-            "認証更新の排他を維持できませんでした。この処理では保存セッションを変更していません。"
+            "The exclusive lock for the authentication refresh could not be kept. This operation did not change the saved session."
         }
         "LOGIN_FAILED" => {
-            "ログインCookieを確認できません。この処理では保存セッションを変更していません。"
+            "The login cookie could not be confirmed. This operation did not change the saved session."
         }
         "AUTH_SAVE_UNCERTAIN" => {
-            "認証更新の完了を確認できません。保存セッションが更新されている可能性があります。list_accountsで状態を確認してください。自動再送していません。"
+            "Completion of the authentication refresh could not be confirmed. The saved session may have been updated. Check the state with list_accounts. Nothing was resent automatically."
         }
-        _ => "セッション保存先とOSの資格情報ストアを確認してください。",
+        _ => "Check the session storage location and the OS credential store.",
     };
     AppError::new(code, message)
 }
@@ -541,6 +541,20 @@ fn decode(
     Ok(session)
 }
 
+/// データフォルダー（セッション保存の既定の親。`PLUMIVOX_STATE_DIR` の上書きは見ない）を、セッション保存と
+/// 同じ検査・本人限定の権限で用意して返す。Setup（Velopack）導入版の更新状態（`app-update\`）の置き場に使う。
+/// インストールフックが `--setup` より先にこのフォルダーを作っても、本人限定の権限になるようにするため、
+/// 新規作成・既存のどちらでも [`platform::private`] を適用する（Windows は保護付き DACL、Unix は 0700）。
+/// 検査・作成・権限設定のどれかに失敗したら None（呼び出し元は状態を残さない側へ倒す）。
+pub(crate) fn private_data_root() -> Option<PathBuf> {
+    let root = default_root()?;
+    validate_directory(&root).ok()?;
+    fs::create_dir_all(&root).ok()?;
+    validate_directory(&root).ok()?;
+    platform::private(&normalized_canonical(&root).ok()?).ok()?;
+    Some(root)
+}
+
 fn default_root() -> Option<PathBuf> {
     #[cfg(windows)]
     {
@@ -650,6 +664,8 @@ fn validate_directory(path: &Path) -> Result<()> {
     if let Some(plugin) = runtime_plugin_root() {
         blocked.push(plugin);
     }
+    // Setup（Velopack）の導入先も、プラグインと同じく更新・アンインストールで入れ替わる・消える場所なので拒否する。
+    blocked.extend(crate::agent_dirs::velopack_install_roots());
     if blocked.iter().any(|root| {
         path_inside(path, root)
             || canonical_with_missing_tail(root).is_ok_and(|root| path_inside(&canonical, &root))

@@ -174,7 +174,7 @@ impl Server {
         {
             return Err(AppError::new(
                 "INTERNAL_ERROR",
-                "処理に失敗しました。設定とAPIの状態を確認してください。",
+                "The operation failed. Check the settings and the API status.",
             ));
         }
         let name = selected["account"].as_str();
@@ -202,7 +202,7 @@ impl Server {
         } {
             return Err(AppError::new(
                 "AUTH_CONFIG_CHANGED",
-                "中継の準備中に設定が変更されました。再実行してください。",
+                "The settings changed while preparing the relay. Run again.",
             ));
         }
         Ok(())
@@ -220,11 +220,11 @@ impl Server {
             let mut active = self
                 .authenticating
                 .lock()
-                .map_err(|_| AppError::new("INTERNAL_ERROR", "処理に失敗しました。"))?;
+                .map_err(|_| AppError::new("INTERNAL_ERROR", "The operation failed."))?;
             if !active.insert(name.clone()) {
                 return Err(AppError::new(
                     "AUTH_BUSY",
-                    "このアカウントの認証更新は実行中です。",
+                    "An authentication refresh for this account is already running.",
                 ));
             }
         }
@@ -250,7 +250,7 @@ impl Server {
         {
             return Err(AppError::new(
                 "AUTH_CONFIG_CHANGED",
-                "認証の準備中にアカウント設定が変更されました。保存セッションは変更していません。",
+                "The account settings changed while preparing authentication. The saved session was not changed.",
             ));
         }
         self.accounts.prepare_session_storage(Some(&name)).await?;
@@ -272,7 +272,7 @@ impl Server {
             if cancel.is_cancelled() {
                 return Err(AppError::new(
                     "AUTH_CANCELLED",
-                    "ログインは中止されました。この処理では保存セッションを変更していません。",
+                    "The login was cancelled. This operation did not change the saved session.",
                 ));
             }
             Ok(())
@@ -305,7 +305,7 @@ impl Server {
                 if config.is_null() {
                     return Err(AppError::new(
                         "PROXY_EXTERNAL",
-                        "externalモードのプロキシはPlumivoxの起動管理対象ではありません。",
+                        "A proxy in external mode is not started or managed by Plumivox.",
                     ));
                 }
                 self.proxy.start(&config, cancel).await
@@ -334,7 +334,7 @@ impl Server {
                         self.api.get_following_feed(&selected, input, cancel).await
                     }
                     "search_tweets" => self.api.search_tweets(&selected, input, cancel).await,
-                    _ => Err(AppError::new("INTERNAL_ERROR", "処理に失敗しました。")),
+                    _ => Err(AppError::new("INTERNAL_ERROR", "The operation failed.")),
                 }
             }
         }
@@ -346,7 +346,7 @@ fn rpc_error(id: Value, code: i64, message: &str) -> Value {
 }
 /// stdio の読み書き失敗を表す共通エラー。原因の詳細は標準出力・診断へ出さない。
 fn mcp_failed() -> AppError {
-    AppError::new("MCP_FAILED", "MCP通信に失敗しました。")
+    AppError::new("MCP_FAILED", "MCP communication failed.")
 }
 
 async fn write_response(writer: &Mutex<tokio::io::Stdout>, response: &Value) -> Result<()> {
@@ -358,6 +358,9 @@ async fn write_response(writer: &Mutex<tokio::io::Stdout>, response: &Value) -> 
 }
 
 pub async fn run_stdio(options: Options) -> Result<()> {
+    // Setup（Velopack）導入版だけ、更新の確認・取得（適用はしない）と登録のやり直しを別スレッドで始める。
+    // 標準出力には何も書かず、MCP の応答も待たせない。管理外のビルド（開発・プラグイン・fixture）では何もしない。
+    crate::app_update::spawn_background();
     let server = Arc::new(Server {
         accounts: AccountStore::new(
             options.secrets_path,
@@ -389,7 +392,7 @@ pub async fn run_stdio(options: Options) -> Result<()> {
                 .map(|position| position + 1)
                 .unwrap_or(chunk.len());
             if line.len() + take > 2 * 1024 * 1024 {
-                return Err(AppError::new("MCP_FAILED", "MCP入力が長すぎます。"));
+                return Err(AppError::new("MCP_FAILED", "The MCP input is too long."));
             }
             line.extend_from_slice(&chunk[..take]);
             let complete = chunk[take - 1] == b'\n';

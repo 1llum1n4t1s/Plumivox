@@ -1244,14 +1244,14 @@ pub async fn feed_search(h: &mut Harness) -> Result<()> {
                     "get_following_feed",
                     "plumivox-feed.",
                     feed_data(),
-                    "フィードのcursorが不正、または別アカウントのものです。",
+                    "The feed cursor is invalid or belongs to another account.",
                     json!({"account":"reading"}),
                 ),
                 (
                     "search_tweets",
                     "plumivox-search.",
                     json!({"version":1,"kind":"tweets","conditions":{"account":"reading","userName":"reader","scope":"all","keyword":"needle phrase","startEpoch":null,"endEpoch":null,"maxAccounts":null},"inner":"search-next"}),
-                    "検索のcursorが不正、または検索条件・アカウントが一致しません。",
+                    "The search cursor is invalid, or the search conditions or account do not match.",
                     json!({"account":"reading","keyword":"needle phrase"}),
                 ),
             ] {

@@ -32,49 +32,58 @@ use zeroize::Zeroizing;
 
 pub(crate) fn error(code: &str) -> AppError {
     let (code, message) = match code {
-        "PROXY_CONFIG" => ("PROXY_CONFIG", "管理プロキシの設定が不正です。"),
+        "PROXY_CONFIG" => ("PROXY_CONFIG", "The managed proxy settings are invalid."),
         "PROXY_KEY_UNAVAILABLE" => (
             "PROXY_KEY_UNAVAILABLE",
-            "管理プロキシの秘密鍵を読み取れません。",
+            "The managed proxy's private key could not be read.",
         ),
         "PROXY_KEY_TOO_LARGE" => (
             "PROXY_KEY_TOO_LARGE",
-            "管理プロキシの秘密鍵がサイズ上限を超えています。",
+            "The managed proxy's private key exceeds the size limit.",
         ),
         "PROXY_HOST_KEY_MISMATCH" => (
             "PROXY_HOST_KEY_MISMATCH",
-            "管理プロキシの接続先ホスト鍵が一致しません。",
+            "The managed proxy's host key does not match.",
         ),
-        "PROXY_AUTH_FAILED" => ("PROXY_AUTH_FAILED", "管理プロキシのSSH認証に失敗しました。"),
-        "PROXY_PORT_BUSY" => ("PROXY_PORT_BUSY", "管理プロキシのポートは使用中です。"),
+        "PROXY_AUTH_FAILED" => (
+            "PROXY_AUTH_FAILED",
+            "SSH authentication for the managed proxy failed.",
+        ),
+        "PROXY_PORT_BUSY" => ("PROXY_PORT_BUSY", "The managed proxy's port is in use."),
         "PROXY_REMOTE_BIND_FAILED" => (
             "PROXY_REMOTE_BIND_FAILED",
-            "管理プロキシの転送ポートを確保できません。",
+            "The managed proxy's forwarding port could not be reserved.",
         ),
-        "PROXY_CONNECT_FAILED" => ("PROXY_CONNECT_FAILED", "管理プロキシに接続できません。"),
-        "PROXY_TIMEOUT" => (
-            "PROXY_TIMEOUT",
-            "管理プロキシの準備が時間内に完了しませんでした。",
+        "PROXY_CONNECT_FAILED" => (
+            "PROXY_CONNECT_FAILED",
+            "Could not connect to the managed proxy.",
         ),
+        "PROXY_TIMEOUT" => ("PROXY_TIMEOUT", "The managed proxy was not ready in time."),
         "PROXY_CANCELLED" => (
             "PROXY_CANCELLED",
-            "管理プロキシの準備待機を取り消しました。",
+            "Waiting for the managed proxy was cancelled.",
         ),
-        "PROXY_STOPPED" => ("PROXY_STOPPED", "管理プロキシを停止しました。"),
-        "PROXY_CLOSED" => ("PROXY_CLOSED", "共有プロキシの利用を終了しました。"),
+        "PROXY_STOPPED" => ("PROXY_STOPPED", "The managed proxy was stopped."),
+        "PROXY_CLOSED" => (
+            "PROXY_CLOSED",
+            "This client stopped using the shared proxy.",
+        ),
         "PROXY_IPC_AUTH_FAILED" => (
             "PROXY_IPC_AUTH_FAILED",
-            "共有プロキシとの通信を認証できません。",
+            "Communication with the shared proxy could not be authenticated.",
         ),
         "PROXY_DAEMON_UNAVAILABLE" => (
             "PROXY_DAEMON_UNAVAILABLE",
-            "共有プロキシの管理プロセスを利用できません。",
+            "The shared proxy's management process is unavailable.",
         ),
         "PROXY_START_FAILED" => (
             "PROXY_START_FAILED",
-            "共有プロキシの管理プロセスを起動できません。",
+            "The shared proxy's management process could not be started.",
         ),
-        _ => ("PROXY_IPC_FAILED", "共有プロキシとの通信に失敗しました。"),
+        _ => (
+            "PROXY_IPC_FAILED",
+            "Communication with the shared proxy failed.",
+        ),
     };
     AppError::new(code, message)
 }
@@ -614,6 +623,10 @@ async fn spawn_daemon(config: &Value, exited: CancellationToken) -> Result<()> {
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
+        // DETACHED_PROCESS はコンソールを持たないため、同時に指定した CREATE_NO_WINDOW は無視される。
+        // 現状 daemon からコンソールを使う子プロセスは起動しない。将来 daemon が子を起動する場合は、
+        // その子に必ず CREATE_NO_WINDOW を付ける（付けないと daemon にコンソールが無いため、
+        // 子が新しい見えるコンソール窓を作る）。
         command.creation_flags(0x08000000 | 0x00000200 | 0x00000008);
     }
     #[cfg(unix)]

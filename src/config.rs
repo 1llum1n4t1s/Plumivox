@@ -158,15 +158,12 @@ fn login_ready(config: &Value, account: &Value) -> bool {
         && valid_totp(&config["totp_secret"])
 }
 fn invalid_account() -> AppError {
-    error(
-        "ACCOUNT_INVALID",
-        "APIキーと有効なユーザー名を設定してください。",
-    )
+    error("ACCOUNT_INVALID", "Set an API key and a valid user name.")
 }
 fn changed() -> AppError {
     error(
         "AUTH_CONFIG_CHANGED",
-        "ログイン中にアカウント設定が変更されました。設定を確認して再実行してください。",
+        "The account settings changed during login. Check the settings and run again.",
     )
 }
 
@@ -194,7 +191,7 @@ impl AccountStore {
         let unavailable = || {
             error(
                 "CONFIG_UNAVAILABLE",
-                "アカウント設定を読み込めません。設定ファイルを確認してください。",
+                "The account settings could not be read. Check the settings file.",
             )
         };
         // 読込み前にもサイズを確認し、異常な設定で巨大な領域を確保しない。
@@ -257,7 +254,7 @@ impl AccountStore {
             {
                 return Err(error(
                     "ACCOUNT_DEFAULT_INVALID",
-                    "既定アカウントの設定が不正です。default_accountに登録済みのアカウント設定名を指定してください。",
+                    "The default account setting is invalid. Set default_account to a registered account setting name.",
                 ));
             }
             selected = default.as_str().map(str::to_owned);
@@ -275,7 +272,7 @@ impl AccountStore {
         let selected = selected.filter(|s| !s.is_empty()).ok_or_else(|| {
             error(
                 "ACCOUNT_REQUIRED",
-                "アカウントを指定するか、セットアップで既定アカウントを設定してください。",
+                "Specify an account, or set a default account with setup.",
             )
         })?;
         if !configs
@@ -284,7 +281,7 @@ impl AccountStore {
         {
             return Err(error(
                 "ACCOUNT_UNKNOWN",
-                "指定されたアカウント設定がありません。",
+                "The specified account setting does not exist.",
             ));
         }
         Ok(selected)
@@ -429,7 +426,7 @@ impl AccountStore {
         if require_posting && result["postConfigured"] != true {
             return Err(error(
                 "POSTING_UNAVAILABLE",
-                "投稿には有効なプロキシと一致するv2 Cookieが必要です。",
+                "Posting needs a valid proxy and a matching v2 cookie.",
             ));
         }
         result.as_object_mut().unwrap().retain(|key, _| {
@@ -444,13 +441,13 @@ impl AccountStore {
         if !valid_totp(&config["totp_secret"]) {
             return Err(error(
                 "LOGIN_CREDENTIALS_INVALID",
-                "totp_secretには認証コードではなくBase32の2FA秘密鍵を設定してください。",
+                "Set totp_secret to the Base32 2FA secret, not to an authentication code.",
             ));
         }
         if !login_ready(&config, &result) {
             return Err(error(
                 "LOGIN_UNAVAILABLE",
-                "ログインにはAPIキー、ユーザー名、プロキシ、メールアドレス、パスワードを設定してください。",
+                "Logging in needs an API key, a user name, a proxy, an email address and a password.",
             ));
         }
         result["email"] = config["email"].clone();
@@ -475,13 +472,13 @@ impl AccountStore {
         if mode != "external" && mode != "managed" {
             return Err(error(
                 "PROXY_CONFIG",
-                "proxy_modeはexternalまたはmanagedを指定してください。",
+                "Set proxy_mode to external or managed.",
             ));
         }
         if expected_proxy.is_some_and(|expected| config["proxy"].as_str() != Some(expected)) {
             return Err(error(
                 "AUTH_CONFIG_CHANGED",
-                "通信の準備中にプロキシ設定が変更されました。再実行してください。",
+                "The proxy settings changed while preparing the connection. Run again.",
             ));
         }
         if mode == "external" {
@@ -517,7 +514,7 @@ impl AccountStore {
         {
             return Err(error(
                 "PROXY_CONFIG",
-                "Plumivoxの中継設定に接続先、SSH利用者、秘密鍵ファイル、ホスト鍵指紋、有効なポートを設定してください。",
+                "Set the host, SSH user, private key file, host key fingerprint and valid ports in Plumivox's relay settings.",
             ));
         }
         let proxy = url::Url::parse(config["proxy"].as_str().unwrap()).unwrap();
@@ -530,7 +527,7 @@ impl AccountStore {
         {
             return Err(error(
                 "PROXY_CONFIG",
-                "managedモードのproxyにはSSH接続先と同じホストの認証付き公開プロキシを設定してください。",
+                "In managed mode, set proxy to an authenticated public proxy on the same host as the SSH destination.",
             ));
         }
         crate::proxy::normalize_proxy_config(

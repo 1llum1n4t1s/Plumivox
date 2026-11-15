@@ -110,7 +110,7 @@ pub async fn run(h: &mut Harness) -> Result<()> {
                     v["error"]
                         == json!({
                             "code":if status==200{"API_REJECTED"}else{"API_HTTP_ERROR"},
-                            "message":if status==200{"APIが処理の失敗を返しました。"}else{"APIが要求を受け付けませんでした。"},
+                            "message":if status==200{"The API reported that the request failed."}else{"The API did not accept the request."},
                             "httpStatus":status,"rejectionReasons":reasons,"rejectionReasonSource":source,
                             "stage":"image_upload","postAttempted":false,"uploadAttempts":uploads
                         }),
@@ -181,7 +181,7 @@ pub async fn run(h: &mut Harness) -> Result<()> {
                 let v = h.fail(name, args, false).await?;
                 ensure!(
                     v["error"]
-                        == json!({"code":"API_REJECTED","message":"APIが処理の失敗を返しました。","httpStatus":200,"rejectionReasons":["authentication"],"rejectionReasonSource":"provider_message"})
+                        == json!({"code":"API_REJECTED","message":"The API reported that the request failed.","httpStatus":200,"rejectionReasons":["authentication"],"rejectionReasonSource":"provider_message"})
                 );
                 ensure!(h.count() == before + 1);
             }
@@ -220,7 +220,7 @@ pub async fn run(h: &mut Harness) -> Result<()> {
                 ensure!(
                     e["code"] == "AUTH_CONFIG_CHANGED"
                         && e["message"]
-                            == "中継の準備中に設定が変更されました。再実行してください。"
+                            == "The settings changed while preparing the relay. Run again."
                         && e["stage"] == "pre_send"
                         && e["postAttempted"] == false
                         && e["uploadAttempts"] == 0
@@ -669,9 +669,9 @@ pub async fn run(h: &mut Harness) -> Result<()> {
                 ensure!(e["code"] == "POST_UNCERTAIN");
                 let m = e["message"].as_str().unwrap();
                 ensure!(
-                    m.contains("成否は未確定")
-                        && m.contains("投稿済みの可能性")
-                        && m.contains("自動再送はしていません")
+                    m.contains("succeeded is unknown")
+                        && m.contains("may have been posted")
+                        && m.contains("not resent automatically")
                 );
             } else if ["http401", "http429"].contains(&problem) {
                 ensure!(e["code"] == "API_HTTP_ERROR");
