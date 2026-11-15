@@ -100,7 +100,7 @@ jobs:
           mkdir -p "$RUNNER_TEMP/plumivox-setup"
       - name: Set up Sigilune
         id: sigilune
-        uses: 1llum1n4t1s/Sigilune@c12f5c92398c3648cf19651f5b80796efdfdd06a # v1.1.2
+        uses: 1llum1n4t1s/Sigilune@05006dcad019e5e863a08985b9208d72004f1b5f # v1.1.3
       - name: Pack, sign and verify the Setup
         # 署名用 Secrets はこの step だけへ渡す。cargo を動かさず、ビルド済みの xtask を直接実行する。
         # 失敗時は自動再試行せず、配信へ進まない。
