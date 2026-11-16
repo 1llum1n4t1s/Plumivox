@@ -96,7 +96,7 @@ SSH設定の交換中は同時管理操作を避ける。Rust版・Bash版とも
 - **フィードの限界**：公式ホームの再現ではない。検索バッチは順に取得して要求数を制限するが、保護投稿や全フォロー先の網羅、ページ間の全体時系列順は保証しない。フォロー一覧の続きと検索の続きは別cursorで、同時指定を拒否する。提供元または生成cursorが受理上限を超えた場合は、取得済み投稿・提供元の続き有無を維持し、継続不能の理由をcoverageへ返す。opaqueなcursorは切り詰めない。
 - **継続情報の境界**：フィードのcursorはversion 2で検索対象とcoverageをAPIキーのHMACで署名し、アカウントとユーザー名を照合して初回の検索対象を固定する。旧署名なし形式は拒否する。検索用cursorは条件と用途（投稿の続き／フォロー一覧の続き）を同じ方式で署名し、フィード用cursorとの混同や別条件への流用を拒否する。フォロー先検索では署名付きフィードcursorを内包する。APIキー変更で既存cursorは無効になる。署名は改変検知のためであり、内容の暗号化ではない。
 - **配布と検証**：ネイティブ実行ファイルを同梱し、利用者側のNode.js・Rust・`node_modules`を不要にする。Rustソース変更時は対象OSの配布物を再ビルドする。E2EとRustテストは実際のXへの副作用を避けつつMCP・HTTP・OS別の保存とプロキシ境界を検証するが、実サービス上のCookie有効性や投稿成功を証明するものではない。
-- **依存更新の自動化**：`.github/dependabot.yml` はCargo依存とGitHub Actionsを週次で更新し、minor／patchをまとめ、majorは個別PRにする。`dependency-validation.yml` はDependabot PRまたは手動起動でWindows上の依存取得・ビルド・構文確認・全E2EをCargoで実行する。Cargoの更新PRはWindows・macOS双方の正式配布物の再生成が必要なため自動マージせず、配布物を含めて手動で統合する。
+- **依存更新の自動化**：`.github/dependabot.yml` はCargo依存とGitHub Actionsを週次で更新し、minor／patchをまとめ、majorは個別PRにする。`dependency-validation.yml` はDependabot PRまたは手動起動でWindows上で`cargo xtask`の`build-unsigned`・`check`・`test-e2e`（ビルド・構文確認・全E2E）を別々のjobで並列に実行する（同じrefの古い実行は新しい実行で打ち切る）。Cargoの更新PRはWindows・macOS双方の正式配布物の再生成が必要なため自動マージせず、配布物を含めて手動で統合する。
 
 ## 管理するプロキシの境界
 
