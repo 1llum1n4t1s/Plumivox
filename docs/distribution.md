@@ -19,7 +19,7 @@
 ## CIで保存する
 
 GitHub Actionsの「Distribution」（`distribution.yml`）は、`release/<版>`ブランチへのpush（同じブランチでの手動再実行を含む）で起動します。元リポジトリ`1llum1n4t1s/Plumivox`だけが対象で、PRやforkからR2へ書き込みません。`release/<版>`のpushは公開操作なので、`vava`（版の更新・公開の依頼）でだけ行います。ワークフローは3つのjobで構成します。
-- `unix`：macOS（自前runner）とLinux x86_64・aarch64。Environmentを付けず、署名用Secretsは届きません。
+- `unix`：macOS（GitHub提供のApple Siliconランナー）とLinux x86_64・aarch64。Environmentを付けず、署名用Secretsは届きません。
 - `windows`：Windows x64。Environment `release`（`release/*`限定、承認待ちなし）で実行し、署名用Secretsはこのjobの署名stepだけへ渡します。
 - `velopack`：`windows`の成功後に、Environment `r2-velopack`（`release/*`限定）でWindowsのSetupを梱包・署名して公開R2へ配信します（[Setup（Velopack）の配信](#setupvelopackの配信)）。
 
@@ -115,9 +115,9 @@ WindowsのSetupは、上記の非公開成果物とは別の公開バケット`p
 ### 手元で確認する
 
 ```powershell
-cargo xtask velopack-pack --work D:\tmp\plumivox-pack            # 未署名の本番packId（配信には使えない）
-cargo xtask velopack-pack --work D:\tmp\plumivox-pack --sign     # Sigilune で署名・検証
-cargo xtask velopack-publish --packages D:\tmp\plumivox-pack\packages --dry-run
+cargo xtask velopack-pack --work $env:TEMP\plumivox-pack            # 未署名の本番packId（配信には使えない）
+cargo xtask velopack-pack --work $env:TEMP\plumivox-pack --sign     # Sigilune で署名・検証
+cargo xtask velopack-publish --packages $env:TEMP\plumivox-pack\packages --dry-run
 cargo xtask test-setup-velopack-e2e
 ```
 

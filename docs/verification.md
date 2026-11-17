@@ -18,7 +18,7 @@ Windowsの`cargo xtask build`はSigiluneで署名し、本人の発行者・信�
 | manifestのidentity・ファイル名・サイズ・SHA256が不一致 | 検証に失敗し、取得済みとして扱わない |
 | 出力先が既存ディレクトリ | 上書きせず拒否する |
 
-`cargo test --locked --package xtask`でR2の入力・manifest・ハッシュ検証を確認する。実R2の認証・条件付き保存・取得、自前macOS runnerのKeychainとCI全体は、実環境で実行するまで未検証として扱う。
+`cargo test --locked --package xtask`でR2の入力・manifest・ハッシュ検証を確認する。実R2の認証・条件付き保存・取得、GitHub提供macOS runnerのKeychainとCI全体は、実環境で実行するまで未検証として扱う。
 
 PCセットアップはWindows・macOSともネイティブの`--setup`を対象OSで呼び出して検証する。VPSはRustインストーラーとBash互換CLIを区別して検証する。想定する失敗は次のとおり。
 

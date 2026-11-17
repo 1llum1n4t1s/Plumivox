@@ -4,7 +4,7 @@ name: Distribution
 # release/<版> の push は公開操作なので、vava（版の更新・公開の依頼）でだけ行う。
 #
 # job の構成:
-# - unix    : macOS（自前 m3mb14）と Linux x86_64・aarch64 の検証・ビルド・非公開R2（plumivox-artifacts）への保存。
+# - unix    : macOS（GitHub 提供の macos-latest）と Linux x86_64・aarch64 の検証・ビルド・非公開R2（plumivox-artifacts）への保存。
 #             Environment を付けず、署名用 Secrets は届かない。
 # - windows : Windows x64 の検証・ビルド・Sigilune 署名・非公開R2への保存。Environment `release`（release/* 限定）。
 # - velopack: windows の成功後に Windows の Setup（Velopack）を梱包・署名し、公開R2（plumivox-updates）の
@@ -52,7 +52,8 @@ jobs:
             target: vps-linux-x86_64
           - os: ubuntu-26.04-arm
             target: vps-linux-aarch64
-    runs-on: ${{ fromJSON(startsWith(matrix.os, 'macos-') && '["self-hosted","macOS","ARM64","m3mb14"]' || format('["{0}"]', matrix.os)) }}
+    # 公開リポジトリなので全 OS を GitHub 提供ランナーで動かす（macOS は Apple Silicon の macos-latest）。
+    runs-on: ${{ matrix.os }}
     # Environment は付けない。署名用 Secrets（SIGILUNE_*）はこの job へ配送されない。
     timeout-minutes: 60
     defaults:
@@ -171,7 +172,7 @@ jobs:
     runs-on: windows-latest
     # Windows配布物をSigilune（Certum SimplySignのクラウド鍵）で署名するため、署名用Secrets
     # （SIGILUNE_EMAIL・SIGILUNE_TOTP_URI）を置いた release/* 限定のEnvironment `release`で実行する（承認者なし）。
-    # Windowsだけの job なので、Secretsは macOS（自前runner）・Linux runner へ届かない。
+    # Windowsだけの job なので、Secretsは macOS・Linux runner へ届かない。
     environment: release
     timeout-minutes: 60
     defaults:
