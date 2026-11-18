@@ -330,19 +330,16 @@ pub fn execute(command: &str) -> Result {
             crate::windows_signing::verify(&root().join("dist/plumivox.exe"))
         }
         "ci-artifact-upload" => artifact_upload(),
-        // distribution.yml の velopack job の最初の確認。`release/<版>` のブランチで、版が Cargo.toml と一致するときだけ進める
-        // （配信する版を取り違えないため。版の読み取りは cargo を動かさない）。
-        "ci-velopack-branch" => {
-            let branch = required("GITHUB_REF_NAME")?;
+        // distribution.yml の velopack job の最初の確認。タグ（GITHUB_REF_TYPE=tag）で、タグ名が `v<版>`（Cargo.toml の版）と
+        // 一致するときだけ進める（配信する版を取り違えないため。版の読み取りは cargo を動かさない）。
+        "ci-velopack-tag" => {
             let version =
                 crate::velopack::package_version(&fs::read_to_string(root().join("Cargo.toml"))?)?;
-            if branch != format!("release/{version}") {
-                return Err(format!(
-                    "Setupの配信はrelease/{version}ブランチで実行してください（現在: {branch}）"
-                )
-                .into());
-            }
-            Ok(())
+            velopack_tag_check(
+                &required("GITHUB_REF_TYPE")?,
+                &required("GITHUB_REF_NAME")?,
+                &version,
+            )
         }
         #[cfg(target_os = "macos")]
         "ci-keychain-prepare" => keychain_prepare(),
@@ -352,9 +349,50 @@ pub fn execute(command: &str) -> Result {
     }
 }
 
+/// Setup の配信は、タグ `v<版>` が Cargo.toml の版と一致するときだけ許す（ブランチ・別名のタグは拒否する）。
+fn velopack_tag_check(ref_type: &str, ref_name: &str, version: &str) -> Result<()> {
+    if ref_type != "tag" {
+        return Err(format!(
+            "Setupの配信はタグv{version}で実行してください（現在: {ref_type} {ref_name}）"
+        )
+        .into());
+    }
+    if ref_name != format!("v{version}") {
+        return Err(format!(
+            "Setupの配信はタグv{version}で実行してください（現在のタグ: {ref_name}）"
+        )
+        .into());
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn velopack_requires_the_tag_matching_the_cargo_version() {
+        assert!(velopack_tag_check("tag", "v1.0.14", "1.0.14").is_ok());
+        for (ref_type, ref_name) in [
+            ("branch", "v1.0.14"),
+            ("branch", "release/1.0.14"),
+            ("branch", "main"),
+            ("tag", "release/1.0.14"),
+            ("tag", "1.0.14"),
+            ("tag", "v1.0.13"),
+            ("tag", "v1.0.15"),
+            ("tag", "v1"),
+            ("tag", "v1.0.14-rc"),
+            ("tag", "V1.0.14"),
+            ("", "v1.0.14"),
+        ] {
+            assert!(
+                velopack_tag_check(ref_type, ref_name, "1.0.14").is_err(),
+                "{ref_type} {ref_name}"
+            );
+        }
+    }
+
     #[test]
     fn macos_requires_arm64_only() {
         assert!(architecture_set(b"arm64\n"));

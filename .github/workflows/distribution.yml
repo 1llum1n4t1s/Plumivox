@@ -1,34 +1,37 @@
 name: Distribution
 
-# 配布CIの1本のワークフロー。release/<版> ブランチへの push（同じブランチでの手動再実行を含む）で起動する。
-# release/<版> の push は公開操作なので、vava（版の更新・公開の依頼）でだけ行う。
+# 配布CIの1本のワークフロー。main のコミットに付けた軽量タグ v<版> の push（同じタグでの手動再実行を含む）で起動する。
+# v<版> タグの push は公開操作なので、vava（版の更新・公開の依頼）でだけ行う。やり直しは
+# gh workflow run distribution.yml --ref v<版>。
 #
 # job の構成:
+# - guard   : タグの形・軽量タグ・main の祖先・Cargo.toml の版との一致を確かめる。Environment なし・Secrets なし。windows と velopack の前提。
 # - unix    : macOS（GitHub 提供の macos-latest）と Linux x86_64・aarch64 の検証・ビルド・非公開R2（plumivox-artifacts）への保存。
 #             Environment を付けず、署名用 Secrets は届かない。
-# - windows : Windows x64 の検証・ビルド・Sigilune 署名・非公開R2への保存。Environment `release`（release/* 限定）。
+# - windows : Windows x64 の検証・ビルド・Sigilune 署名・非公開R2への保存。Environment `release`（版タグ限定）。
 # - velopack: windows の成功後に Windows の Setup（Velopack）を梱包・署名し、公開R2（plumivox-updates）の
-#             velopack/ へ配信する。Environment `r2-velopack`（release/* 限定）。
+#             velopack/ へ配信する。Environment `r2-velopack`（版タグ限定）。
 #
 # 方針と理由:
 # - Sigilune は同じ TOTP 時間枠の並行ログインを Certum が拒否する。windows と velopack の署名が重ならないよう
 #   velopack を needs: windows で直列にし、windows の test-e2e が成功した後でだけ配信へ進める。
-# - workflow_run は既定ブランチの ref で動き、release/* 限定の Environment に拒否されるため使わない。
+# - workflow_run は既定ブランチの ref で動き、版タグ限定の Environment に拒否されるため使わない。
 # - main の手動起動（workflow_dispatch）は unix の macOS と Linux の非公開成果物だけを作る
-#   （Linux 用 VPS 実行物を main で作る経路を残すため）。windows と velopack は release/* 以外では動かない。
-# - 公開済みの版を同じ release/<版> で再 push（再実行）しても、版付きの成果物は新規作成のみで照合に失敗するため、
+#   （Linux 用 VPS 実行物を main で作る経路を残すため）。windows と velopack は版タグ以外では動かない。
+# - 公開済みの版を同じ v<版> で再実行しても、版付きの成果物は新規作成のみで照合に失敗するため、
 #   公開バケットは何も変わらない（docs/distribution.md）。
 # - CI の手順は Rust（cargo xtask）で行い、PowerShell スクリプトを使わない（AGENTS.md）。
 # - 署名用 Secrets（SIGILUNE_*）は windows の署名 step と velopack の梱包 step だけへ渡し、その step では cargo を
 #   動かさない（依存 crate の build script に Secrets を見せないため）。R2 の Secrets は保存・配信の step だけへ渡す。
 # - 本人が事前に用意するもの（値はここに書かない）:
-#   Environment `release`（release/* のみ）に Secrets `SIGILUNE_EMAIL`・`SIGILUNE_TOTP_URI`。
-#   Environment `r2-velopack`（release/* のみ）に Variables `PLUMIVOX_UPDATES_R2_ACCOUNT_ID`・
+#   Environment `release`（版タグ v[0-9]*.[0-9]*.[0-9]* のみ）に Secrets `SIGILUNE_EMAIL`・`SIGILUNE_TOTP_URI`。
+#   Environment `r2-velopack`（版タグ v[0-9]*.[0-9]*.[0-9]* のみ）に Variables `PLUMIVOX_UPDATES_R2_ACCOUNT_ID`・
 #   `PLUMIVOX_UPDATES_R2_BUCKET`（plumivox-updates）、Secrets `PLUMIVOX_UPDATES_R2_ACCESS_KEY_ID`・
 #   `PLUMIVOX_UPDATES_R2_SECRET_ACCESS_KEY`（バケット限定キー）・`SIGILUNE_EMAIL`・`SIGILUNE_TOTP_URI`。
 on:
   push:
-    branches: ['release/**']
+    # 版タグだけ。移動タグや v1.2.3-rc では起動しない（GitHub のタグフィルタは glob）。
+    tags: ['v[0-9]+.[0-9]+.[0-9]+']
   workflow_dispatch:
 
 permissions:
@@ -39,9 +42,40 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  guard:
+    # 版タグの実行だけ。Environment も Secrets も持たず、windows と velopack の前提になる。
+    if: ${{ github.repository == '1llum1n4t1s/Plumivox' && github.ref_type == 'tag' && startsWith(github.ref, 'refs/tags/v') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.check.outputs.version }}
+    steps:
+      - id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_REF_TYPE" == tag ]] || { echo "::error::タグ以外では配信しない: $GITHUB_REF"; exit 1; }
+          [[ "$GITHUB_REF_NAME" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || { echo "::error::版タグの形ではない: $GITHUB_REF_NAME"; exit 1; }
+          [[ "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ ]]
+          version="${GITHUB_REF_NAME#v}"
+          # 軽量タグで、いまもこの commit を指すこと。
+          [[ "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$GITHUB_REF_NAME" --jq '.object.type+" "+.object.sha')" == "commit $GITHUB_SHA" ]] \
+            || { echo "::error::タグが $GITHUB_SHA を指す軽量タグではない"; exit 1; }
+          # 既定ブランチの祖先であること（depth=1 の checkout では判定できないので compare API を使う）。
+          default="$(gh api "repos/$GITHUB_REPOSITORY" --jq .default_branch)"
+          cmp="$(gh api "repos/$GITHUB_REPOSITORY/compare/$GITHUB_SHA...$default?per_page=1" --jq '.status+" "+(.behind_by|tostring)')"
+          [[ "$cmp" == "ahead 0" || "$cmp" == "identical 0" ]] || { echo "::error::$default の祖先ではない ($cmp)"; exit 1; }
+          # その commit の Cargo.toml の [package] の版とタグの版が一致すること。
+          file="$(gh api "repos/$GITHUB_REPOSITORY/contents/Cargo.toml?ref=$GITHUB_SHA" -H 'Accept: application/vnd.github.raw' | sed -n '/^\[package\]/,/^\[/{s/^version[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p}' | head -n 1)"
+          [[ "$file" == "$version" ]] || { echo "::error::Cargo.toml の版 '$file' とタグの版 '$version' が違う"; exit 1; }
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
   unix:
-    # release/* の push、または既定ブランチ（main）の手動起動だけで動く。
-    if: ${{ github.repository == '1llum1n4t1s/Plumivox' && (startsWith(github.ref, 'refs/heads/release/') || (github.event_name == 'workflow_dispatch' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch))) }}
+    # 版タグ v<版> の push、または既定ブランチ（main）・版タグからの手動起動だけで動く。
+    if: ${{ github.repository == '1llum1n4t1s/Plumivox' && (startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch))) }}
     strategy:
       fail-fast: false
       matrix:
@@ -167,11 +201,12 @@ jobs:
         run: cargo xtask ci-artifact-upload
 
   windows:
-    # release/* だけで動く。Windows の配布物は main の手動起動では作らない（手元で署名して作る）。
-    if: ${{ github.repository == '1llum1n4t1s/Plumivox' && startsWith(github.ref, 'refs/heads/release/') }}
+    # 版タグだけで動く。Windows の配布物は main の手動起動では作らない（手元で署名して作る）。
+    needs: guard
+    if: ${{ github.repository == '1llum1n4t1s/Plumivox' && startsWith(github.ref, 'refs/tags/v') }}
     runs-on: windows-latest
     # Windows配布物をSigilune（Certum SimplySignのクラウド鍵）で署名するため、署名用Secrets
-    # （SIGILUNE_EMAIL・SIGILUNE_TOTP_URI）を置いた release/* 限定のEnvironment `release`で実行する（承認者なし）。
+    # （SIGILUNE_EMAIL・SIGILUNE_TOTP_URI）を置いた版タグ限定のEnvironment `release`で実行する（承認者なし）。
     # Windowsだけの job なので、Secretsは macOS・Linux runner へ届かない。
     environment: release
     timeout-minutes: 60
@@ -260,7 +295,7 @@ jobs:
         run: cargo xtask ci-distribution-build
       - name: Set up Sigilune
         id: sigilune
-        uses: 1llum1n4t1s/Sigilune@b2142b4d1084ec2a5b0a18e83cea7e886406b389 # v1.1.4
+        uses: 1llum1n4t1s/Sigilune@v1
       - name: Sign Windows distribution executable
         # 署名用Secretsはこのstepだけへ渡す。Cargo（依存crateのbuild script）を動かさないよう、
         # xtaskを経由せずSigiluneを直接実行する。失敗時は自動再試行せず、R2へ保存しない。
@@ -288,8 +323,8 @@ jobs:
 
   velopack:
     # windows（署名・検証・保存）の成功後にだけ動く。Sigilune の TOTP 時間枠が windows と重ならない。
-    needs: windows
-    if: ${{ github.repository == '1llum1n4t1s/Plumivox' && startsWith(github.ref, 'refs/heads/release/') }}
+    needs: [guard, windows]
+    if: ${{ github.repository == '1llum1n4t1s/Plumivox' && startsWith(github.ref, 'refs/tags/v') }}
     runs-on: windows-latest
     environment: r2-velopack
     timeout-minutes: 90
@@ -338,8 +373,8 @@ jobs:
         run: rustup toolchain install --no-self-update
       - name: Install Velopack CLI 1.2.161
         run: dotnet tool install --global vpk --version 1.2.161
-      - name: Require release/<version> to match Cargo.toml
-        run: cargo xtask ci-velopack-branch
+      - name: Require the tag v<version> to match Cargo.toml
+        run: cargo xtask ci-velopack-tag
       - name: Fetch locked dependencies
         run: cargo fetch --locked
       - name: Check sources and development tools
@@ -363,7 +398,7 @@ jobs:
           mkdir -p "$RUNNER_TEMP/plumivox-setup"
       - name: Set up Sigilune
         id: sigilune
-        uses: 1llum1n4t1s/Sigilune@b2142b4d1084ec2a5b0a18e83cea7e886406b389 # v1.1.4
+        uses: 1llum1n4t1s/Sigilune@v1
       - name: Pack, sign and verify the Setup
         # 署名用 Secrets はこの step だけへ渡す。cargo を動かさず、ビルド済みの xtask を直接実行する。
         # 失敗時は自動再試行せず、配信へ進まない。

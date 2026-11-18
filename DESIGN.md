@@ -23,14 +23,14 @@ PlumivoxはTwitterAPI.ioを経由してXへの投稿・認証更新・公開投�
 | `src/client.rs` / `src/api_rejection.rs` / `src/client_emoji.txt` | HTTP通信、応答検証・正規化、秘密を含まない拒否理由の固定分類、画像検証・アップロード、投稿、フィード再構成、検索条件と継続cursor、Unicode 17絵文字の検証 |
 | `Cargo.toml` / `Cargo.lock` / `rust-toolchain.toml` / `.cargo/config.toml` / `xtask/` | 本体と開発ツールの依存・toolchain固定、Windows x64とmacOS ARM64のビルド、ライセンス生成、検査・E2E実行。Node.jsを使わない |
 | `dist/plumivox.exe` / `dist/plumivox` | 正式なネイティブ実行ファイル |
-| `.github/workflows/distribution.yml` / `xtask/src/ci.rs` / `xtask/src/r2.rs` / `xtask/src/velopack.rs` | `release/<版>`のpushで起動する配布CI（`unix`・`windows`・`velopack`の3 job）。RustによるWindows・macOS本体とLinux x86_64・aarch64のVPSインストーラーの検証とビルド、非公開R2への成果物保存・検証付き取得、`windows`の成功後に`velopack`が行うSetupの梱包・署名・署名者検証・公開R2（`plumivox-updates`の`velopack/`）への配信、隔離E2E（`tests/setup_velopack_e2e.rs`・`tests/cli-stub.rs`）。利用者のMCP実行から独立する |
+| `.github/workflows/distribution.yml` / `xtask/src/ci.rs` / `xtask/src/r2.rs` / `xtask/src/velopack.rs` | `v<版>`タグのpushで起動する配布CI（`guard`・`unix`・`windows`・`velopack`）。RustによるWindows・macOS本体とLinux x86_64・aarch64のVPSインストーラーの検証とビルド、非公開R2への成果物保存・検証付き取得、`windows`の成功後に`velopack`が行うSetupの梱包・署名・署名者検証・公開R2（`plumivox-updates`の`velopack/`）への配信、隔離E2E（`tests/setup_velopack_e2e.rs`・`tests/cli-stub.rs`）。利用者のMCP実行から独立する |
 | `tests/api_e2e.rs` / `tests/native_e2e.rs` / `tests/tls_e2e.rs` / `tests/support/` / `tests/native-fixture.rs` | Rustの偽HTTP・HTTPS APIと別プロセスのMCPを使い、通信内容・回数・失敗状態を検証する。失敗注入は`test-fixture`ビルドに限定する |
 | `tests/proxy_e2e.rs`と`src/proxy.rs` / `src/proxy_egress.rs` / `src/proxy_ipc.rs`内のテスト | Rustの偽SSH・echo、認証付きIPCとCONNECT出口の境界を検証する |
 | `tests/setup_e2e.rs` / `tests/setup_vps_e2e.rs` | Windows・macOSの設定ウィザード、個別保存先、鍵の保護、VPS CLIの検証と拒否条件。実VPSへの導入は別途確認が必要 |
 
 `mcp.json`は作業ディレクトリを`${PLUGIN_ROOT}`として`./dist/plumivox --stdio`を起動する。Windowsは`.exe`を解決し、macOSはApple Silicon向けARM64実行ファイルを使う。本体と開発ツール・E2EはRustで、Node.jsのインストールや起動時のコード取得を必要としない。旧Nodeランチャーは廃止し、旧登録はネイティブ実行ファイルへ変更する。マーケットプレイスは`.agents/plugins/marketplace.json`、プラグイン情報は`plugin.json`に置く。
 
-開発用の成果物は、`release/<版>`のpush（同じブランチでの手動再実行を含む）で起動する配布CIが各OSの実行環境で検証してから非公開R2へ保存する。`main`の手動起動はmacOSとLinuxの成果物だけを作る。`plumivox/ci/{commit}/{run}/{attempt}/{target}/`に実行ファイル・第三者ライセンスを保存し、サイズとSHA256を含むmanifestを最後に保存する。既存オブジェクトの上書きを拒否し、取得ではidentity・ファイル名・サイズ・SHA256を照合する。この非公開R2は配布準備の受け渡しであり、GitHub mainの同梱`dist`を使うプラグインの導入・更新経路は、Setupの配信を確かめて縮小するまで維持する。Setupの配信は別の公開バケットで行う（[Setup（Velopack）](#setupvelopack)）。CIは`dist`を自動コミットせず、latestの差替えや過去成果物の自動削除も行わない。操作・保持方針は [docs/distribution.md](docs/distribution.md) を参照する。
+開発用の成果物は、`v<版>`タグのpush（同じタグでの手動再実行を含む）で起動する配布CIが各OSの実行環境で検証してから非公開R2へ保存する。`main`の手動起動はmacOSとLinuxの成果物だけを作る。`plumivox/ci/{commit}/{run}/{attempt}/{target}/`に実行ファイル・第三者ライセンスを保存し、サイズとSHA256を含むmanifestを最後に保存する。既存オブジェクトの上書きを拒否し、取得ではidentity・ファイル名・サイズ・SHA256を照合する。この非公開R2は配布準備の受け渡しであり、GitHub mainの同梱`dist`を使うプラグインの導入・更新経路は、Setupの配信を確かめて縮小するまで維持する。Setupの配信は別の公開バケットで行う（[Setup（Velopack）](#setupvelopack)）。CIは`dist`を自動コミットせず、latestの差替えや過去成果物の自動削除も行わない。操作・保持方針は [docs/distribution.md](docs/distribution.md) を参照する。
 
 ## 初期設定と公開中継の構築
 
@@ -62,7 +62,7 @@ SSH設定の交換中は同時管理操作を避ける。Rust版・Bash版とも
 - **保存先の保護**：セッション・設定・SSH鍵の保存先の禁止先に、Velopackの導入先（実行中の導入の`get_root_dir()`と、既定の`%LOCALAPPDATA%\PlumivoxApp`・`/Applications/Plumivox.app`・`~/Applications/Plumivox.app`）を加えた。プラグインルートの判定は変えていない。
 - **解除**：アンインストールフックと`--uninstall-setup --apply`は、この実行ファイルを指すMCP登録とRun値だけを外し、データフォルダー（設定・セッション・`app-update.json`）を残す。macOSにはVelopackのフックとアンインストーラーが無いため、引数なしの起動・stdio起動で登録し、解除は`--uninstall-setup --apply`で行う（`osx`チャネルは未配信）。
 - **案内**：管理下のビルドを端末から引数なしで起動した場合とSetup直後の初回起動は、stdioを待たずに導入済み・登録済みであることと、未設定なら`--setup`の実行を案内する。初回起動と、コンソールに付いているのが自分だけ（スタートメニューからの起動など、終了とともに窓が閉じる）のときは、Enterを待ってから閉じる。秘密値を扱う`--setup`は自動で始めない。silentのSetupは導入後にアプリを起動しない（Velopack 1.2.161で確認）。MCPクライアントはstdinをパイプで渡すため従来どおりstdioで動き、管理外のビルドの素の起動もstdioのまま。
-- **配信**：`distribution.yml`の`velopack` job（`release/<版>`のpushで起動し、`windows` jobの成功後に動く・`release/*`だけ・Environment `r2-velopack`。SigiluneのTOTP時間枠が`windows`の署名と重ならないよう`needs`で直列にする）が、cargoのビルドを済ませた後に、署名用Secretsを渡すstepでは事前にビルドしたxtaskだけを実行して梱包・署名・署名者検証を行い、公開R2の`velopack/`へ置く。版付きの成果物は新規作成のみ（既存なら内容を照合し、違えば失敗）、固定名のSetup・`releases.win.json`などは置き換え、`releases.win.json`を最後に置く。
+- **配信**：`distribution.yml`の`velopack` job（`v<版>`タグのpushで起動し、`windows` jobの成功後に動く・版タグだけ・Environment `r2-velopack`。SigiluneのTOTP時間枠が`windows`の署名と重ならないよう`needs`で直列にする）が、cargoのビルドを済ませた後に、署名用Secretsを渡すstepでは事前にビルドしたxtaskだけを実行して梱包・署名・署名者検証を行い、公開R2の`velopack/`へ置く。版付きの成果物は新規作成のみ（既存なら内容を照合し、違えば失敗）、固定名のSetup・`releases.win.json`などは置き換え、`releases.win.json`を最後に置く。
 - **範囲外**：Linuxは対象外（VPSインストーラーはそのまま）。プラグインの縮小（`mcp.json`と`dist/`の削除）とToolport登録の自動書き換えは行わない。
 
 ## ローカライズ
