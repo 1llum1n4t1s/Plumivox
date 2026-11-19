@@ -1,4 +1,3 @@
-mod automerge;
 mod ci;
 mod r2;
 // Setup（Velopack）の梱包・公開・隔離E2E（velopack-pack / velopack-publish / test-setup-velopack-e2e）。
@@ -628,7 +627,6 @@ fn main() -> Result {
         Some("build-unsigned") if args.len() == 1 => build(false),
         Some("check") => check(),
         Some("licenses") => licenses(),
-        Some("dependabot-auto-merge") => automerge::execute(),
         Some(command) if command.starts_with("ci-") => ci::execute(command),
         Some(command) if command.starts_with("test-") => e2e(command),
         _ => Err(USAGE.into()),
@@ -636,7 +634,7 @@ fn main() -> Result {
 }
 
 /// 引数なし・不明なコマンドで示す一覧。main の分岐と r2・ci の入口を合わせて載せる。
-const USAGE: &str = "cargo xtask build | build-unsigned | build-vps <x86_64|aarch64> | check | licenses | test-e2e | test-api-e2e | test-proxy-e2e | test-proxy-shared-e2e | test-setup-e2e | test-setup-velopack-e2e | dependabot-auto-merge | velopack-pack --work <dir> [--sign] [--binary <exe>] [--pack-id <id> --version <x.y.z>] | velopack-publish --packages <dir> [--channel win] [--dry-run] | artifact-upload | artifact-download | ci-<command>";
+const USAGE: &str = "cargo xtask build | build-unsigned | build-vps <x86_64|aarch64> | check | licenses | test-e2e | test-api-e2e | test-proxy-e2e | test-proxy-shared-e2e | test-setup-e2e | test-setup-velopack-e2e | velopack-pack --work <dir> [--sign] [--binary <exe>] [--pack-id <id> --version <x.y.z>] | velopack-publish --packages <dir> [--channel win] [--dry-run] | artifact-upload | artifact-download | ci-<command>";
 
 #[cfg(test)]
 mod artifact_tests {
