@@ -4,7 +4,7 @@
 
 ## 目的と境界
 
-PlumivoxはTwitterAPI.ioを経由してXへの投稿・認証更新・公開投稿の読取りを提供するローカルMCPサーバーである。Rust製のネイティブ実行ファイルをstdioで起動し（Windowsは Setup、macOSは同梱`dist`）、ブラウザ操作は持たない。managedモードではloopback限定のCONNECT出口を起動し、公開プロキシへSSH逆転送を張る。詳細は [overview.md](docs/design/overview.md)。
+PlumivoxはTwitterAPI.ioを経由してXへの投稿・認証更新・公開投稿の読取りを提供するローカルMCPサーバーである。Rust製のネイティブ実行ファイルをstdioで起動し（Windowsは Setup で導入した実行ファイル、macOSと従来の利用者はCodexプラグインの同梱実行ファイル）、ブラウザ操作は持たない。managedモードではloopback限定のCONNECT出口を起動し、公開プロキシへSSH逆転送を張る。詳細は [overview.md](docs/design/overview.md)。
 
 ## 主要コンポーネント
 
@@ -12,7 +12,7 @@ PlumivoxはTwitterAPI.ioを経由してXへの投稿・認証更新・公開投�
 
 ## 初期設定と公開中継の構築
 
-設定ファイルは環境変数、明示パス、既存の`secrets.json`、標準保存先の順に選び、起動後は別ファイルへ切り替えない。`--setup`は鍵・設定を本人限定の権限で保存し、既存値を上書きしない。VPSインストーラーは専用VPSへ認証付きのX宛先限定プロキシを作り、安全条件を満たさなければ変更前に拒否する。詳細は [configuration.md](docs/design/configuration.md)・[section-05.md](docs/design/section-05.md)。
+設定ファイルは環境変数、明示パス、既存の`secrets.json`、標準保存先の順に選び、起動後は別ファイルへ切り替えない。`--setup`は鍵・設定を本人限定の権限で保存し、既存値を上書きしない。VPSインストーラーは専用VPSへ認証付きのX宛先限定プロキシを作り、安全条件を満たさなければ変更前に拒否する。詳細は [configuration.md](docs/design/configuration.md)・[section-03.md](docs/design/section-03.md)。
 
 ## Setup（Velopack）
 
