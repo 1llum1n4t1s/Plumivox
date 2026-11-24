@@ -1,0 +1,9 @@
+# 文書と構造
+
+文書の置き場所、ソース構成、配布物、子プロセス・テストのコンソール窓の扱い、プラグイン登録の規約。
+
+- 利用者向けの導入・操作・取得範囲は [README.md](../../README.md)（英語の正本。日本語版は [README.ja.md](../../README.ja.md)）、現在の構造と設計判断は [DESIGN.md](../../DESIGN.md) を参照する。
+- 初期設定は [setup.md](../setup.md)、設定と保存形式は [configuration.md](../configuration.md)、管理プロキシの設定・運用は [managed-proxy.md](../managed-proxy.md)、失敗条件とE2Eの検証方針は [verification.md](../verification.md) を参照し、変更した挙動に対応する説明を更新する。
+- 本体実装は`src/*.rs`、ツール定義は`src/tool-definitions.json`、開発用コマンドは`xtask/`、MCP経由のRust検証は`tests/`。Setup（Velopack）の起動時処理・自動更新・登録は`src/app_update.rs`と`src/app_update/`、Claude Code・Codexへの登録は`src/connect.rs`、梱包・公開・隔離E2Eは`xtask/src/velopack.rs`。配布物はWindows x64のSetup（`PlumivoxApp-win-Setup.exe`、R2から配信）と、プラグイン経路用のWindows x64の`dist/plumivox.exe`・macOS ARM64の`dist/plumivox`。開発・検証にもNode.jsやnpmパッケージを要求しない。
+- `xtask/`と`tests/`が起動する子プロセスは、Windowsでコンソール窓を出さない（`CREATE_NO_WINDOW`。xtaskは`quiet()`経由）。新しい子プロセス起動にも同じ扱いを適用する。テストは`AllocConsole`で見えるコンソールを作らない。専用コンソールが必要なら`CREATE_NO_WINDOW`で起動した子に持たせる（窓を持たない専用コンソールになる。`tests/setup_windows.rs`の`terminal()`が`terminal_fixture`をそう起動し、fixtureは入力の前に窓が無い（または不可視）こと・コンソールに接続しているのが自分だけであることを確かめて、満たさなければ失敗する。窓がフォーカスを奪うと本人のキー入力がテストへ流れ込み、本人の画面も塞ぐため）。専用コンソールを使う子へ渡す製品の起動には`CREATE_NO_WINDOW`を付けず、そのコンソールを継承させる。入力は窓に依存しない`WriteConsoleInputW`で与える。専用コンソールのケースだけを確かめるときは`PLUMIVOX_SETUP_CASES`（カンマ区切りのケース名）を使い、全件検証では未設定にする。
+- Setup版は導入先の`current\plumivox.exe --stdio`をClaude Code（`claude mcp add --scope user`）・Codex（`codex mcp add`）へ登録して起動する。プラグイン経路は`mcp.json`のプラグイン内相対コマンド`./dist/plumivox --stdio`から起動し、Windowsは`.exe`を解決する。どちらも利用者側の依存インストールや起動時のコード取得を必要としない構成を維持する（Setup版の更新の取得は stdio MCP の背景スレッドだけが行い、起動を待たせない）。共有IPCのネイティブv3名前空間は旧JavaScript版から分離し、移行前の中継停止と再起動手順を保持する。プラグイン登録・設定を変更した場合は`plugin.json`、`mcp.json`、`.agents/plugins/marketplace.json`、`Cargo.toml`とREADMEの導入手順の整合を確認する。

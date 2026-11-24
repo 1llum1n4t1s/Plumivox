@@ -1,0 +1,16 @@
+# Setup（Velopack）
+
+[DESIGN.md](../../DESIGN.md#setupvelopack) の詳細。実装は [`src/app_update.rs`](../../src/app_update.rs) と`src/app_update/`、梱包・公開は`xtask/src/velopack.rs`。
+
+本人の決定（2026-11-15）により、Windowsの既定の配布をSetup（Velopack）へ移した。共通仕様は`D:\Dev\APP-DISTRIBUTION.md`の多プロセス型、参考実装はRemnifold。packIdは`PlumivoxApp`、導入先は既定で`%LOCALAPPDATA%\PlumivoxApp`（`current\plumivox.exe`）、ユーザー単位で管理者権限を要求しない。
+
+- **起動時処理**：`main`は全サブコマンドの最初に`VelopackApp`を自動適用オフで実行する。Velopackのフック引数（`--veloapp-install`など）はここで処理して終了コード0で終える。Velopackは環境変数を書き換えるため、tokioのスレッドを作る前の同期処理で行う。
+- **多プロセス型の適用**：Velopackの適用は導入先の自分以外の全プロセスを強制終了する。Plumivoxはセッションごとのstdio MCPと、MCPが`current_exe()`から起動する共有中継daemonが導入先から動くため、日中には適用しない。確認・取得はstdio MCPの背景スレッドだけが行い（24時間の間引き、失敗も24時間は再試行しない、`app-update.lock`で複数MCPの重複取得を防ぐ）、適用はログオン時のRun値から起動する`--update-apply`だけが行う。導入先から他のプロセスが1つでも動いていれば`busy`として次のログオンへ回し、強制終了しない。
+- **信頼**：取得はR2からのHTTPSとVelopackのフィードのハッシュ照合で守り、適用前にnupkg内の全PE（.exe・.dll）のAuthenticode署名が有効で、署名者のCNが本人の証明書（`Open Source Developer Yuichiro Shinozaki`）であることを確かめる。主実行ファイル`lib/app/plumivox.exe`と更新器`Squirrel.exe`はちょうど1つずつ、曖昧な名前を含むパッケージは拒否する。失効確認はしない（ログオン時のオフラインでも適用できるようにするため）。配信元へ別のビルドを置かれた場合も、署名者が違えば適用しない。
+- **登録**：インストールフックと、フック以外の起動（`--update-apply`・引数なしの起動・stdio起動）で、Claude Code（`claude mcp add --scope user plumivox -- <exe> --stdio`）とCodex（`codex mcp add plumivox -- <exe> --stdio`）へ公式CLIで登録する。設定ファイルを直接書き換えない。`mcp get`でこの実行ファイルを指す登録は触らず、旧プラグインの`dist`など別の場所を指す同名の登録だけを置き換える。フックはCLI 1回を3秒で子孫ごと打ち切り（Velopackはフックを15～30秒で打ち切る）、終わらなかったCLIは`setup-registration.json`に未完了と残して30秒の上限でやり直す。更新の後は、パスが同じならMCPの登録を触らずRun値だけを張り直す（使用中のセッションの登録を外さないため）。CLIはPATH上の`.exe`だけを探す。
+- **状態の置き場**：`auto_update`（既定ON）、確認・失敗時刻、ロック、診断ログ、登録状態は、データフォルダー（セッション保存の既定の親）の子`app-update\`に置く。インストールフックが`--setup`より先にデータフォルダーを作っても、セッション保存と同じ本人限定の権限（Windowsは保護付きDACL、macOSは0700）で作る。導入先の`current\`は更新で入れ替わるため使わない。
+- **保存先の保護**：セッション・設定・SSH鍵の保存先の禁止先に、Velopackの導入先（実行中の導入の`get_root_dir()`と、既定の`%LOCALAPPDATA%\PlumivoxApp`・`/Applications/Plumivox.app`・`~/Applications/Plumivox.app`）を加えた。プラグインルートの判定は変えていない。
+- **解除**：アンインストールフックと`--uninstall-setup --apply`は、この実行ファイルを指すMCP登録とRun値だけを外し、データフォルダー（設定・セッション・`app-update.json`）を残す。macOSにはVelopackのフックとアンインストーラーが無いため、引数なしの起動・stdio起動で登録し、解除は`--uninstall-setup --apply`で行う（`osx`チャネルは未配信）。
+- **案内**：管理下のビルドを端末から引数なしで起動した場合とSetup直後の初回起動は、stdioを待たずに導入済み・登録済みであることと、未設定なら`--setup`の実行を案内する。初回起動と、コンソールに付いているのが自分だけ（スタートメニューからの起動など、終了とともに窓が閉じる）のときは、Enterを待ってから閉じる。秘密値を扱う`--setup`は自動で始めない。silentのSetupは導入後にアプリを起動しない（Velopack 1.2.161で確認）。MCPクライアントはstdinをパイプで渡すため従来どおりstdioで動き、管理外のビルドの素の起動もstdioのまま。
+- **配信**：`distribution.yml`の`velopack` job（`v<版>`タグのpushで起動し、`windows` jobの成功後に動く・版タグだけ・Environment `r2-velopack`。SigiluneのTOTP時間枠が`windows`の署名と重ならないよう`needs`で直列にする）が、cargoのビルドを済ませた後に、署名用Secretsを渡すstepでは事前にビルドしたxtaskだけを実行して梱包・署名・署名者検証を行い、公開R2の`velopack/`へ置く。版付きの成果物は新規作成のみ（既存なら内容を照合し、違えば失敗）、固定名のSetup・`releases.win.json`などは置き換え、`releases.win.json`を最後に置く。
+- **範囲外**：Linuxは対象外（VPSインストーラーはそのまま）。プラグインの縮小（`mcp.json`と`dist/`の削除）とToolport登録の自動書き換えは行わない。

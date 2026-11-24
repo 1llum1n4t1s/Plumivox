@@ -1,0 +1,8 @@
+# 投稿・フィード・継続情報の設計判断
+
+[DESIGN.md](../../DESIGN.md) の不変条件のうち、MCPツールの挙動に関する詳細。操作一覧は [README.md](../../README.md) を参照する。
+
+- **投稿の成否**：投稿作成・ログインの自動再送やローカル投稿履歴による重複抑止はない。通常のAPI要求は45秒、画像アップロードは1画像あたり120秒を上限とする。画像アップロードだけは、HTTP 502・503・504では同画像を250ms、プロキシ・上流障害・原因不明のJSON拒否（rejectionReasonsがproxy／upstream_*／unknownのみ）と通信切断（network）では1秒待機後に最大1回再試行し（認証・残高・メディア不正・重複・レート制限・タイムアウトは再試行せず）、待機と全要求を1画像の`image_timeout`内に収める。成功済み画像を再送せず、全画像の成功後に投稿作成を1回だけ呼ぶ。既知の投稿エラーには固定値のstage、postAttempted、画像要求総数uploadAttemptsを残し、画像の通信失敗には秘密値を含まないfailureKind（timeout／network／cancelled）を付ける。投稿専用のMCP境界で準備失敗の既定値を付け、クライアント側の実際の段階情報を優先する。未知の内部エラーでは未送信と断定しない。成否不明は `POST_UNCERTAIN` として返し、成功・未投稿を断定しない。明示的な再呼出しでは同文も毎回送信し、同文の受理・拒否はX側へ任せる。認証更新は投稿とは独立し、失敗した投稿を再開しない。
+- **拒否理由の固定分類**：提供元の拒否応答は`src/api_rejection.rs`が、生のmessage・code・request IDを返さず固定名の分類（rejectionReasons）だけへ変換する。`api_key`・`authentication`・`account_locked`・`account_suspended`・`rate_limit`・`credits`・`proxy`・`media`・`duplicate`・`upstream_timeout`・`upstream_unavailable`に加え、`automation_suspected`・`daily_limit`・`text_too_long`・`session_mismatch`・`post_id_missing`を持つ。後半5つは公知の文面に基づく候補で、提供元がその形で返す保証は未確認である。`post_id_missing`は投稿自体が作成された可能性があるため再送せず、利用者が照合する。
+- **フィードの限界**：公式ホームの再現ではない。検索バッチは順に取得して要求数を制限するが、保護投稿や全フォロー先の網羅、ページ間の全体時系列順は保証しない。フォロー一覧の続きと検索の続きは別cursorで、同時指定を拒否する。提供元または生成cursorが受理上限を超えた場合は、取得済み投稿・提供元の続き有無を維持し、継続不能の理由をcoverageへ返す。opaqueなcursorは切り詰めない。
+- **継続情報の境界**：フィードのcursorはversion 2で検索対象とcoverageをAPIキーのHMACで署名し、アカウントとユーザー名を照合して初回の検索対象を固定する。旧署名なし形式は拒否する。検索用cursorは条件と用途（投稿の続き／フォロー一覧の続き）を同じ方式で署名し、フィード用cursorとの混同や別条件への流用を拒否する。フォロー先検索では署名付きフィードcursorを内包する。APIキー変更で既存cursorは無効になる。署名は改変検知のためであり、内容の暗号化ではない。
