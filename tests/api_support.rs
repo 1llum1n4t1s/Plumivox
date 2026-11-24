@@ -298,6 +298,7 @@ pub async fn handle(state: Arc<State>, req: HttpRequest) -> io::Result<HttpRespo
             "auth" => (200, "Invalid login cookies"),
             "proxy" => (200, "ProxyError: failed to connect to proxy"),
             "credits" => (200, "Credits is not enough.Please recharge"),
+            "noid" => (200, "Could not extract tweet_id"),
             "mixed" => (200, "ProxyError: read timed out"),
             "http402" => (402, "Credits is not enough.Please recharge"),
             "http502" => (502, "Bad gateway"),

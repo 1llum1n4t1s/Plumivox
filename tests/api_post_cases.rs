@@ -130,6 +130,12 @@ pub async fn run(h: &mut Harness) -> Result<()> {
                     json!(["proxy"]),
                 ),
                 (
+                    "rejection-noid",
+                    "API_REJECTED",
+                    "provider_message",
+                    json!(["post_id_missing"]),
+                ),
+                (
                     "rejection-http502",
                     "POST_UNCERTAIN",
                     "http_status",

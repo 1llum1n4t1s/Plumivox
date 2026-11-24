@@ -160,7 +160,7 @@ X 전체 검색은 페이지당 1회, 팔로우 대상 검색은 기존 피드�
 
 API의 거부 오류(`API_REJECTED`·`API_HTTP_ERROR`)에는 `httpStatus`, 고정 분류의 배열 `rejectionReasons`, 분류 출처 `rejectionReasonSource`를 포함합니다. 게시물 작성의 5xx가 `POST_UNCERTAIN`이 되는 경우에도 이 진단 정보를 유지합니다. 분류 출처는 `provider_message`(제공처의 JSON 메시지에서 추정한 후보) 또는 `http_status`(HTTP 상태에 따른 분류)입니다. 후보는 원인의 확정이나 재전송 허가를 의미하지 않으며, 판별할 수 없는 문구는 `unknown`으로 합니다. 원본 응답문·임의의 오류 코드·request ID는 반환하지 않으며 저장하지도 않습니다.
 
-`provider_message`의 후보는 `api_key`·`authentication`·`account_locked`·`account_suspended`·`rate_limit`·`credits`·`proxy`·`media`·`duplicate`·`upstream_timeout`·`upstream_unavailable`·`unknown`입니다. `http_status`에는 추가로 `invalid_request`(400)·`unauthorized`(401)·`forbidden`(403)·`endpoint_not_found`(404)가 있습니다. 예를 들어 이미지 업로드 시 `rejectionReasons: ["proxy", "upstream_timeout"]`과 `postAttempted: false`라면, 프록시·업스트림 타임아웃이 의심되며 게시물 작성 전에 멈췄다는 것을 알 수 있습니다. 2xx가 아닌 본문은 읽지 않으며, 기존 통신 상한·재시도 조건을 유지합니다.
+`provider_message`의 후보는 `api_key`·`authentication`·`account_locked`·`account_suspended`·`rate_limit`·`credits`·`proxy`·`media`·`duplicate`·`upstream_timeout`·`upstream_unavailable`·`automation_suspected`·`daily_limit`·`text_too_long`·`session_mismatch`·`post_id_missing`·`unknown`입니다. `unknown` 앞의 다섯 가지는 공개적으로 알려진 문구에 기반한 후보이며, 제공자가 반드시 이 문구로 반환한다고 확인된 것은 아닙니다. 이들은 재시도하지 않습니다. `post_id_missing`은 게시물이 작성되었을 수 있으므로, 다시 보내기 전에 계정에서 확인하세요. `http_status`에는 추가로 `invalid_request`(400)·`unauthorized`(401)·`forbidden`(403)·`endpoint_not_found`(404)가 있습니다. 예를 들어 이미지 업로드 시 `rejectionReasons: ["proxy", "upstream_timeout"]`과 `postAttempted: false`라면, 프록시·업스트림 타임아웃이 의심되며 게시물 작성 전에 멈췄다는 것을 알 수 있습니다. 2xx가 아닌 본문은 읽지 않으며, 기존 통신 상한·재시도 조건을 유지합니다.
 
 API 응답이 10MiB를 넘으면 수신을 중단하고 실패를 반환합니다. 게시 응답에서 상한을 넘은 경우에도 이미 게시되었을 가능성이 있으므로 다시 보내지 않습니다.
 

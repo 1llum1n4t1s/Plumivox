@@ -102,6 +102,26 @@ const MESSAGE_RULES: &[(&str, &[&str])] = &[
             "internal server error",
         ],
     ),
+    // 以下は公知の文面に基づく候補で、提供元がこの形で返す保証は未確認。
+    ("automation_suspected", &["might be automated"]),
+    (
+        "daily_limit",
+        &["over daily status update limit", "daily limit for sending"],
+    ),
+    (
+        "text_too_long",
+        &[
+            "needs to be a bit shorter",
+            "tweet is too long",
+            "tweet text is too long",
+        ],
+    ),
+    (
+        "session_mismatch",
+        &["matching csrf cookie", "invalid or expired token"],
+    ),
+    // 投稿自体は作成された可能性がある。再送せず、利用者が照合する。
+    ("post_id_missing", &["could not extract tweet_id"]),
 ];
 
 pub(crate) fn details(http_status: u16, body: Option<&Value>) -> Value {
@@ -179,6 +199,30 @@ mod tests {
             ("Status is a duplicate", vec!["duplicate"]),
             ("Upstream timed out", vec!["upstream_timeout"]),
             ("Service unavailable", vec!["upstream_unavailable"]),
+            (
+                "Oops, your request looks like it might be automated.",
+                vec!["automation_suspected"],
+            ),
+            ("Over daily status update limit.", vec!["daily_limit"]),
+            (
+                "You have reached the daily limit for sending Tweets",
+                vec!["daily_limit"],
+            ),
+            (
+                "Your Tweet needs to be a bit shorter.",
+                vec!["text_too_long"],
+            ),
+            ("Tweet text is too long", vec!["text_too_long"]),
+            (
+                "Could not find a matching CSRF cookie",
+                vec!["session_mismatch"],
+            ),
+            ("Invalid or expired token", vec!["session_mismatch"]),
+            ("Could not extract tweet_id", vec!["post_id_missing"]),
+            (
+                "To protect our users from spam, your account is temporarily locked",
+                vec!["account_locked"],
+            ),
             (
                 "ProxyError: read timed out",
                 vec!["proxy", "upstream_timeout"],

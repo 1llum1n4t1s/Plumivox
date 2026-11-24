@@ -160,7 +160,7 @@ TwitterAPI.io 没有直接获取 X 官方首页“正在关注”的 API。Plumi
 
 API 的拒绝错误（`API_REJECTED`、`API_HTTP_ERROR`）包含 `httpStatus`、固定分类的数组 `rejectionReasons` 以及分类来源 `rejectionReasonSource`。创建帖子时的 5xx 变为 `POST_UNCERTAIN` 时，也会保留这些诊断信息。分类来源为 `provider_message`（根据提供方的 JSON 消息推测的候选）或 `http_status`（根据 HTTP 状态的分类）。候选并不意味着确定原因或允许重发，无法判别的文字记为 `unknown`。不会返回或保存原始响应文本、任意错误代码和 request ID。
 
-`provider_message` 的候选为 `api_key`、`authentication`、`account_locked`、`account_suspended`、`rate_limit`、`credits`、`proxy`、`media`、`duplicate`、`upstream_timeout`、`upstream_unavailable`、`unknown`。`http_status` 另外还有 `invalid_request`（400）、`unauthorized`（401）、`forbidden`（403）、`endpoint_not_found`（404）。例如，图片上传时出现 `rejectionReasons: ["proxy", "upstream_timeout"]` 和 `postAttempted: false`，就可以知道疑似代理或上游超时，并且在创建帖子之前就已停止。不会读取非 2xx 的正文，并维持现有的通信上限和重试条件。
+`provider_message` 的候选为 `api_key`、`authentication`、`account_locked`、`account_suspended`、`rate_limit`、`credits`、`proxy`、`media`、`duplicate`、`upstream_timeout`、`upstream_unavailable`、`automation_suspected`、`daily_limit`、`text_too_long`、`session_mismatch`、`post_id_missing`、`unknown`。`unknown` 之前的五项是基于公开已知措辞的候选，尚未确认提供方一定以此措辞返回，且不会重试。`post_id_missing` 表示帖子可能已发布，重新发送前请先在账号中核对。`http_status` 另外还有 `invalid_request`（400）、`unauthorized`（401）、`forbidden`（403）、`endpoint_not_found`（404）。例如，图片上传时出现 `rejectionReasons: ["proxy", "upstream_timeout"]` 和 `postAttempted: false`，就可以知道疑似代理或上游超时，并且在创建帖子之前就已停止。不会读取非 2xx 的正文，并维持现有的通信上限和重试条件。
 
 API 响应超过 10MiB 时，会中止接收并返回失败。发帖响应超过上限时，由于可能已经发布，也不会重发。
 

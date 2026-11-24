@@ -160,7 +160,7 @@ X全体検索は1ページにつき1回、フォロー先検索は既存フィ�
 
 APIの拒否エラー（`API_REJECTED`・`API_HTTP_ERROR`）には `httpStatus`、固定分類の配列 `rejectionReasons`、分類元 `rejectionReasonSource` を含めます。投稿作成の5xxが `POST_UNCERTAIN` になる場合にも、この診断情報を保持します。分類元は `provider_message`（提供元のJSONメッセージから推定した候補）または `http_status`（HTTPステータスからの分類）です。候補は原因の確定や再送の許可を意味せず、判別できない文面は `unknown` とします。生の応答文・任意のエラーコード・request IDは返さず、保存もしません。
 
-`provider_message` の候補は `api_key`・`authentication`・`account_locked`・`account_suspended`・`rate_limit`・`credits`・`proxy`・`media`・`duplicate`・`upstream_timeout`・`upstream_unavailable`・`unknown` です。`http_status` にはさらに `invalid_request`（400）・`unauthorized`（401）・`forbidden`（403）・`endpoint_not_found`（404）があります。たとえば画像アップロード時の `rejectionReasons: ["proxy", "upstream_timeout"]` と `postAttempted: false` なら、プロキシ・上流タイムアウトが疑われ、投稿作成前に止まったことが分かります。非2xxの本文は読まず、既存の通信上限・再試行条件を維持します。
+`provider_message` の候補は `api_key`・`authentication`・`account_locked`・`account_suspended`・`rate_limit`・`credits`・`proxy`・`media`・`duplicate`・`upstream_timeout`・`upstream_unavailable`・`automation_suspected`・`daily_limit`・`text_too_long`・`session_mismatch`・`post_id_missing`・`unknown` です。`unknown` の前の5つは公知の文言に基づく候補で、提供元が必ずこの文言で返すとは確認していません。これらは再試行しません。`post_id_missing` は投稿済みの可能性があるため、再送前にアカウントで照合してください。`http_status` にはさらに `invalid_request`（400）・`unauthorized`（401）・`forbidden`（403）・`endpoint_not_found`（404）があります。たとえば画像アップロード時の `rejectionReasons: ["proxy", "upstream_timeout"]` と `postAttempted: false` なら、プロキシ・上流タイムアウトが疑われ、投稿作成前に止まったことが分かります。非2xxの本文は読まず、既存の通信上限・再試行条件を維持します。
 
 API応答が10MiBを超えた場合は受信を打ち切って失敗を返します。投稿の応答で上限を超えた場合も、投稿済みの可能性があるため再送しません。
 
