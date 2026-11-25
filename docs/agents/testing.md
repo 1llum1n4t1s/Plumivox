@@ -17,3 +17,7 @@ cargo xtask test-e2e
 - 文書だけの変更では、リンク・コマンド・設定名・記載した挙動を対応する実装へ照合する。
 - VPSインストーラー変更では`cargo test --locked --package plumivox-vps-installer`も実行し、Rust版とBash互換経路の検証を区別する。CLI・fixtureの成功を実システムへの導入成功と扱わない。
 - R2関連の実装変更では`cargo test --locked --package xtask`も実行し、実R2通信とローカル検証を区別する。配布CIの検証は [release-process.md](release-process.md) を参照する。
+
+## Setup（Velopack）の隔離検証
+
+検証は本物の導入に触れずに行う: テスト用 packId`PlumivoxVelopackTest`（`PlumivoxApp`を使わない）、`--installto`は外部の作業フォルダー配下、子プロセスの`LOCALAPPDATA`・`APPDATA`・`USERPROFILE`・`HOME`・`CODEX_HOME`・`CLAUDE_CONFIG_DIR`・`TEMP`/`TMP`・`PLUMIVOX_SECRETS_FILE`をその配下へ、`PATH`はスタブ（`tests/cli-stub.rs`の`plumivox-cli-stub`）と System32 だけにする。`cargo xtask test-setup-velopack-e2e`がこれを行い、テスト用の Run 値・Uninstall の項目・導入先を本物のアンインストーラーで外して、本番の値と本物の`plumivox`登録の不変を確かめる。Run キーの単体テストは非公開の app hive（`RegLoadAppKeyW`）で行い、本物の Run キーを使わない。本物の Setup・`~/.claude`・`~/.codex`・Toolport の登録・HKCU Run には触れない。

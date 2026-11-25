@@ -12,6 +12,6 @@ packIdは`PlumivoxApp`（`Plumivox`は既存の`%LOCALAPPDATA%\Plumivox`と衝�
 - `update-feed-test`機能（本番ビルド・署名梱包には入れない）だけが`PLUMIVOX_UPDATE_FEED_DIR`と`PLUMIVOX_UPDATE_ALLOW_UNSIGNED=1`を有効にする。`cargo xtask velopack-pack --sign`はテスト用の packId・版と併用できず、この機能付きのビルドを拒否する。
 - セッション・設定・SSH鍵の保存先の禁止先に、Velopack の導入先（`agent_dirs::velopack_install_roots()`）を含める。プラグインルートの判定は変えない。
 
-検証は本物の導入に触れずに行う: テスト用 packId`PlumivoxVelopackTest`（`PlumivoxApp`を使わない）、`--installto`は外部の作業フォルダー配下、子プロセスの`LOCALAPPDATA`・`APPDATA`・`USERPROFILE`・`HOME`・`CODEX_HOME`・`CLAUDE_CONFIG_DIR`・`TEMP`/`TMP`・`PLUMIVOX_SECRETS_FILE`をその配下へ、`PATH`はスタブ（`tests/cli-stub.rs`の`plumivox-cli-stub`）と System32 だけにする。`cargo xtask test-setup-velopack-e2e`がこれを行い、テスト用の Run 値・Uninstall の項目・導入先を本物のアンインストーラーで外して、本番の値と本物の`plumivox`登録の不変を確かめる。Run キーの単体テストは非公開の app hive（`RegLoadAppKeyW`）で行い、本物の Run キーを使わない。本物の Setup・`~/.claude`・`~/.codex`・Toolport の登録・HKCU Run には触れない。
+検証は隔離した環境とテスト用packIdで行い、本物の導入に触れない。手順は [testing.md](testing.md#setupvelopackの隔離検証) を参照する。
 
-梱包は`cargo xtask velopack-pack`（`vpk pack`。`--sign`は Sigilune の署名テンプレートで署名し、Setup と nupkg 内の全 PE の署名者・発行者・タイムスタンプを検証する）、公開は`cargo xtask velopack-publish`（`PLUMIVOX_UPDATES_R2_*`。版付きの成果物は新規作成のみ、固定名は置き換え、`releases.<channel>.json`は最後）。CI は`.github/workflows/distribution.yml`の`velopack` job（`v<版>`タグの push で起動し、`windows` job の成功後に動く。版タグ上だけ、Environment `r2-velopack`）で、署名用 Secrets を渡す step では cargo を動かさず、先の step でビルドした xtask を直接実行する。Sigilune は同じ TOTP 時間枠の並行ログインを Certum が拒否するため、`windows`と`velopack`の署名は`needs`で直列にする（`workflow_run`は既定ブランチの ref で動き、版タグ限定の Environment に拒否されるので使わない）。公開済みの版を同じタグで再実行すると版付きの照合で失敗して何も変わらない。公開・CI 起動（`v<版>`タグの push）は明示の依頼があるときだけ行う。
+梱包・公開・CIの規約は [release-process.md](release-process.md#setupvelopackの梱包と公開) を参照する。公開・CI起動は明示の依頼があるときだけ行う。
