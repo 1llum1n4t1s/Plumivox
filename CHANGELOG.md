@@ -6,6 +6,10 @@
 
 - Setup が Claude Code・Codex へ登録するとき、Toolport のゲートウェイが既に Plumivox を提供している環境（Windows）では、新しく直接登録を足さないようにしました。判定は設定ファイルの読み取りだけで行い、判定できない場合とWindows以外は従来どおり直接登録します。既存の直接登録は外しません。省いた後にゲートウェイが消えたら、次の起動・サインイン時に直接登録します。Codexで直接登録を省くと旧プラグインのMCPを抑える効果が無くなるため、旧プラグインが有効なら二重起動し得ます（警告は従来どおり出ます）。`app-update.json` の `mcp_registration`（`auto` 既定・`direct`・`off`）で制御できます。
 
+### 変更
+
+- 投稿の失敗を減らすため、AI向けの案内を足しました。`post_tweet` の説明に、加重文字数の数え方（URLは23、日本語・中国語・韓国語の文字と絵文字は2）と、同じアカウントの連投は数分空けることを書きました。本文が加重280を超えたときの `INVALID_TEXT` には `weightedLength`・`maxWeightedLength`・`excessWeightedLength` を付けます。投稿の送信後に失敗した `API_REJECTED`・`API_HTTP_ERROR`・`POST_UNCERTAIN` には、再送の前に `get_my_posts` で確かめる手順を英語の固定文 `nextStep` で付けます。投稿間隔の強制や自動再送はしません。
+
 ## 1.0.18 - 2026-11-24
 
 ### 追加

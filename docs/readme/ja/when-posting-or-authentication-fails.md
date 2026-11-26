@@ -6,6 +6,10 @@
 
 既知の投稿処理エラーには `stage`（`input_validation`・`pre_send`・`image_upload`・`post_creation`）、投稿作成要求を試みたかを示す `postAttempted`、実行した画像アップロード要求の総数 `uploadAttempts` を含めます。アカウント・Cookie不足や中継準備の失敗は `pre_send` です。未知の内部エラーとMCP入力形式の拒否ではこれらを返しません。`postAttempted: true` は投稿成功を意味しません。提供元の生エラーや資格情報は返しません。
 
+本文が加重280を超えた `INVALID_TEXT`（`stage: input_validation`、`postAttempted: false`）には、`weightedLength`、`maxWeightedLength`（280）、`excessWeightedLength` も含めます。空の本文や不正な文字の `INVALID_TEXT` には含めません。加重文字数は、URLを23、U+10FFまでの文字とダッシュ・曲線引用符・プライム（U+2010-201F、U+2032-2037）を1（… や • など他の句読点は2）、日本語・中国語・韓国語・全角句読点・絵文字を2として数えます。`post_tweet` のツール説明にも同じ数え方と、同じアカウントへの連投は数分空ける案内を載せています。クールダウンは強制しません。
+
+投稿作成の段階で失敗した（`postAttempted: true`）`API_REJECTED`・`API_HTTP_ERROR`・`POST_UNCERTAIN` には、AI向けの英語の固定文 `nextStep` を含めます。`post_id_missing` と `POST_UNCERTAIN` では、投稿済みかもしれないのですぐ再送せず、数分待ってから `get_my_posts` で確認するよう伝えます。`automation_suspected`・`rate_limit`・`daily_limit` では、Xが投稿を制限している可能性があるのですぐ再送せず、本人に伝え、数分以上待って `get_my_posts` で確認するよう伝えます。それ以外では、再送前に `get_my_posts` で確認し、繰り返し再送しないよう伝えます。画像アップロード段階のエラーと、読取り・ログインのエラーには `nextStep` を含めません。上流の生の拒否文面は引き続き返さず、保存もしません。
+
 画像通信の `API_UNAVAILABLE` には `failureKind` を含め、`timeout`（時間切れ）・`network`（通信障害）・`cancelled`（取消）を区別します。これらの場合も画像や投稿を自動再送しません。
 
 APIの拒否エラー（`API_REJECTED`・`API_HTTP_ERROR`）には `httpStatus`、固定分類の配列 `rejectionReasons`、分類元 `rejectionReasonSource` を含めます。投稿作成の5xxが `POST_UNCERTAIN` になる場合にも、この診断情報を保持します。分類元は `provider_message`（提供元のJSONメッセージから推定した候補）または `http_status`（HTTPステータスからの分類）です。候補は原因の確定や再送の許可を意味せず、判別できない文面は `unknown` とします。生の応答文・任意のエラーコード・request IDは返さず、保存もしません。

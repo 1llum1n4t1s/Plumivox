@@ -6,6 +6,10 @@
 
 已知的发帖处理错误包含 `stage`（`input_validation`、`pre_send`、`image_upload`、`post_creation`）、表示是否尝试了帖子创建请求的 `postAttempted`，以及已执行的图片上传请求总数 `uploadAttempts`。账号或 Cookie 不足、中继准备失败属于 `pre_send`。未知的内部错误和 MCP 输入格式的拒绝不会返回这些信息。`postAttempted: true` 并不代表发帖成功。不会返回提供方的原始错误或凭据。
 
+当正文超过加权长度 280 时，`INVALID_TEXT`（`stage: input_validation`、`postAttempted: false`）还会包含 `weightedLength`、`maxWeightedLength`（280）和 `excessWeightedLength`。正文为空或含有无效字符时的 `INVALID_TEXT` 不包含这些字段。加权长度按以下方式计算：每个 URL 计为 23，U+10FF 以内的字符和破折号、弯引号和 prime 符号（U+2010-201F、U+2032-2037）计为 1（… 和 • 等其他标点计为 2），日语、中文、韩语、全角标点和 emoji 计为 2。`post_tweet` 的工具说明中也写有相同的计算方式，以及同一账号连续发帖时应间隔几分钟的提示。Plumivox 不强制冷却时间。
+
+在帖子创建阶段失败（`postAttempted: true`）的 `API_REJECTED`、`API_HTTP_ERROR` 和 `POST_UNCERTAIN` 会包含面向 AI 的英文固定语句 `nextStep`。对于 `post_id_missing` 和 `POST_UNCERTAIN`，它会提示帖子可能已经发出，不要立即重发，先等待几分钟，再用 `get_my_posts` 确认。对于 `automation_suspected`、`rate_limit` 和 `daily_limit`，它会提示 X 可能正在限制发帖，不要立即重发，先告知用户，等待数分钟以上，再用 `get_my_posts` 确认。其他情况则提示重发前先用 `get_my_posts` 确认，并且不要反复重发。图片上传阶段的错误，以及读取和登录的错误不包含 `nextStep`。上游的原始拒绝文本依然不会返回，也不会保存。
+
 图片通信的 `API_UNAVAILABLE` 包含 `failureKind`，用于区分 `timeout`（超时）、`network`（通信故障）和 `cancelled`（取消）。在这些情况下也不会自动重发图片或帖子。
 
 API 的拒绝错误（`API_REJECTED`、`API_HTTP_ERROR`）包含 `httpStatus`、固定分类的数组 `rejectionReasons` 以及分类来源 `rejectionReasonSource`。创建帖子时的 5xx 变为 `POST_UNCERTAIN` 时，也会保留这些诊断信息。分类来源为 `provider_message`（根据提供方的 JSON 消息推测的候选）或 `http_status`（根据 HTTP 状态的分类）。候选并不意味着确定原因或允许重发，无法判别的文字记为 `unknown`。不会返回或保存原始响应文本、任意错误代码和 request ID。

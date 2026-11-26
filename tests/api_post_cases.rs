@@ -122,24 +122,34 @@ pub async fn run(h: &mut Harness) -> Result<()> {
                         && requests[before]["path"] == "/twitter/upload_media_v2"
                 );
             }
-            for (scenario, code, source, reasons) in [
+            for (scenario, code, source, reasons, next_step) in [
                 (
                     "rejection-proxy",
                     "API_REJECTED",
                     "provider_message",
                     json!(["proxy"]),
+                    "Call get_my_posts for this account to check whether the post exists before calling post_tweet again. Do not resend repeatedly.",
                 ),
                 (
                     "rejection-noid",
                     "API_REJECTED",
                     "provider_message",
                     json!(["post_id_missing"]),
+                    "The post may have been created. Do not call post_tweet again yet. Wait several minutes, then call get_my_posts for this account and look for this text. Resend only if it is still absent and the user still wants it; immediate resends have been rejected again.",
                 ),
                 (
                     "rejection-http502",
                     "POST_UNCERTAIN",
                     "http_status",
                     json!(["upstream_unavailable"]),
+                    "The post may have been created. Do not call post_tweet again yet. Wait several minutes, then call get_my_posts for this account and look for this text. Resend only if it is still absent and the user still wants it; immediate resends have been rejected again.",
+                ),
+                (
+                    "rejection-automated",
+                    "API_REJECTED",
+                    "provider_message",
+                    json!(["automation_suspected"]),
+                    "X appears to be limiting posts from this account. Do not resend right away. Tell the user, wait several minutes or longer, and call get_my_posts to check whether the post exists before any resend.",
                 ),
             ] {
                 h.state.scenario(scenario);
@@ -159,6 +169,7 @@ pub async fn run(h: &mut Harness) -> Result<()> {
                         && e["uploadAttempts"] == 0
                 );
                 ensure!(e["rejectionReasonSource"] == source && e["rejectionReasons"] == reasons);
+                ensure!(e["nextStep"] == next_step);
                 ensure!(
                     h.count() == before + 1
                         && h.trace()[before]["path"] == "/twitter/create_tweet_v2"
@@ -306,15 +317,22 @@ pub async fn run(h: &mut Harness) -> Result<()> {
                     .await?["weightedLength"]
                         == 280
                 );
-                ensure!(
-                    h.fail(
+                let v = h
+                    .fail(
                         "post_tweet",
                         json!({"account":"posting","text":emoji.repeat(141)}),
-                        true
+                        true,
                     )
-                    .await?["error"]["code"]
-                        == "INVALID_TEXT"
+                    .await?;
+                let e = &v["error"];
+                ensure!(e["code"] == "INVALID_TEXT");
+                ensure!(
+                    e["weightedLength"] == 282
+                        && e["maxWeightedLength"] == 280
+                        && e["excessWeightedLength"] == 2
                 );
+                ensure!(e["stage"] == "input_validation" && e["postAttempted"] == false);
+                ensure!(e.get("nextStep").is_none());
             }
         );
     }

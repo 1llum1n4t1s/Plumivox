@@ -178,9 +178,52 @@ pub(crate) fn details(http_status: u16, body: Option<&Value>) -> Value {
         "rejectionReasonSource":if body.is_some(){"provider_message"}else{"http_status"}})
 }
 
+const NEXT_STEP_UNCERTAIN: &str = "The post may have been created. Do not call post_tweet again yet. Wait several minutes, then call get_my_posts for this account and look for this text. Resend only if it is still absent and the user still wants it; immediate resends have been rejected again.";
+const NEXT_STEP_THROTTLED: &str = "X appears to be limiting posts from this account. Do not resend right away. Tell the user, wait several minutes or longer, and call get_my_posts to check whether the post exists before any resend.";
+const NEXT_STEP_OTHER: &str = "Call get_my_posts for this account to check whether the post exists before calling post_tweet again. Do not resend repeatedly.";
+
+/// 投稿作成段階の失敗に付ける、AI向けの固定の次の手順。対象外のコードはNone。
+pub(crate) fn post_creation_next_step(code: &str, details: &Value) -> Option<&'static str> {
+    if !matches!(code, "API_REJECTED" | "API_HTTP_ERROR" | "POST_UNCERTAIN") {
+        return None;
+    }
+    let has = |reason: &str| {
+        details["rejectionReasons"]
+            .as_array()
+            .is_some_and(|r| r.iter().any(|v| v == reason))
+    };
+    Some(if code == "POST_UNCERTAIN" || has("post_id_missing") {
+        NEXT_STEP_UNCERTAIN
+    } else if has("automation_suspected") || has("rate_limit") || has("daily_limit") {
+        NEXT_STEP_THROTTLED
+    } else {
+        NEXT_STEP_OTHER
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn next_step_priority_and_scope() {
+        let d = |r: &[&str]| json!({"rejectionReasons": r});
+        let step = |code, r: &[&str]| post_creation_next_step(code, &d(r)).unwrap();
+        assert_eq!(step("POST_UNCERTAIN", &["rate_limit"]), NEXT_STEP_UNCERTAIN);
+        assert_eq!(
+            step("API_REJECTED", &["automation_suspected", "post_id_missing"]),
+            NEXT_STEP_UNCERTAIN
+        );
+        for reason in ["automation_suspected", "rate_limit", "daily_limit"] {
+            assert_eq!(step("API_HTTP_ERROR", &[reason]), NEXT_STEP_THROTTLED);
+        }
+        assert_eq!(step("API_REJECTED", &["proxy"]), NEXT_STEP_OTHER);
+        assert_eq!(
+            post_creation_next_step("API_REJECTED", &json!({})),
+            Some(NEXT_STEP_OTHER)
+        );
+        assert!(post_creation_next_step("INVALID_TEXT", &d(&["rate_limit"])).is_none());
+    }
 
     #[test]
     fn rejection_diagnostics_are_fixed_candidates_not_provider_text() {

@@ -6,6 +6,10 @@
 
 알려진 게시 처리 오류에는 `stage`(`input_validation`·`pre_send`·`image_upload`·`post_creation`), 게시물 작성 요청을 시도했는지 나타내는 `postAttempted`, 실행한 이미지 업로드 요청의 총수 `uploadAttempts`를 포함합니다. 계정·Cookie 부족이나 중계 준비 실패는 `pre_send`입니다. 알 수 없는 내부 오류와 MCP 입력 형식 거부에서는 이 값들을 반환하지 않습니다. `postAttempted: true`는 게시 성공을 의미하지 않습니다. 제공처의 원본 오류나 자격 증명은 반환하지 않습니다.
 
+본문이 가중 길이 280을 넘은 `INVALID_TEXT`(`stage: input_validation`, `postAttempted: false`)에는 `weightedLength`, `maxWeightedLength`(280), `excessWeightedLength`도 포함합니다. 빈 본문이나 잘못된 문자로 인한 `INVALID_TEXT`에는 포함하지 않습니다. 가중 길이는 URL을 23, U+10FF까지의 문자와 대시·둥근 따옴표·프라임(U+2010-201F, U+2032-2037)을 1(… 및 • 같은 다른 구두점은 2), 일본어·중국어·한국어·전각 구두점·이모지를 2로 셉니다. `post_tweet` 도구 설명에도 같은 계산 방식과, 같은 계정으로 연속 게시할 때는 몇 분 간격을 두라는 안내가 있습니다. 쿨다운은 강제하지 않습니다.
+
+게시물 작성 단계에서 실패한(`postAttempted: true`) `API_REJECTED`·`API_HTTP_ERROR`·`POST_UNCERTAIN`에는 AI용 영어 고정 문장 `nextStep`을 포함합니다. `post_id_missing`과 `POST_UNCERTAIN`에서는 이미 게시되었을 수 있으므로 바로 재전송하지 말고 몇 분 기다린 뒤 `get_my_posts`로 확인하도록 안내합니다. `automation_suspected`·`rate_limit`·`daily_limit`에서는 X가 게시를 제한하고 있을 수 있으므로 바로 재전송하지 말고, 사용자에게 알리고, 몇 분 이상 기다린 뒤 `get_my_posts`로 확인하도록 안내합니다. 그 외에는 재전송 전에 `get_my_posts`로 확인하고 반복해서 재전송하지 않도록 안내합니다. 이미지 업로드 단계의 오류와 읽기·로그인 오류에는 `nextStep`을 포함하지 않습니다. 업스트림의 원본 거부 문구는 계속 반환하지도 저장하지도 않습니다.
+
 이미지 통신의 `API_UNAVAILABLE`에는 `failureKind`를 포함하여 `timeout`(시간 초과)·`network`(통신 장애)·`cancelled`(취소)를 구분합니다. 이 경우에도 이미지나 게시물을 자동으로 다시 보내지 않습니다.
 
 API의 거부 오류(`API_REJECTED`·`API_HTTP_ERROR`)에는 `httpStatus`, 고정 분류의 배열 `rejectionReasons`, 분류 출처 `rejectionReasonSource`를 포함합니다. 게시물 작성의 5xx가 `POST_UNCERTAIN`이 되는 경우에도 이 진단 정보를 유지합니다. 분류 출처는 `provider_message`(제공처의 JSON 메시지에서 추정한 후보) 또는 `http_status`(HTTP 상태에 따른 분류)입니다. 후보는 원인의 확정이나 재전송 허가를 의미하지 않으며, 판별할 수 없는 문구는 `unknown`으로 합니다. 원본 응답문·임의의 오류 코드·request ID는 반환하지 않으며 저장하지도 않습니다.

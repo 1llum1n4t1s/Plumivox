@@ -1050,6 +1050,11 @@ fn post_error(mut e: AppError, stage: &str, attempted: bool, attempts: usize) ->
     e.details["stage"] = json!(stage);
     e.details["postAttempted"] = json!(attempted);
     e.details["uploadAttempts"] = json!(attempts);
+    if attempted
+        && let Some(step) = crate::api_rejection::post_creation_next_step(&e.code, &e.details)
+    {
+        e.details["nextStep"] = json!(step);
+    }
     e
 }
 async fn read_image(path: &str) -> Result<Image> {
@@ -1144,7 +1149,18 @@ fn weighted_text(text: &str) -> Result<usize> {
         }
         weight = weight - emoji_weight + 2;
     }
-    if !(1..=280).contains(&weight) {
+    if weight > 280 {
+        return Err(err(
+            "INVALID_TEXT",
+            "The post text exceeds X's weighted length of 280. The post was not sent. Shorten it by at least excessWeightedLength weighted characters (ask the user first if they wrote the exact text) and call post_tweet again. Each URL counts as 23, and Japanese, Chinese, and Korean characters and each emoji count as 2.",
+        )
+        .with_details(json!({
+            "weightedLength": weight,
+            "maxWeightedLength": 280,
+            "excessWeightedLength": weight - 280
+        })));
+    }
+    if weight == 0 {
         return Err(invalid());
     }
     Ok(weight)
@@ -1168,6 +1184,19 @@ mod tests {
         assert!(weighted_text(&format!("https://#️⃣.com/{}", "a".repeat(300))).is_err());
         assert_eq!(weighted_text(&"あ".repeat(140)).unwrap(), 280);
         assert_eq!(weighted_text("e\u{301}").unwrap(), 1);
+    }
+    #[test]
+    fn over_limit_reports_weight_numbers_only_for_excess() {
+        for text in ["あ".repeat(141), "😀".repeat(141)] {
+            let e = weighted_text(&text).unwrap_err();
+            assert_eq!(e.code, "INVALID_TEXT");
+            assert_eq!(e.details["weightedLength"], 282);
+            assert_eq!(e.details["maxWeightedLength"], 280);
+            assert_eq!(e.details["excessWeightedLength"], 2);
+        }
+        let blank = weighted_text("   ").unwrap_err();
+        assert_eq!(blank.code, "INVALID_TEXT");
+        assert!(blank.details.get("weightedLength").is_none());
     }
     #[test]
     fn signed_cursor_boundaries() {

@@ -6,6 +6,10 @@
 
 已知的發文處理錯誤會包含 `stage`（`input_validation`、`pre_send`、`image_upload`、`post_creation`）、表示是否嘗試過建立貼文要求的 `postAttempted`，以及已執行的圖片上傳要求總數 `uploadAttempts`。帳號或 Cookie 不足、中繼準備失敗屬於 `pre_send`。未知的內部錯誤與 MCP 輸入格式的拒絕不會回傳這些資訊。`postAttempted: true` 並不代表發文成功。不會回傳提供者的原始錯誤或憑證。
 
+當內文超過加權長度 280 時，`INVALID_TEXT`（`stage: input_validation`、`postAttempted: false`）還會包含 `weightedLength`、`maxWeightedLength`（280）與 `excessWeightedLength`。內文為空或含有無效字元時的 `INVALID_TEXT` 不包含這些欄位。加權長度的計算方式為：每個 URL 計為 23，U+10FF 以內的字元與破折號、彎引號與 prime 符號（U+2010-201F、U+2032-2037）計為 1（… 與 • 等其他標點計為 2），日文、中文、韓文、全形標點與 emoji 計為 2。`post_tweet` 的工具說明中也寫有相同的計算方式，以及同一帳號連續發文時應間隔幾分鐘的提示。Plumivox 不強制冷卻時間。
+
+在建立貼文階段失敗（`postAttempted: true`）的 `API_REJECTED`、`API_HTTP_ERROR` 與 `POST_UNCERTAIN` 會包含給 AI 看的英文固定語句 `nextStep`。對於 `post_id_missing` 與 `POST_UNCERTAIN`，它會提示貼文可能已經發出，不要立即重送，先等待幾分鐘，再用 `get_my_posts` 確認。對於 `automation_suspected`、`rate_limit` 與 `daily_limit`，它會提示 X 可能正在限制發文，不要立即重送，先告知使用者，等待數分鐘以上，再用 `get_my_posts` 確認。其他情況則提示重送前先用 `get_my_posts` 確認，且不要反覆重送。圖片上傳階段的錯誤，以及讀取與登入的錯誤不包含 `nextStep`。上游的原始拒絕文字依然不會回傳，也不會儲存。
+
 圖片通訊的 `API_UNAVAILABLE` 會包含 `failureKind`，以區分 `timeout`（逾時）、`network`（通訊故障）與 `cancelled`（取消）。在這些情況下也不會自動重新傳送圖片或貼文。
 
 API 的拒絕錯誤（`API_REJECTED`、`API_HTTP_ERROR`）會包含 `httpStatus`、固定分類的陣列 `rejectionReasons`，以及分類來源 `rejectionReasonSource`。建立貼文的 5xx 變成 `POST_UNCERTAIN` 時，也會保留這些診斷資訊。分類來源為 `provider_message`（從提供者的 JSON 訊息推測的候選）或 `http_status`（依 HTTP 狀態碼的分類）。候選並不代表確定原因或允許重新傳送，無法判別的文字則為 `unknown`。不會回傳或儲存原始回應文字、任意錯誤碼或 request ID。
