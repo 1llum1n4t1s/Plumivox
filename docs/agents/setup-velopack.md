@@ -2,7 +2,7 @@
 
 Windows の Setup（Velopack）の起動時処理・自動更新・登録・梱包・公開・検証に関する規約。DESIGN.md の [Setup（Velopack）](../../DESIGN.md#setupvelopack) も参照する。
 
-packIdは`PlumivoxApp`（`Plumivox`は既存の`%LOCALAPPDATA%\Plumivox`と衝突する）、packTitleは`Plumivox`、mainExeは`plumivox.exe`、Velopack CLIと crate はともに1.2.161（`velopack = "=1.2.161"`）。フィードは`https://plumivox-updates.kagayoi.com/velopack/`の`releases.win.json`（将来`releases.osx.json`）。Plumivoxは**多プロセス型**（stdio MCP と共有中継 daemon）で、Velopack の適用は導入先の他プロセスを強制終了するため、日中に適用しない。
+packIdは`PlumivoxApp`（`Plumivox`は既存の`%LOCALAPPDATA%\Plumivox`と衝突する）、packTitleは`Plumivox`、mainExeは`plumivox.exe`、Velopack CLIと crate はともに1.3.39-g8d2844f（`velopack = "=1.3.39-g8d2844f"`）。フィードは`https://plumivox-updates.kagayoi.com/velopack/`の`releases.win.json`（将来`releases.osx.json`）。Plumivoxは**多プロセス型**（stdio MCP と共有中継 daemon）で、Velopack の適用は導入先の他プロセスを強制終了するため、日中に適用しない。
 
 - `main()`は tokio のランタイムを作る前の同期処理で、全サブコマンドの最初に`VelopackApp`を自動適用**オフ**で動かす。install・updated・uninstall のフックは必ず終了コード0で終え、インストール・更新・アンインストールを止めない。フック内の CLI 呼び出しは1回3秒（`src/app_update/process.rs`の Job 付き時間制限）、フック以外（`--update-apply`・引数なしの起動・stdio の背景スレッド）は30秒。
 - 登録は全OSで`setup-registration.json`（データフォルダー`%LOCALAPPDATA%\Kagayoi\Plumivox`の子`app-update\`）に記録する。フックで終わらなかった登録はログオン時の`--update-apply`・引数なしの起動・stdio 起動でやり直す。MCP の登録が消えると Plumivox が起動されないため、この再試行を外さない。

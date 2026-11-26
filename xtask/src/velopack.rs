@@ -2,7 +2,7 @@
 //!
 //! AGENTS.md の「CI の手順は Rust、PowerShell スクリプトを使わない」に従い、Remnifold の
 //! `scripts/velopack/pack-windows.ps1`・`publish-r2.ps1` に相当する処理をここで行う。外部ツールは
-//! Velopack CLI（`vpk` 1.2.161）、署名の Sigilune、R2 転送の curl だけを呼ぶ。
+//! Velopack CLI（`vpk` 1.3.39-g8d2844f）、署名の Sigilune、R2 転送の curl だけを呼ぶ。
 //!
 //! - `velopack-pack`: `vpk pack` で Setup・`releases.win.json`・full nupkg を作る。`--sign` は Sigilune の
 //!   署名テンプレートで全 PE と Setup に署名し、署名後に nupkg 内の全 PE と Setup の署名者を検証する
@@ -29,8 +29,8 @@ use std::{
 pub(crate) const PROD_PACK_ID: &str = "PlumivoxApp";
 /// 隔離E2E用の packId。本番の Run 値・Uninstall の項目・導入先と衝突しない。
 pub(crate) const TEST_PACK_ID: &str = "PlumivoxVelopackTest";
-/// 要求する Velopack CLI の版（crate の `velopack = "=1.2.161"` と揃える）。
-const VPK_VERSION: &str = "1.2.161";
+/// 要求する Velopack CLI の版（crate の `velopack = "=1.3.39-g8d2844f"` と揃える）。
+const VPK_VERSION: &str = "1.3.39-g8d2844f";
 /// 公開バケットの名前と、その中の配信フォルダー（アプリの FEED_URL は `https://plumivox-updates.kagayoi.com/velopack`）。
 const UPDATE_BUCKET: &str = "plumivox-updates";
 const FEED_PREFIX: &str = "velopack/";
@@ -223,7 +223,7 @@ fn require_empty_plain_directory(work: &Path) -> Result {
 fn require_vpk() -> Result {
     let output = quiet(Command::new("vpk").arg("--help"))
         .output()
-        .map_err(|_| "Velopack CLI（vpk）が見つかりません。dotnet tool install --global vpk --version 1.2.161 で導入してください")?;
+        .map_err(|_| "Velopack CLI（vpk）が見つかりません。dotnet tool install --global vpk --version 1.3.39-g8d2844f で導入してください")?;
     let text = String::from_utf8_lossy(&output.stdout).into_owned()
         + &String::from_utf8_lossy(&output.stderr);
     let plain = regex::Regex::new("\u{1b}\\[[0-9;]*m")?.replace_all(&text, "");

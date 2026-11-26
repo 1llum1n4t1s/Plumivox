@@ -322,9 +322,9 @@ mod windows_e2e {
             install.join("current").join("plumivox.exe")
         }
 
-        /// 本物の Setup.exe で導入する。`--silent` の Setup は導入後にアプリを起動しない（Velopack 1.2.161 の
-        /// Setup のログで確認済み）ため、初回起動の案内・登録のやり直しは走らない。なお Setup の
-        /// `-- <EXE_ARGS>` は 1.2.161 では引数解析の panic で固まるため使わない。
+        /// 本物の Setup.exe で導入する。`--silent` の Setup は導入後にアプリを起動しない（Velopack 1.3.39 の
+        /// Setup のコードの差分で確認済み）ため、初回起動の案内・登録のやり直しは走らない。なお Setup の
+        /// `-- <EXE_ARGS>` の panic は 1.3.39 で修正済みだが、不要なので使わない。
         fn install(&self, setup: &Path, install: &Path) -> Result<()> {
             let mut command = self.command(setup);
             command.arg("--silent").arg("--installto").arg(install);

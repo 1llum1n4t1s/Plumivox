@@ -552,17 +552,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "derivative"
-version = "2.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fcc3dd5e9e9c0b295d6e1e4d811fb6f157d5ffd784b8d202fc62eac8035a770b"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 1.0.109",
-]
-
-[[package]]
 name = "des"
 version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1467,18 +1456,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "nix"
-version = "0.32.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "77730ed34f01f4990cb2ea67fec715ecebc6fab9a6396cf83c5529b13f581bdc"
-dependencies = [
- "bitflags",
- "cfg-if",
- "cfg_aliases",
- "libc",
-]
-
-[[package]]
 name = "nom"
 version = "8.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1878,7 +1855,7 @@ dependencies = [
  "webpki-roots",
  "windows-sys 0.61.2",
  "zeroize",
- "zip 9.8.0",
+ "zip",
 ]
 
 [[package]]
@@ -2231,7 +2208,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3aec6cb630dbe85d72ffd7bcd95f07e1bd69f9f270ee8adfa1afe443a6331438"
 dependencies = [
  "log",
- "nix 0.31.4",
+ "nix",
  "ssh-encoding",
  "windows-sys 0.61.2",
 ]
@@ -2728,17 +2705,6 @@ checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
 
 [[package]]
 name = "syn"
-version = "1.0.109"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "72b64191b275b66ffe2469e8af2c1cfe3bafa67b529ead792a6d0160888b4237"
-dependencies = [
- "proc-macro2",
- "quote",
- "unicode-ident",
-]
-
-[[package]]
-name = "syn"
 version = "2.0.119"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "872831b642d1a07999a962a351ed35b955ea2cfc8f3862091e2a240a84f17297"
@@ -2988,12 +2954,6 @@ dependencies = [
 
 [[package]]
 name = "typed-path"
-version = "0.12.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "54ec2755506471f54baf5e4bb5499d8e510cc1caf271270e778a736bd2d7336c"
-
-[[package]]
-name = "typed-path"
 version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9ce898823d8cd0f028662d2f349694b1af0a5cc9be83f1d213a00d3147445e1e"
@@ -3135,13 +3095,12 @@ dependencies = [
 
 [[package]]
 name = "velopack"
-version = "1.2.161"
+version = "1.3.39-g8d2844f"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4295172ffaad78f9adbab35f7ffefa97e4ceefee9d2c38bda37fdce4d6c66e5a"
+checksum = "cbfbd9ee9818d1155813c4a1024a459763c3782405d5c1ad8f116bd8adaf0b88"
 dependencies = [
  "anyhow",
  "bitflags",
- "derivative",
  "glob",
  "lazy_static",
  "libc",
@@ -3162,7 +3121,7 @@ dependencies = [
  "waitpid-any",
  "windows",
  "xml",
- "zip 8.6.0",
+ "zip",
 ]
 
 [[package]]
@@ -3548,7 +3507,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "windows-sys 0.61.2",
- "zip 9.8.0",
+ "zip",
 ]
 
 [[package]]
@@ -3650,20 +3609,6 @@ dependencies = [
 
 [[package]]
 name = "zip"
-version = "8.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2d04a6b5381502aa6087c94c669499eb1602eb9c5e8198e534de571f7154809b"
-dependencies = [
- "crc32fast",
- "flate2",
- "indexmap",
- "memchr",
- "typed-path 0.12.4",
- "zopfli",
-]
-
-[[package]]
-name = "zip"
 version = "9.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "721c8158b9503b2660291ad3056a20f722deaeed21bb908a9a363d7e17b34f0e"
@@ -3675,8 +3620,8 @@ dependencies = [
  "indexmap",
  "libc",
  "memchr",
- "nix 0.32.0",
- "typed-path 0.13.0",
+ "nix",
+ "typed-path",
  "windows-sys 0.61.2",
  "zeroize",
  "zopfli",

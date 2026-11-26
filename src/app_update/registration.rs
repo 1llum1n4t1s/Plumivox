@@ -7,7 +7,7 @@
 //!
 //! # なぜ状態ファイルが要るか
 //! Velopack の高速フック（install / updated / uninstall）は Windows でしか呼ばれない（velopack crate
-//! 1.2.161 の `VelopackApp` で、フックの登録関数自体が Windows 限定）。macOS の .pkg は導入後にアプリを
+//! 1.3.39 の `VelopackApp` で、フックの登録関数自体が Windows 限定）。macOS の .pkg は導入後にアプリを
 //! 1回起動するだけで、更新はアプリを起動しない。そこで Plumivox 自身が起動したときに「登録が今の自分を
 //! 指しているか」を確かめ、違うときだけ登録する。Windows でも、フックで終わらなかった登録の再試行に使う。
 //!

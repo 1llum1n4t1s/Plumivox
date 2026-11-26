@@ -12,6 +12,10 @@
 
 - 投稿の失敗を減らすため、AI向けの案内を足しました。`post_tweet` の説明に、加重文字数の数え方（URLは23、日本語・中国語・韓国語の文字と絵文字は2）と、同じアカウントの連投は数分空けることを書きました。本文が加重280を超えたときの `INVALID_TEXT` には `weightedLength`・`maxWeightedLength`・`excessWeightedLength` を付けます。投稿の送信後に失敗した `API_REJECTED`・`API_HTTP_ERROR`・`POST_UNCERTAIN` には、再送の前に `get_my_posts` で確かめる手順を英語の固定文 `nextStep` で付けます。投稿間隔の強制や自動再送はしません。
 
+### セキュリティ
+
+- velopack を 1.3.39 へ更新し（Velopack CLI も同じ版に統一）、`zip` 8.6.0 の脆弱性5件（GHSA-m665-v7pm-7grj、GHSA-q7v9-x93c-xqv3、GHSA-8hxf-qr8p-62x4、GHSA-hjqx-j4rw-g7xv、GHSA-9hj8-73fh-9963）を解消しました。
+
 ## 1.0.18 - 2026-11-24
 
 ### 追加

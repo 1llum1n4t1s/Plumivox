@@ -107,7 +107,7 @@ WindowsのSetupは、上記の非公開成果物とは別の公開バケット`p
 
 `v<版>`タグ（Cargo.tomlの版と一致する、`main`の祖先の軽量タグ）のpushで、「Distribution」の`velopack` jobが起動します。`windows` jobの成功後に実行されるため、`windows`が失敗すると配信されません（`workflow_run`は既定ブランチのrefで動き、版タグ限定のEnvironmentに拒否されるため使いません）。公開済みの版を同じ`v<版>`で再実行すると、版付きの成果物の照合で失敗して公開バケットは何も変わりません。ジョブは次を順に行います。
 
-1. 固定Git URLから対象commitを取得・照合し、Rust 1.100.0とVelopack CLI 1.2.161（`dotnet tool install --global vpk --version 1.2.161`）を用意する。
+1. 固定Git URLから対象commitを取得・照合し、Rust 1.100.0とVelopack CLI 1.3.39-g8d2844f（`dotnet tool install --global vpk --version 1.3.39-g8d2844f`）を用意する。
 2. `cargo xtask ci-velopack-tag`でタグ（`GITHUB_REF_TYPE=tag`）名`v<版>`とCargo.tomlの版の一致、`cargo xtask check`、`cargo xtask test-setup-velopack-e2e`（未署名のテスト用packIdで隔離E2E）。
 3. 既定の機能だけで`plumivox.exe`をreleaseビルドし、`cargo xtask licenses`とxtask自体のビルドも済ませる。
 4. 署名用Secretsを渡すstepでは**cargoを動かさず**、先にビルドしたxtaskを直接実行して`velopack-pack --sign --binary <plumivox.exe>`を行う（Sigiluneの署名テンプレートで全PEとSetupに署名し、Setupとnupkg内の全PEの署名者・Certumの発行者・タイムスタンプを検証する）。
