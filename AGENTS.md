@@ -33,7 +33,7 @@ OS条件を理由に未実行の系統は明示し、全件成功へ数えない
 - Setup（Velopack）の起動時処理・更新・登録・梱包を変えるときは [setup-velopack.md](docs/agents/setup-velopack.md) を読む（[設計](DESIGN.md#setupvelopack)）。
 - 資格情報・保存先・Cookie・投稿の再試行を変えるときは [security.md](docs/agents/security.md) を読む（[データフロー](DESIGN.md#データフロー)、[不変条件](DESIGN.md#不変条件と採用した設計判断)）。
 - アカウント選択を変えるときは [configuration.md](docs/agents/configuration.md) を読む。
-- VPSインストーラー・`setup/vps/`を変えるときは [section-01.md](docs/agents/section-01.md) を読む（[設計](DESIGN.md#初期設定と公開中継の構築)）。
-- 管理プロキシ・共有daemonを変えるときは [section-02.md](docs/agents/section-02.md) を読む（[設計](DESIGN.md#管理するプロキシの境界)）。
+- VPSインストーラー・`setup/vps/`を変えるときは [vps-installer-constraints.md](docs/agents/vps-installer-constraints.md) を読む（[設計](DESIGN.md#初期設定と公開中継の構築)）。
+- 管理プロキシ・共有daemonを変えるときは [managed-proxy-constraints.md](docs/agents/managed-proxy-constraints.md) を読む（[設計](DESIGN.md#管理するプロキシの境界)）。
 - フィード・検索を変えるときは [api-reference.md](docs/agents/api-reference.md) を読む。
 - ローカライズ・READMEの多言語同期は [conventions.md](docs/agents/conventions.md) を読む（[設計](DESIGN.md#ローカライズ)）。

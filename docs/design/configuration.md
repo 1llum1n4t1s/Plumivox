@@ -1,6 +1,6 @@
 # 設定ストアとセットアップ
 
-[DESIGN.md](../../DESIGN.md#初期設定と公開中継の構築) の設定・`--setup`・既定アカウントの詳細。保存先と設定項目は [設定仕様](../configuration.md)、操作は [セットアップ手順](../setup.md) を参照する。VPS側の構築は [VPSインストーラー](section-03.md) を参照する。
+[DESIGN.md](../../DESIGN.md#初期設定と公開中継の構築) の設定・`--setup`・既定アカウントの詳細。保存先と設定項目は [設定仕様](../configuration.md)、操作は [セットアップ手順](../setup.md) を参照する。VPS側の構築は [VPSインストーラー](vps-installer.md) を参照する。
 
 ## 設定ストア
 
