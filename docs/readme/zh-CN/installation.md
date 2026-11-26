@@ -10,6 +10,8 @@
 
 卸载时，在“设置”→“应用”列表中选择 Plumivox。卸载只会移除指向自身的 Claude Code、Codex 的 `plumivox` 注册以及登录时更新的注册，并保留设置和会话的数据文件夹（`%LOCALAPPDATA%\Kagayoi\Plumivox`）。如果只想先移除注册，可用 `plumivox.exe --uninstall-setup` 确认计划，再用 `--uninstall-setup --apply` 执行。
 
+`plumivox.exe` 的其他命令行选项：`--setup`（初始设置）、`--uninstall-setup`（移除注册）、`--rejection-log on|off|status|show|clear`（经遮蔽处理的拒绝文本的限时本地记录，默认关闭；参见[本地拒绝记录](when-posting-or-authentication-fails.md#本地拒绝记录)）。卸载后记录仍会保留，用 `--rejection-log clear` 删除。
+
 从插件（见下文）迁移时：Setup 会把指向旧插件 `dist` 等位置的同名 `plumivox` 注册替换为指向安装位置的注册。插件自身携带的 MCP（`plumivox@plumivox-local`）是另一个注册，为避免 Plumivox 通过两条途径启动，请将其禁用或移除该插件。在 Codex 中，添加与[Toolport 一节](#通过-toolport-使用)相同的 `enabled = false`（或移除插件）；在 Claude Code 中，通过 `/plugin` 禁用或卸载该插件。Codex 会优先使用同名注册而不是插件的 MCP，因此只要 Setup 的注册存在，通常只会启动一个，但 Claude Code 可能会同时启动两个。Setup 不会修改 Codex 或 Claude Code 的设置；如果插件仍处于启用状态，它只会发出警告（启动 Plumivox 时显示的指引、`app-update.log`，以及 `app-update\setup-registration.json` 中的 `legacyPlugins`）。Toolport 的注册同样不会被自动改写；如果使用 Toolport，请按照[Toolport 一节](#通过-toolport-使用)自行检查。
 
 ## 通过插件安装（macOS、传统方式）

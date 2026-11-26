@@ -157,6 +157,54 @@ fn login_ready(config: &Value, account: &Value) -> bool {
         && nonempty(&config["password"])
         && valid_totp(&config["totp_secret"])
 }
+/// 値の中の文字列（`min` 文字以上）を再帰的に集める。
+fn collect_strings(value: &Value, min: usize, out: &mut Vec<String>) {
+    match value {
+        Value::String(s) if s.chars().count() >= min => out.push(s.clone()),
+        Value::Array(items) => items.iter().for_each(|v| collect_strings(v, min, out)),
+        Value::Object(map) => map.values().for_each(|v| collect_strings(v, min, out)),
+        _ => {}
+    }
+}
+/// Cookie は JSON そのもの、または Base64 の JSON。読めなければ Null。
+fn cookie_json(cookie: &str) -> Value {
+    use base64::{
+        Engine,
+        engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD},
+    };
+    serde_json::from_str(cookie)
+        .ok()
+        .or_else(|| {
+            let bytes = STANDARD
+                .decode(cookie)
+                .or_else(|_| URL_SAFE_NO_PAD.decode(cookie))
+                .ok()?;
+            serde_json::from_slice(&bytes).ok()
+        })
+        .unwrap_or(Value::Null)
+}
+fn percent_decode(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let hex = bytes
+            .get(i + 1..i + 3)
+            .and_then(|pair| std::str::from_utf8(pair).ok())
+            .and_then(|pair| u8::from_str_radix(pair, 16).ok());
+        match (bytes[i], hex) {
+            (b'%', Some(byte)) => {
+                out.push(byte);
+                i += 3;
+            }
+            (byte, _) => {
+                out.push(byte);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
 fn invalid_account() -> AppError {
     error("ACCOUNT_INVALID", "Set an API key and a valid user name.")
 }
@@ -456,6 +504,39 @@ impl AccountStore {
             result["totpSecret"] = config["totp_secret"].clone();
         }
         Ok(result)
+    }
+
+    /// 拒否記録の伏字に使う設定由来の値（送信前に取り、`Recorder` が持つ）と、記録用のプロキシ方式を返す（値は応答・記録へ出さない）。
+    /// 選んだプロファイルの全文字列、`plumivox.managed_proxy` の文字列、プロキシURLの利用者名・
+    /// パスワード（%デコード後も）とホスト、Cookie JSON の8文字以上の各値。
+    /// 設定を読めなければ None（伏字が足りない状態で記録しない）。
+    pub(crate) async fn rejection_redaction(
+        &self,
+        name: &str,
+        cookie: &str,
+    ) -> Option<(Vec<String>, &'static str)> {
+        let (_, config, secrets) = self.select(Some(name)).await.ok()?;
+        let mut values = Vec::new();
+        collect_strings(&config, 1, &mut values);
+        collect_strings(&secrets["plumivox"]["managed_proxy"], 1, &mut values);
+        if let Some(url) = config["proxy"]
+            .as_str()
+            .and_then(|proxy| url::Url::parse(proxy).ok())
+        {
+            for part in [url.username(), url.password().unwrap_or("")] {
+                values.push(part.to_owned());
+                values.push(percent_decode(part));
+            }
+            values.extend(url.host_str().map(str::to_owned));
+        }
+        collect_strings(&cookie_json(cookie), 8, &mut values);
+        let mode = match config.get("proxy_mode").filter(|v| !v.is_null()) {
+            None => "external",
+            Some(v) if v == "external" => "external",
+            Some(v) if v == "managed" => "managed",
+            _ => "invalid",
+        };
+        Some((values, mode))
     }
 
     pub async fn get_proxy_configuration(

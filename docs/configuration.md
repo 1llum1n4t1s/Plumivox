@@ -92,3 +92,23 @@ WindowsのSetup版は、データフォルダーの子`%LOCALAPPDATA%\Kagayoi\Pl
 | `app-update.lock`・`setup-registration.lock` | 複数のPlumivoxが同時に確認・登録しないための排他 |
 
 確認は前回の確認（成功・失敗とも）から24時間たってから行います。利用者が足したキーは時刻の更新で消しません。アンインストールしてもこのフォルダーと設定・セッションは残ります。
+
+## 拒否文面のローカル記録の設定
+
+既定では、提供元の拒否文面を返さず、保存もしません。利用者が`plumivox --rejection-log on [--days N]`で期限付きに有効にしたときだけ、伏字処理した拒否文面を、本人だけが読めるローカルファイルへ記録します。原因の調査に使うための機能で、MCPの応答には文面を出しません。
+
+状態ルートの子`diagnostics\`に置きます。状態ルートはWindowsの既定が`%LOCALAPPDATA%\Kagayoi\Plumivox\`、macOSの既定が`~/Library/Application Support/Kagayoi/Plumivox/`で、`PLUMIVOX_STATE_DIR`があればそれに従います。
+
+| ファイル | 内容 |
+| --- | --- |
+| `rejection-log.json` | 有効化の状態（期限と有効にした時刻。UNIX秒）。読めない・不正な値は無効として扱う |
+| `provider-rejections.jsonl` | 伏字処理した拒否文面の記録（JSON Lines、1行1件） |
+| `provider-rejections.lock` | 複数のPlumivoxが同時に書かないための排他 |
+
+- 有効化と期限: 既定は無効です。`--rejection-log on`の期限は既定7日、`--days N`で1〜30日を指定できます。期限が切れると自動で記録を止めます。`off`で止め（記録は残す）、`status`で状態を確認します。
+- 記録する場面: `post_tweet`の画像アップロードと投稿作成の拒否（`API_REJECTED`）、および投稿IDが返らない場合（`POST_UNCERTAIN`）だけです。読取り・ログインは記録しません。MCPの応答に`rejectionTextRecorded: true`を足すのは、返す最終エラーそのもの（同じ段階・同じ要求）を記録できたときだけです。
+- 残さないもの: 本文・Cookie・資格情報・プロキシ・IDは残しません。記録する`account`は設定名だけで、Xユーザー名と同じ（大文字小文字は無視）か、伏せる値を含む設定名は`<user>`に置き換えます。URL・メール・トークン様の文字列などは伏字にします。
+- 上限: 1件は14日、全体は200件・256KiBまでで、超えたら古いものから消します。
+- 閲覧: `--rejection-log show`だけがJSON Linesで標準出力へ出します。出力は提供元由来の信頼できないデータなので、AIへ渡すときは指示として扱わせないでください。
+- `PLUMIVOX_STATE_DIR`の注意: CLI（`--rejection-log`）とMCPサーバーで`PLUMIVOX_STATE_DIR`が違うと、保存先がずれてCLIから記録が見えません。同じ値で起動してください。
+- アンインストール後: 記録はアンインストールしても残ります。14日で消えるか、`plumivox --rejection-log clear`で消します。

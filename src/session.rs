@@ -72,7 +72,7 @@ fn failure(code: &str) -> AppError {
     };
     AppError::new(code, message)
 }
-fn storage() -> AppError {
+pub(crate) fn storage() -> AppError {
     failure("SESSION_STORAGE_UNAVAILABLE")
 }
 /// UTF-8 文字列の SHA-256 を小文字16進で返す。保存先ディレクトリ名や照合値に使う。
@@ -152,12 +152,13 @@ impl SessionLease {
 
 impl SessionStorage {
     pub fn new(state_directory: Option<PathBuf>) -> Self {
-        let root = std::env::var_os("PLUMIVOX_STATE_DIR")
-            .filter(|s| !s.is_empty())
-            .map(PathBuf::from)
-            .or(state_directory)
-            .or_else(default_root);
-        Self { root }
+        Self {
+            root: state_root(state_directory),
+        }
+    }
+    /// このサーバーが実際に使う状態ルート。拒否記録（rejection_log）も同じ場所を使う。
+    pub(crate) fn root(&self) -> Option<&Path> {
+        self.root.as_deref()
     }
     fn directory(&self, account: &Value) -> Result<PathBuf> {
         let root = self.root.as_ref().ok_or_else(storage)?;
@@ -555,6 +556,21 @@ pub(crate) fn private_data_root() -> Option<PathBuf> {
     Some(root)
 }
 
+/// 状態ルートの決定順: `PLUMIVOX_STATE_DIR` → 内部起動設定の `state_directory` → OS標準。
+/// [`SessionStorage::new`] と拒否記録（rejection_log）が同じ場所を指すよう、ここ1か所で決める。
+pub(crate) fn state_root(state_directory: Option<PathBuf>) -> Option<PathBuf> {
+    std::env::var_os("PLUMIVOX_STATE_DIR")
+        .filter(|s| !s.is_empty())
+        .map(PathBuf::from)
+        .or(state_directory)
+        .or_else(default_root)
+}
+
+/// [`platform::private`] の公開口。フォルダーを本人限定にする（Windows は保護付き DACL、Unix は 0700）。
+pub(crate) fn private_directory(path: &Path) -> Result<()> {
+    platform::private(path)
+}
+
 fn default_root() -> Option<PathBuf> {
     #[cfg(windows)]
     {
@@ -573,7 +589,7 @@ fn default_root() -> Option<PathBuf> {
             .map(|p| p.join("Kagayoi/Plumivox"))
     }
 }
-fn normalized_canonical(path: &Path) -> Result<PathBuf> {
+pub(crate) fn normalized_canonical(path: &Path) -> Result<PathBuf> {
     let resolved = fs::canonicalize(path).map_err(|_| storage())?;
     #[cfg(windows)]
     {
@@ -641,7 +657,7 @@ fn canonical_with_missing_tail(path: &Path) -> Result<PathBuf> {
         }
     }
 }
-fn validate_directory(path: &Path) -> Result<()> {
+pub(crate) fn validate_directory(path: &Path) -> Result<()> {
     if !path.is_absolute()
         || path.parent().is_none()
         || path
@@ -677,7 +693,7 @@ fn validate_directory(path: &Path) -> Result<()> {
     }
     Ok(())
 }
-fn validate_ancestors(path: &Path) -> Result<()> {
+pub(crate) fn validate_ancestors(path: &Path) -> Result<()> {
     for ancestor in path.ancestors() {
         match fs::symlink_metadata(ancestor) {
             Ok(meta) if meta.is_dir() && !is_link(&meta) => (),
@@ -695,7 +711,7 @@ fn validate_ancestors(path: &Path) -> Result<()> {
     }
     Ok(())
 }
-fn is_link(meta: &fs::Metadata) -> bool {
+pub(crate) fn is_link(meta: &fs::Metadata) -> bool {
     #[cfg(windows)]
     {
         use std::os::windows::fs::MetadataExt;
@@ -713,7 +729,7 @@ fn validate_optional_file(path: &Path) -> Result<()> {
         _ => Err(storage()),
     }
 }
-fn read_options() -> OpenOptions {
+pub(crate) fn read_options() -> OpenOptions {
     let mut options = OpenOptions::new();
     options.read(true);
     #[cfg(unix)]
@@ -728,7 +744,7 @@ fn read_options() -> OpenOptions {
     }
     options
 }
-fn bounded_read(path: &Path) -> Result<Vec<u8>> {
+pub(crate) fn bounded_read(path: &Path) -> Result<Vec<u8>> {
     validate_optional_file(path)?;
     let file = read_options().open(path).map_err(|_| storage())?;
     let meta = file.metadata().map_err(|_| storage())?;
@@ -744,7 +760,7 @@ fn bounded_read(path: &Path) -> Result<Vec<u8>> {
     }
     Ok(bytes)
 }
-fn new_private_file(path: &Path) -> Result<File> {
+pub(crate) fn new_private_file(path: &Path) -> Result<File> {
     let mut options = OpenOptions::new();
     options.write(true).create_new(true);
     #[cfg(unix)]

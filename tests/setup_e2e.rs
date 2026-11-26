@@ -213,6 +213,132 @@ async fn localized_cli() -> Result<()> {
     Ok(())
 }
 
+/// `--rejection-log` の往復を、実際の実行ファイルと隔離した状態フォルダーで確かめる（全OS共通）。
+/// 本物の `%LOCALAPPDATA%` などには触れない。終了コードとファイルの有無で判定する。
+async fn rejection_log_roundtrip(suite: &Suite) -> Result<()> {
+    let home = suite.output().join("rejection-home");
+    let state = suite.output().join("rejection-state");
+    fs::create_dir_all(&home)?;
+    let env = vec![
+        (
+            "PLUMIVOX_STATE_DIR".to_string(),
+            state.display().to_string(),
+        ),
+        ("HOME".into(), home.display().to_string()),
+        ("USERPROFILE".into(), home.display().to_string()),
+        (
+            "LOCALAPPDATA".into(),
+            home.join("local").display().to_string(),
+        ),
+        ("APPDATA".into(), home.join("roaming").display().to_string()),
+    ];
+    let run = |args: &[&str]| {
+        let args: Vec<String> = args.iter().map(|a| a.to_string()).collect();
+        let env = env.clone();
+        async move {
+            let out = execute(&binary(), &args, &env).await?;
+            Ok::<_, anyhow::Error>((
+                out.status.code(),
+                String::from_utf8_lossy(&out.stdout).into_owned(),
+                text(&out),
+            ))
+        }
+    };
+    let diagnostics = state.join("diagnostics");
+    let setting = diagnostics.join("rejection-log.json");
+    let log = diagnostics.join("provider-rejections.jsonl");
+    let now = chrono::Utc::now();
+    let stamp = |age_days: i64| {
+        (now - chrono::Duration::days(age_days))
+            .to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+    };
+    // 既定: status は成功し、フォルダーを作らない。
+    let (code, _, off_status) = run(&["--rejection-log", "status"]).await?;
+    ensure!(
+        code == Some(0) && !diagnostics.exists(),
+        "status created state"
+    );
+    // 引数の誤りは終了コード 2、何も作らない。
+    for bad in [
+        vec!["--rejection-log", "on", "--days", "0"],
+        vec!["--rejection-log", "on", "--days", "31"],
+        vec!["--rejection-log", "on", "--days", "x"],
+        vec!["--rejection-log", "bogus"],
+    ] {
+        let (code, _, all) = run(&bad).await?;
+        ensure!(code == Some(2) && !diagnostics.exists(), "{bad:?}: {all}");
+    }
+    // on --days 1: 期限は1日後で、保存先を表示する。
+    let (code, shown, all) = run(&["--rejection-log", "on", "--days", "1"]).await?;
+    ensure!(
+        code == Some(0) && shown.contains("provider-rejections.jsonl"),
+        "{all}"
+    );
+    let value: Value = serde_json::from_slice(&fs::read(&setting)?)?;
+    let (until, at) = (
+        value["enabled_until"].as_u64(),
+        value["enabled_at"].as_u64(),
+    );
+    ensure!(
+        until.zip(at).is_some_and(|(u, a)| u - a == 86_400),
+        "Unexpected setting: {value}"
+    );
+    let (code, _, on_status) = run(&["--rejection-log", "status"]).await?;
+    ensure!(
+        code == Some(0) && on_status != off_status,
+        "status did not change"
+    );
+    // show: 新しい行だけを標準出力へ出し、14日を超えた行は消す。
+    let fresh = json!({"schema":1,"recordedAt":stamp(0),"tool":"post_tweet","marker":"fresh-line"});
+    let old = json!({"schema":1,"recordedAt":stamp(15),"tool":"post_tweet","marker":"old-line"});
+    fs::write(&log, format!("{old}\n{fresh}\n"))?;
+    let (code, shown, all) = run(&["--rejection-log", "show"]).await?;
+    ensure!(
+        code == Some(0) && shown.trim_end() == fresh.to_string() && !all.contains("old-line"),
+        "show output: {all}"
+    );
+    ensure!(
+        !fs::read_to_string(&log)?.contains("old-line"),
+        "old line not pruned"
+    );
+    // off: 記録は残し、有効化だけ止める。
+    let (code, _, _) = run(&["--rejection-log", "off"]).await?;
+    ensure!(code == Some(0) && log.exists(), "off removed the log");
+    let value: Value = serde_json::from_slice(&fs::read(&setting)?)?;
+    ensure!(
+        value["enabled_until"]
+            .as_u64()
+            .is_some_and(|u| u <= now.timestamp() as u64 + 5)
+    );
+    let (code, _, status) = run(&["--rejection-log", "status"]).await?;
+    ensure!(
+        code == Some(0) && status != on_status,
+        "status still on after off"
+    );
+    // clear: 記録ファイルだけを消す。
+    let (code, _, _) = run(&["--rejection-log", "clear"]).await?;
+    ensure!(
+        code == Some(0) && !log.exists() && setting.exists(),
+        "clear result"
+    );
+    let (code, shown, _) = run(&["--rejection-log", "show"]).await?;
+    ensure!(code == Some(0) && shown.is_empty(), "show after clear");
+    // 本物の状態フォルダーへは書かない: 隔離した HOME の外に diagnostics を作らない。
+    ensure!(
+        !home.join("local").join("Kagayoi").exists(),
+        "Wrote to the OS default state folder"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn rejection_log_cli_roundtrip() -> Result<()> {
+    let mut suite = Suite::new("PLUMIVOX_SETUP_E2E_OUTPUT_DIR", "rejection-log-cli")?;
+    let result = rejection_log_roundtrip(&suite).await;
+    suite.record("rejection-log-cli-roundtrip", result);
+    suite.finish()
+}
+
 #[tokio::test]
 async fn platform_setup_contract() -> Result<()> {
     let mut suite = Suite::new("PLUMIVOX_SETUP_E2E_OUTPUT_DIR", "setup")?;

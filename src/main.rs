@@ -23,6 +23,8 @@ enum Mode {
     UpdateApply,
     /// `--uninstall-setup [--apply]`。Setup 版の登録の解除。
     UninstallSetup(Vec<String>),
+    /// `--rejection-log <on [--days N]|off|status|show|clear>`。拒否文面のローカル記録の操作。
+    RejectionLog(Vec<String>),
     /// `--help` / `-h`。使い方の表示（利用者の言語）。
     Help,
     /// 不明な引数。
@@ -34,6 +36,7 @@ fn parse(args: &[String]) -> Mode {
         [] => Mode::Default,
         [arg, rest @ ..] if arg == "--setup" => Mode::Setup(rest.to_vec()),
         [arg, rest @ ..] if arg == "--uninstall-setup" => Mode::UninstallSetup(rest.to_vec()),
+        [arg, rest @ ..] if arg == "--rejection-log" => Mode::RejectionLog(rest.to_vec()),
         [arg] if arg == "--stdio" => Mode::Stdio,
         [arg] if arg == "--version" => Mode::Version,
         [arg] if arg == "--proxy-daemon" => Mode::ProxyDaemon,
@@ -60,6 +63,8 @@ fn block_on<F: std::future::Future>(future: F) -> Option<F::Output> {
 }
 
 fn stdio() -> bool {
+    // 拒否記録の古いものを背景で消す（`diagnostics\` があるときだけ。起動を待たせず、フォルダーも作らない）。
+    plumivox::rejection_log::spawn_startup_prune();
     block_on(plumivox::run_stdio(plumivox::Options::default())).is_some_and(|result| result.is_ok())
 }
 
@@ -78,6 +83,10 @@ fn main() {
     // 起動時の自動適用は切ってある（適用は --update-apply だけ）。
     let startup = plumivox::app_update::startup();
     let args: Vec<String> = std::env::args().skip(1).collect();
+    // 終了コードは、成功 0、保存先の異常 1、引数の誤り 2（他のサブコマンドは失敗を 1 にする）。
+    if let Mode::RejectionLog(rest) = parse(&args) {
+        std::process::exit(plumivox::rejection_log::run_cli(&rest));
+    }
     let success = match parse(&args) {
         Mode::Default => {
             // macOS の Setup 版には Velopack のインストールフックが無い。.pkg は導入後に引数なしで1回起動する
@@ -162,6 +171,8 @@ fn main() {
             );
             true
         }
+        // 上で処理して終了済み。
+        Mode::RejectionLog(_) => true,
         Mode::Usage => {
             eprintln!("{}", plumivox::locale::tr("cli.usage"));
             false

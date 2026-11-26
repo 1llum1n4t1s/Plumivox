@@ -10,6 +10,8 @@ Updates are automatic. While the MCP server is running, it downloads new version
 
 To uninstall, select Plumivox from the list under Settings → Apps. This removes only the Claude Code and Codex `plumivox` registrations that point to this installation and the logon update registration; the settings and session data folder (`%LOCALAPPDATA%\Kagayoi\Plumivox`) is kept. To remove only the registrations beforehand, check the plan with `plumivox.exe --uninstall-setup` and run it with `--uninstall-setup --apply`.
 
+Other command-line options of `plumivox.exe`: `--setup` (initial setup), `--uninstall-setup` (remove registrations), and `--rejection-log on|off|status|show|clear` (time-limited local log of redacted rejection text, off by default; see [Local rejection log](when-posting-or-authentication-fails.md#local-rejection-log)). The log is kept after uninstalling and is removed by `--rejection-log clear`.
+
 Migrating from the plugin: Setup does not disable the old plugin or change Toolport registrations (on a new install it skips the direct registration when Toolport already serves Plumivox; see [Toolport configuration](configuration.md)). To avoid starting Plumivox through two routes, follow [Migrating from the plugin to Setup](workflow.md).
 
 ## Install as a plugin (macOS / legacy method)

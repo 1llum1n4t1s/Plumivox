@@ -1,13 +1,14 @@
 use crate::{
-    client::TwitterApiClient,
+    client::{PostRejection, PreparedPost, Recorder, TwitterApiClient},
     config::AccountStore,
     error::{AppError, Result},
     proxy::SharedProxyManager,
+    rejection_log,
 };
 use serde_json::{Value, json};
 use std::{
     collections::{HashMap, HashSet},
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{Arc, OnceLock},
     time::Duration,
 };
@@ -295,6 +296,49 @@ impl Server {
         Ok(saved)
     }
 
+    /// 投稿を送る。利用者が拒否記録を有効にしているときだけ、拒否文面を捕捉して保存する。
+    /// 記録の失敗・時間切れは無視し、投稿・再試行・応答の流れに影響させない。
+    /// 記録できたときだけ、失敗応答の詳細に `rejectionTextRecorded: true` を付ける（文面は返さない）。
+    async fn send_recorded(
+        &self,
+        selected: &Value,
+        prepared: PreparedPost,
+        cancel: CancellationToken,
+    ) -> Result<Value> {
+        let root = self
+            .accounts
+            .sessions
+            .root()
+            .filter(|root| rejection_log::is_enabled(root))
+            .map(Path::to_path_buf);
+        let account = selected["account"].as_str().unwrap_or_default();
+        let cookie = selected["loginCookies"].as_str().unwrap_or_default();
+        // 伏せる値は送信前に取る。取れないときは、伏字が足りない状態で記録しないよう記録なしで送る。
+        let redaction = match root {
+            Some(_) => self.accounts.rejection_redaction(account, cookie).await,
+            None => None,
+        };
+        let (Some(root), Some((values, proxy_mode))) = (root, redaction) else {
+            return self.api.send_post(selected, prepared, cancel, None).await;
+        };
+        let summary = prepared.summary();
+        let mut recorder = Recorder::new(&summary.0, values);
+        let result = self
+            .api
+            .send_post(selected, prepared, cancel, Some(&mut recorder))
+            .await;
+        let account = recorded_account(account, selected["userName"].as_str(), &recorder.values);
+        let final_error = result.as_ref().err();
+        let recorded = record(&root, &account, proxy_mode, recorder, &summary, final_error).await;
+        match result {
+            Err(mut error) if recorded => {
+                error.details["rejectionTextRecorded"] = json!(true);
+                Err(error)
+            }
+            other => other,
+        }
+    }
+
     async fn call(&self, name: &str, input: &Value, cancel: CancellationToken) -> Result<Value> {
         let account = input["account"].as_str();
         match name {
@@ -323,7 +367,7 @@ impl Server {
                     .prepare_post(&selected, input, cancel.clone())
                     .await?;
                 self.ensure_proxy(&selected, cancel.clone()).await?;
-                self.api.send_post(&selected, prepared, cancel).await
+                self.send_recorded(&selected, prepared, cancel).await
             }
             _ => {
                 let selected = self.accounts.get_read_account(account).await?;
@@ -339,6 +383,84 @@ impl Server {
             }
         }
     }
+}
+
+/// 捕捉した全件を保存する（伏字は捕捉時に済んでいる）。最終エラーに対応する1件を保存できたときだけ
+/// true（応答の `rejectionTextRecorded` の条件）。
+async fn record(
+    root: &Path,
+    account: &str,
+    proxy_mode: &str,
+    recorder: Recorder,
+    summary: &(String, usize, usize),
+    final_error: Option<&AppError>,
+) -> bool {
+    let mut covers_error = false;
+    for item in recorder.items {
+        let is_final = final_error.is_some_and(|error| is_final_rejection(&item, error));
+        let entry = rejection_entry(item, account, proxy_mode, summary);
+        let saved = rejection_log::append(root.to_path_buf(), entry).await;
+        covers_error |= saved && is_final;
+    }
+    covers_error
+}
+
+/// 捕捉した1件が、返す最終エラーそのもの（同じ段階・同じ code・画像なら要求の通し番号も同じ）か。
+fn is_final_rejection(item: &PostRejection, error: &AppError) -> bool {
+    item.code == error.code
+        && error.details["stage"] == item.stage
+        && (item.stage != "image_upload"
+            || error.details["uploadAttempts"].as_u64() == item.upload_attempt.map(|n| n as u64))
+}
+
+/// 記録する設定名。X のユーザー名と（大文字小文字を無視して）同じか、伏せる値を含むなら `<user>`。
+fn recorded_account(account: &str, user_name: Option<&str>, values: &[String]) -> String {
+    let lower = account.to_lowercase();
+    let is_user = user_name.is_some_and(|name| name.to_lowercase() == lower);
+    let has_value = values
+        .iter()
+        .filter(|value| value.chars().count() >= 4)
+        .any(|value| lower.contains(&value.to_lowercase()));
+    if is_user || has_value {
+        "<user>".to_owned()
+    } else {
+        account.to_owned()
+    }
+}
+
+/// 記録の形（応答由来の欄は捕捉値、残りはここで足す）。本文・Cookie・プロキシ・media_id などは入れない。
+fn rejection_entry(
+    item: PostRejection,
+    account: &str,
+    proxy_mode: &str,
+    (_, weighted, images): &(String, usize, usize),
+) -> Value {
+    let mut entry = item.capture.to_value();
+    let Some(object) = entry.as_object_mut() else {
+        return Value::Null;
+    };
+    let mut put = |key: &str, value: Value| {
+        object.insert(key.to_owned(), value);
+    };
+    put("tool", json!("post_tweet"));
+    put("account", json!(account));
+    put("proxyMode", json!(proxy_mode));
+    put("stage", json!(item.stage));
+    put("endpoint", json!(item.endpoint));
+    put("postAttempted", json!(item.stage == "post_creation"));
+    if let Some(attempt) = item.upload_attempt {
+        put("uploadAttempt", json!(attempt));
+    }
+    put("httpStatus", item.details["httpStatus"].clone());
+    put("code", json!(item.code));
+    put("rejectionReasons", item.details["rejectionReasons"].clone());
+    put(
+        "rejectionReasonSource",
+        item.details["rejectionReasonSource"].clone(),
+    );
+    put("weightedLength", json!(weighted));
+    put("imageCount", json!(images));
+    entry
 }
 
 fn rpc_error(id: Value, code: i64, message: &str) -> Value {

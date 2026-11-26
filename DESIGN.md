@@ -8,7 +8,7 @@ PlumivoxはTwitterAPI.ioを経由してXへの投稿・認証更新・公開投�
 
 ## 主要コンポーネント
 
-`server.rs`（MCP・ツール検証）、`config.rs`（設定の再読込み・準備状態）、`session.rs`（DPAPI／Keychainによる暗号化保存）、`client.rs`・`api_rejection.rs`（HTTP・投稿・フィード・拒否理由の固定分類）、`proxy*.rs`（中継・IPC・CONNECT出口）、`setup*.rs`・`vps-installer/`（初期設定）、`app_update*`・`connect.rs`（Setup）、`xtask/`（ビルド・検査）。一覧は [architecture.md](docs/design/architecture.md)、検証は [testing.md](docs/design/testing.md)、配布CIと依存更新は [release-process.md](docs/design/release-process.md)。
+`server.rs`（MCP・ツール検証）、`config.rs`（設定の再読込み・準備状態）、`session.rs`（DPAPI／Keychainによる暗号化保存）、`client.rs`・`api_rejection.rs`（HTTP・投稿・フィード・拒否理由の固定分類）、`rejection_log.rs`（利用者が有効にしたときだけの拒否文面のローカル記録とCLI）、`proxy*.rs`（中継・IPC・CONNECT出口）、`setup*.rs`・`vps-installer/`（初期設定）、`app_update*`・`connect.rs`（Setup）、`xtask/`（ビルド・検査）。一覧は [architecture.md](docs/design/architecture.md)、検証は [testing.md](docs/design/testing.md)、配布CIと依存更新は [release-process.md](docs/design/release-process.md)。
 
 ## 初期設定と公開中継の構築
 
@@ -28,7 +28,7 @@ Windowsの既定配布。多プロセス型のため日中は適用せず、更�
 
 ## 不変条件と採用した設計判断
 
-- 資格情報と復号Cookieは外へ出さず、保存先はアカウント・APIキー・プロキシと結び付ける。通信先は固定し、応答は10MiBで打ち切る（[security.md](docs/design/security.md)）。
+- 資格情報と復号Cookieは外へ出さず、保存先はアカウント・APIキー・プロキシと結び付ける。通信先は固定し、応答は10MiBで打ち切る。提供元の生エラーは既定では保存せず、利用者がCLIで期限付きに有効にしたときだけ、伏字処理した拒否文面を本人限定のローカルファイルへ記録し、MCPへは出さない（[security.md](docs/design/security.md)）。
 - 投稿・ログインは自動再送せず、成否不明は成功・未投稿と断定しない。画像だけ限定的に再試行する。フィードは網羅を保証せず、cursorは署名で改変を検知する（[api-reference.md](docs/design/api-reference.md)）。
 - 既定アカウントは設定名を指すメタデータで、不正なら省略呼出しを拒否する（[configuration.md](docs/design/configuration.md)）。
 - ネイティブ同梱によりNode.jsを不要にし、E2Eは実Xへ副作用を出さないため実サービスの成功は証明しない（[testing.md](docs/design/testing.md)）。

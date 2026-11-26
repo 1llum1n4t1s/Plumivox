@@ -17,6 +17,7 @@
 // LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 // SOFTWARE.
+use crate::api_rejection::RejectionCapture;
 use crate::error::{AppError, Result};
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use chrono::{DateTime, SecondsFormat};
@@ -72,6 +73,80 @@ fn unavailable(endpoint: &str, kind: Option<&str>) -> AppError {
         Some(kind) if endpoint == "upload_media_v2" => e.with_details(json!({"failureKind": kind})),
         _ => e,
     }
+}
+/// 記録対象の1件（`post_tweet` の画像アップロード・投稿作成で捕捉した、伏字済みの拒否文面）。
+/// 伏字は捕捉時に済んでおり、保存は `server` が行う。
+pub(crate) struct PostRejection {
+    pub(crate) capture: RejectionCapture,
+    pub(crate) stage: &'static str,
+    pub(crate) endpoint: &'static str,
+    /// 画像アップロードだけ。投稿全体での要求の通し番号（応答の `uploadAttempts` と同じ数え方）。
+    pub(crate) upload_attempt: Option<usize>,
+    pub(crate) code: String,
+    /// `api_rejection::details` の公開用の欄（httpStatus・rejectionReasons・rejectionReasonSource）。
+    pub(crate) details: Value,
+}
+/// 記録が有効な `post_tweet` だけが作る。投稿テキスト、伏せる既知の値（選んだプロファイルの
+/// 全文字列など。送信前に設定から取る）と、捕捉した全件（再試行ごとに1件）を持つ。
+pub(crate) struct Recorder {
+    post_text: String,
+    pub(crate) values: Vec<String>,
+    pub(crate) items: Vec<PostRejection>,
+}
+impl Recorder {
+    pub(crate) fn new(post_text: &str, values: Vec<String>) -> Self {
+        Self {
+            post_text: post_text.to_owned(),
+            values,
+            items: Vec::new(),
+        }
+    }
+    /// エラーが捕捉値を持っていれば取り出して控える（エラー自体には残さない）。
+    fn keep(
+        &mut self,
+        e: &mut AppError,
+        stage: &'static str,
+        endpoint: &'static str,
+        upload_attempt: Option<usize>,
+    ) {
+        if let Some(capture) = e.rejection.take() {
+            self.items.push(PostRejection {
+                capture: *capture,
+                stage,
+                endpoint,
+                upload_attempt,
+                code: e.code.clone(),
+                details: e.details.clone(),
+            });
+        }
+    }
+}
+fn collect_known<'a>(v: &'a Value, post_text: &str, out: &mut Vec<&'a str>) {
+    match v {
+        Value::String(s) if s != post_text => out.push(s),
+        Value::Array(items) => items.iter().for_each(|v| collect_known(v, post_text, out)),
+        Value::Object(map) => map.values().for_each(|v| collect_known(v, post_text, out)),
+        _ => {}
+    }
+}
+/// 既知の値による伏字（規則2）の入力: apiKey・loginCookies・proxy・userName、要求本文（フォームの
+/// 文字列は loginCookies・proxy と同じ）の全文字列、`Recorder` が持つ設定由来の値、投稿テキスト。
+/// 全部をここで集め、パターンや切り詰めより先に処理する。
+fn capture_known(
+    response: &Value,
+    a: &Value,
+    body: Option<&Value>,
+    recorder: &Recorder,
+) -> RejectionCapture {
+    let mut known: Vec<&str> = ["apiKey", "loginCookies", "proxy", "userName"]
+        .iter()
+        .map(|key| string(&a[*key]))
+        .collect();
+    if let Some(body) = body {
+        collect_known(body, &recorder.post_text, &mut known);
+    }
+    known.extend(recorder.values.iter().map(String::as_str));
+    crate::api_rejection::capture(response, &known, Some(&recorder.post_text))
 }
 fn string(v: &Value) -> &str {
     v.as_str().unwrap_or("")
@@ -291,6 +366,12 @@ pub struct PreparedPost {
     weighted: usize,
     files: Vec<Image>,
 }
+impl PreparedPost {
+    /// 拒否記録の組み立て用（本文・加重文字数・画像の枚数）。
+    pub(crate) fn summary(&self) -> (String, usize, usize) {
+        (self.text.clone(), self.weighted, self.files.len())
+    }
+}
 struct Image {
     bytes: Vec<u8>,
     mime: &'static str,
@@ -344,6 +425,40 @@ impl TwitterApiClient {
         cancel: &CancellationToken,
         timeout: Duration,
     ) -> Result<Value> {
+        self.request_with(a, endpoint, query, body, form, cancel, timeout, None)
+            .await
+    }
+    #[allow(clippy::too_many_arguments)] // request_status の引数をそのまま渡す。
+    async fn request_with(
+        &self,
+        a: &Value,
+        endpoint: &str,
+        query: Option<&Value>,
+        body: Option<&Value>,
+        form: Option<reqwest::multipart::Form>,
+        cancel: &CancellationToken,
+        timeout: Duration,
+        recorder: Option<&Recorder>,
+    ) -> Result<Value> {
+        self.request_status(a, endpoint, query, body, form, cancel, timeout, recorder)
+            .await
+            .map(|(v, _)| v)
+    }
+    /// 成功時は本文と実際の HTTP ステータス（2xx）を返す。
+    /// `recorder` が Some のときだけ、2xx 本文エラー（`API_REJECTED`）の文面を伏字処理して
+    /// エラーに付ける（ローカルの拒否記録が有効な投稿だけが使う）。
+    #[allow(clippy::too_many_arguments)] // request の引数に記録の有無を足しただけ。
+    async fn request_status(
+        &self,
+        a: &Value,
+        endpoint: &str,
+        query: Option<&Value>,
+        body: Option<&Value>,
+        form: Option<reqwest::multipart::Form>,
+        cancel: &CancellationToken,
+        timeout: Duration,
+        recorder: Option<&Recorder>,
+    ) -> Result<(Value, u16)> {
         let operation = async {
             // 通信先の解析失敗は upload でも failureKind を付けない（従来どおり）。
             let base = url::Url::parse(&self.base).map_err(|_| unavailable(endpoint, None))?;
@@ -436,13 +551,15 @@ impl TwitterApiClient {
                 ));
             }
             if v["status"] == "error" || v["status"] == "failed" || v["success"] == false {
-                return Err(
+                let mut rejected =
                     err("API_REJECTED", "The API reported that the request failed.").with_details(
                         crate::api_rejection::details(response.status().as_u16(), Some(&v)),
-                    ),
-                );
+                    );
+                rejected.rejection =
+                    recorder.map(|recorder| Box::new(capture_known(&v, a, body, recorder)));
+                return Err(rejected);
             }
-            Ok(v)
+            Ok((v, response.status().as_u16()))
         };
         let result = tokio::select! { biased;
             _=cancel.cancelled()=>Err(unavailable(endpoint,Some("cancelled"))),
@@ -900,11 +1017,14 @@ impl TwitterApiClient {
         .await;
         result.map_err(|e| post_error(e, "input_validation", false, 0))
     }
-    pub async fn send_post(
+    /// `recorder` が Some のときだけ（ローカルの拒否記録が有効なとき）、画像アップロードと
+    /// 投稿作成の拒否文面を伏字処理して `recorder` に控える。無いときは捕捉の処理を一切しない。
+    pub(crate) async fn send_post(
         &self,
         a: &Value,
         prepared: PreparedPost,
         cancel: CancellationToken,
+        mut recorder: Option<&mut Recorder>,
     ) -> Result<Value> {
         let mut stage = "image_upload";
         let mut attempted = false;
@@ -913,14 +1033,27 @@ impl TwitterApiClient {
             let mut ids=Vec::new();
             for image in &prepared.files{
                 // 要求回数は失敗時にも post_error が読むため、戻り値ではなく参照で数える。
-                ids.push(self.upload_image(a,image,&cancel,&mut attempts).await?);
+                ids.push(self.upload_image(a,image,&cancel,&mut attempts,recorder.as_deref_mut()).await?);
             }
             if cancel.is_cancelled(){return Err(cancelled());}
             stage="post_creation";attempted=true;
             let mut body=json!({"login_cookies":a["loginCookies"],"proxy":a["proxy"],"tweet_text":prepared.text});
             if !ids.is_empty(){body["media_ids"]=json!(ids);}
-            let v=self.request(a,"create_tweet_v2",None,Some(&body),None,&cancel,self.timeout).await?;
-            if v["status"]!="success" || !numeric(&v["tweet_id"]){return Err(err("POST_UNCERTAIN","Whether the post succeeded is unknown because no post ID was returned. It was not resent automatically."));}
+            let (v,http_status)=match self.request_status(a,"create_tweet_v2",None,Some(&body),None,&cancel,self.timeout,recorder.as_deref()).await{
+                Ok(r)=>r,
+                Err(mut e)=>{
+                    if let Some(r)=recorder.as_deref_mut(){r.keep(&mut e,"post_creation","create_tweet_v2",None);}
+                    return Err(e);
+                }
+            };
+            if v["status"]!="success" || !numeric(&v["tweet_id"]){
+                let e=err("POST_UNCERTAIN","Whether the post succeeded is unknown because no post ID was returned. It was not resent automatically.");
+                if let Some(r)=recorder.as_deref_mut(){
+                    let capture=capture_known(&v,a,Some(&body),r);
+                    r.items.push(PostRejection{capture,stage:"post_creation",endpoint:"create_tweet_v2",upload_attempt:None,code:e.code.clone(),details:crate::api_rejection::details(http_status,Some(&v))});
+                }
+                return Err(e);
+            }
             Ok(json!({"account":a["account"],"tweetId":v["tweet_id"],"url":format!("https://x.com/i/status/{}",string(&v["tweet_id"])),"weightedLength":prepared.weighted}))
         }.await;
         result.map_err(|e| post_error(e, stage, attempted, attempts))
@@ -936,6 +1069,7 @@ impl TwitterApiClient {
         image: &Image,
         cancel: &CancellationToken,
         attempts: &mut usize,
+        mut recorder: Option<&mut Recorder>,
     ) -> Result<Value> {
         let deadline = Instant::now() + self.image_timeout;
         let mut uploaded = None;
@@ -956,8 +1090,9 @@ impl TwitterApiClient {
                 .text("proxy", string(&a["proxy"]).to_owned())
                 .part("file", part);
             *attempts += 1;
+            // 画像アップロードは再試行も1回ごとに1件として控える。
             match self
-                .request(
+                .request_with(
                     a,
                     "upload_media_v2",
                     None,
@@ -965,6 +1100,7 @@ impl TwitterApiClient {
                     Some(form),
                     cancel,
                     remaining,
+                    recorder.as_deref(),
                 )
                 .await
             {
@@ -972,7 +1108,10 @@ impl TwitterApiClient {
                     uploaded = Some(v);
                     break;
                 }
-                Err(e) => {
+                Err(mut e) => {
+                    if let Some(r) = recorder.as_deref_mut() {
+                        r.keep(&mut e, "image_upload", "upload_media_v2", Some(*attempts));
+                    }
                     if cancel.is_cancelled() {
                         return Err(cancelled());
                     }

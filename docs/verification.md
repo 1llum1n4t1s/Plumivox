@@ -66,6 +66,9 @@ PCセットアップはWindows・macOSともネイティブの`--setup`を対象
 | 10MiBを超えるAPI応答、UTF-8文字途中の通信分割 | 上限超過で受信を打ち切る。上限内の分割文字は正しく復号する。投稿の超過応答は成否未確定として再送しない |
 | 投稿成功に見えるが投稿IDがない、通信の成否が不明 | 成功扱いせず、自動再送しない |
 | 投稿作成段階（postAttempted true）の`API_REJECTED`・`API_HTTP_ERROR`・`POST_UNCERTAIN` | 英語の固定文`nextStep`を付ける。post_id_missing・`POST_UNCERTAIN`は再送せず数分待ってからget_my_postsで確認する、automation_suspected・rate_limit・daily_limitは再送せず本人に伝え数分以上待つ、それ以外は再送前にget_my_postsで確認する。画像アップロード段階・読取り・ログインのエラーには付けない。クールダウンは強制せず、上流の生の拒否文面は返さない・保存しない |
+| 拒否文面のローカル記録（`--rejection-log`）の有無 | 既定（無効）・期限切れ・`off`では`diagnostics\provider-rejections.jsonl`へ書かず、`rejectionTextRecorded`も付けない。`on`の期間中だけ記録し、MCP応答へは`rejectionTextRecorded: true`だけを足して文面を出さない。`PLUMIVOX_STATE_DIR`の配下に作る |
+| 記録する段階 | `post_tweet`の画像アップロード（`image_upload`、再試行は1回ごとに1件）・投稿作成（`post_creation`）の`API_REJECTED`と、投稿IDが返らない`POST_UNCERTAIN`だけを記録する。読取り・ログイン・2xx以外の応答本文は記録しない |
+| 記録の伏字・保持 | 本文・Cookie・資格情報・プロキシ・ID・URL・メールを残さず、伏字後に既知の値が残る欄は`text`をnullにする。14日・200件・256KiBを超えたら古いものから消す。`show`はJSON Lines、`clear`で消え、通常ファイルでない・リンクの保存先は書かず消さない |
 | 同じ投稿を明示的に二度呼び出す | 各呼び出しで一回ずつ送信する。ローカル履歴で停止しない |
 | フォロー先が空、保護アカウントを含む、一覧が複数ページ | 公開投稿の取得範囲・未取得範囲を明示 |
 | フォロー先検索が複数バッチで重複・順不同 | 投稿IDで重複を除き、日時の降順にする |

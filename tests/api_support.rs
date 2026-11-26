@@ -294,7 +294,13 @@ pub async fn handle(state: Arc<State>, req: HttpRequest) -> io::Result<HttpRespo
     state.mock.lock().unwrap().trace.push(trace);
     let send = |v| Ok(support::json_response(200, v));
     if let Some(kind) = scenario.strip_prefix("rejection-") {
+        // 提供元が応答文面へ投稿本文・Cookie・利用者名・プロキシを混ぜる場面。
+        let leak = format!(
+            "Rejected: {}; again leak body sentence; cookie={COOKIE}; user Poster; via {PROXY}",
+            payload["tweet_text"].as_str().unwrap_or_default()
+        );
         let (status, reason) = match kind {
+            "leak" => (200, leak.as_str()),
             "auth" => (200, "Invalid login cookies"),
             "proxy" => (200, "ProxyError: failed to connect to proxy"),
             "credits" => (200, "Credits is not enough.Please recharge"),
@@ -317,7 +323,9 @@ pub async fn handle(state: Arc<State>, req: HttpRequest) -> io::Result<HttpRespo
             }),
         ));
     }
-    if scenario == "create502" && req.path.ends_with("/create_tweet_v2") {
+    if (scenario == "create502" || scenario == "upload-proxyreject-create502")
+        && req.path.ends_with("/create_tweet_v2")
+    {
         return Ok(support::json_response(502, json!({"message":COOKIE})));
     }
     if scenario.starts_with("upload-") && req.path.ends_with("/upload_media_v2") {
@@ -363,8 +371,11 @@ pub async fn handle(state: Arc<State>, req: HttpRequest) -> io::Result<HttpRespo
                     },
                 ));
             }
-            "upload-proxyreject-recover" | "upload-proxyreject-always" => {
-                if scenario == "upload-proxyreject-recover" && attempt > 1 {
+            // 1回目だけ拒否し、再試行は成功する。`-create502` は続く投稿作成を502で失敗させる。
+            "upload-proxyreject-recover"
+            | "upload-proxyreject-always"
+            | "upload-proxyreject-create502" => {
+                if scenario != "upload-proxyreject-always" && attempt > 1 {
                     return send(json!({"status":"success","media_id":"700"}));
                 }
                 return send(
@@ -924,6 +935,58 @@ impl Harness {
     }
     pub fn trace(&self) -> Vec<Value> {
         self.state.trace()
+    }
+    /// 拒否文面の記録の置き場所（状態ルート直下の diagnostics）。
+    pub fn diagnostics_dir(&self) -> PathBuf {
+        self.root.join("diagnostics")
+    }
+    pub async fn rejection_log_reset(&self) -> Result<()> {
+        match fs::remove_dir_all(self.diagnostics_dir()).await {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(e.into()),
+        }
+    }
+    /// 有効化の設定を置く（UNIX秒で `enabled_at` と `enabled_until` を直接指定する）。
+    pub async fn rejection_log_setting(&self, at: u64, until: u64) -> Result<()> {
+        let dir = self.diagnostics_dir();
+        fs::create_dir_all(&dir).await?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).await?;
+        }
+        fs::write(
+            dir.join("rejection-log.json"),
+            serde_json::to_vec(&json!({"enabled_until":until,"enabled_at":at}))?,
+        )
+        .await?;
+        Ok(())
+    }
+    /// 現在から `days` 日間有効にする。
+    pub async fn rejection_log_enable(&self, days: u64) -> Result<()> {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_secs();
+        self.rejection_log_setting(now, now + days * 86_400).await
+    }
+    /// 記録ファイルの生の文字列と、行ごとの JSON。ファイルが無ければ空。
+    pub async fn rejection_log_read(&self) -> Result<(String, Vec<Value>)> {
+        let raw = match fs::read_to_string(self.diagnostics_dir().join("provider-rejections.jsonl"))
+            .await
+        {
+            Ok(raw) => raw,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => String::new(),
+            Err(e) => return Err(e.into()),
+        };
+        let lines = raw
+            .lines()
+            .map(serde_json::from_str)
+            .collect::<std::result::Result<Vec<Value>, _>>()?;
+        Ok((raw, lines))
+    }
+    pub async fn rejection_log_count(&self) -> Result<usize> {
+        Ok(self.rejection_log_read().await?.1.len())
     }
     pub fn count(&self) -> usize {
         self.state.count()

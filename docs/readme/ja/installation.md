@@ -10,6 +10,8 @@
 
 アンインストールは「設定」→「アプリ」の一覧からPlumivoxを選びます。自分を指すClaude Code・Codexの`plumivox`登録とログオン時の更新の登録だけを外し、設定・セッションのデータフォルダー（`%LOCALAPPDATA%\Kagayoi\Plumivox`）は残します。登録だけを先に外す場合は`plumivox.exe --uninstall-setup`で予定を確認し、`--uninstall-setup --apply`で実行します。
 
+`plumivox.exe`のそのほかのコマンドラインの指定: `--setup`（初期設定）、`--uninstall-setup`（登録の解除）、`--rejection-log on|off|status|show|clear`（伏字処理した拒否文面の期限付きローカル記録。既定は無効。[拒否文面のローカル記録](when-posting-or-authentication-fails.md#拒否文面のローカル記録)を参照）。記録はアンインストールしても残り、`--rejection-log clear`で消します。
+
 プラグイン（下記）から移る場合: Setupは旧プラグインの`dist`などを指す同名の`plumivox`登録を、導入先を指す登録へ置き換えます。プラグイン自体が持つMCP（`plumivox@plumivox-local`）は別の登録なので、Plumivoxが2経路で起動しないよう、無効にするかプラグインを外してください。Codexでは[Toolportの節](#toolport経由で使う場合)と同じ`enabled = false`を追加する（またはプラグインを外す）、Claude Codeでは`/plugin`からプラグインを無効化または削除します。Codexは同名の登録をプラグインのMCPより優先するため、Setupの登録がある間は1つしか起動しないはずですが、Claude Codeでは両方が起動し得ます。SetupはCodex・Claude Codeの設定を書き換えず、プラグインが有効なままなら警告だけを出します（Plumivoxを起動したときの案内、`app-update.log`、`app-update\setup-registration.json`の`legacyPlugins`）。Toolportの登録も自動では書き換えないので、Toolportを使う場合は[Toolportの節](#toolport経由で使う場合)を見て自分で確認してください。
 
 ## プラグインで導入する（macOS・従来の方法）

@@ -10,6 +10,8 @@
 
 제거하려면 "설정" → "앱" 목록에서 Plumivox를 선택합니다. 자신을 가리키는 Claude Code·Codex의 `plumivox` 등록과 로그온 시 업데이트 등록만 해제하고, 설정·세션 데이터 폴더(`%LOCALAPPDATA%\Kagayoi\Plumivox`)는 남겨 둡니다. 등록만 먼저 해제하려면 `plumivox.exe --uninstall-setup`으로 예정 내용을 확인하고 `--uninstall-setup --apply`로 실행합니다.
 
+`plumivox.exe`의 그 밖의 명령줄 옵션: `--setup`(초기 설정), `--uninstall-setup`(등록 해제), `--rejection-log on|off|status|show|clear`(가림 처리한 거부 문구의 기간 한정 로컬 기록, 기본은 꺼짐, [로컬 거부 기록](when-posting-or-authentication-fails.md#로컬-거부-기록) 참조). 기록은 제거해도 남으며 `--rejection-log clear`로 삭제합니다.
+
 플러그인(아래)에서 옮겨 오는 경우: Setup은 기존 플러그인의 `dist` 등을 가리키는 같은 이름의 `plumivox` 등록을 설치 위치를 가리키는 등록으로 교체합니다. 플러그인 자체가 가진 MCP(`plumivox@plumivox-local`)는 별도의 등록이므로, Plumivox가 두 경로로 시작되지 않도록 비활성화하거나 플러그인을 제거하세요. Codex에서는 [Toolport 절](#toolport를-통해-사용하는-경우)과 같은 `enabled = false`를 추가하고(또는 플러그인을 제거), Claude Code에서는 `/plugin`에서 플러그인을 비활성화하거나 삭제합니다. Codex는 같은 이름의 등록을 플러그인의 MCP보다 우선하므로 Setup 등록이 있는 동안에는 하나만 시작되어야 하지만, Claude Code는 둘 다 시작할 수 있습니다. Setup은 Codex·Claude Code 설정을 수정하지 않으며, 플러그인이 계속 활성화되어 있으면 경고만 표시합니다(Plumivox를 실행할 때 나오는 안내, `app-update.log`, `app-update\setup-registration.json`의 `legacyPlugins`). Toolport 등록도 자동으로 고치지 않으므로, Toolport를 사용한다면 [Toolport 절](#toolport를-통해-사용하는-경우)을 참고하여 직접 확인하세요.
 
 ## 플러그인으로 설치하기(macOS·기존 방법)

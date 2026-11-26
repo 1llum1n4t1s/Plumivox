@@ -10,6 +10,8 @@
 
 解除安裝時，請在「設定」→「應用程式」的清單中選擇 Plumivox。只會移除指向自身的 Claude Code 與 Codex `plumivox` 註冊，以及登入時更新的註冊，並保留設定與工作階段的資料夾（`%LOCALAPPDATA%\Kagayoi\Plumivox`）。若要先只移除註冊，請以 `plumivox.exe --uninstall-setup` 確認預定內容，再以 `--uninstall-setup --apply` 執行。
 
+`plumivox.exe` 的其他命令列選項：`--setup`（初始設定）、`--uninstall-setup`（移除註冊）、`--rejection-log on|off|status|show|clear`（經遮蔽處理的拒絕文字的限時本機記錄，預設關閉；請參閱[本機拒絕記錄](when-posting-or-authentication-fails.md#本機拒絕記錄)）。解除安裝後記錄仍會保留，以 `--rejection-log clear` 刪除。
+
 從外掛程式（如下）轉移時：Setup 會將指向舊外掛程式 `dist` 等位置的同名 `plumivox` 註冊，替換為指向安裝位置的註冊。外掛程式本身所帶的 MCP（`plumivox@plumivox-local`）是另一個註冊，為避免 Plumivox 經由兩條途徑啟動，請將其停用或移除該外掛程式。在 Codex 中，加入與[Toolport 一節](#透過-toolport-使用)相同的 `enabled = false`（或移除外掛程式）；在 Claude Code 中，透過 `/plugin` 停用或解除安裝該外掛程式。Codex 會優先採用同名註冊而非外掛程式的 MCP，因此只要 Setup 的註冊存在，通常只會啟動一個，但 Claude Code 可能會同時啟動兩個。Setup 不會修改 Codex 或 Claude Code 的設定；若外掛程式仍處於啟用狀態，只會發出警告（啟動 Plumivox 時顯示的指引、`app-update.log`，以及 `app-update\setup-registration.json` 中的 `legacyPlugins`）。Toolport 的註冊同樣不會被自動改寫；若使用 Toolport，請依照[Toolport 一節](#透過-toolport-使用)自行檢查。
 
 ## 使用外掛程式安裝（macOS・傳統方式）

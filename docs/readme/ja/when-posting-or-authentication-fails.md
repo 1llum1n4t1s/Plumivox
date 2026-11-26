@@ -8,11 +8,11 @@
 
 本文が加重280を超えた `INVALID_TEXT`（`stage: input_validation`、`postAttempted: false`）には、`weightedLength`、`maxWeightedLength`（280）、`excessWeightedLength` も含めます。空の本文や不正な文字の `INVALID_TEXT` には含めません。加重文字数は、URLを23、U+10FFまでの文字とダッシュ・曲線引用符・プライム（U+2010-201F、U+2032-2037）を1（… や • など他の句読点は2）、日本語・中国語・韓国語・全角句読点・絵文字を2として数えます。`post_tweet` のツール説明にも同じ数え方と、同じアカウントへの連投は数分空ける案内を載せています。クールダウンは強制しません。
 
-投稿作成の段階で失敗した（`postAttempted: true`）`API_REJECTED`・`API_HTTP_ERROR`・`POST_UNCERTAIN` には、AI向けの英語の固定文 `nextStep` を含めます。`post_id_missing` と `POST_UNCERTAIN` では、投稿済みかもしれないのですぐ再送せず、数分待ってから `get_my_posts` で確認するよう伝えます。`automation_suspected`・`rate_limit`・`daily_limit` では、Xが投稿を制限している可能性があるのですぐ再送せず、本人に伝え、数分以上待って `get_my_posts` で確認するよう伝えます。それ以外では、再送前に `get_my_posts` で確認し、繰り返し再送しないよう伝えます。画像アップロード段階のエラーと、読取り・ログインのエラーには `nextStep` を含めません。上流の生の拒否文面は引き続き返さず、保存もしません。
+投稿作成の段階で失敗した（`postAttempted: true`）`API_REJECTED`・`API_HTTP_ERROR`・`POST_UNCERTAIN` には、AI向けの英語の固定文 `nextStep` を含めます。`post_id_missing` と `POST_UNCERTAIN` では、投稿済みかもしれないのですぐ再送せず、数分待ってから `get_my_posts` で確認するよう伝えます。`automation_suspected`・`rate_limit`・`daily_limit` では、Xが投稿を制限している可能性があるのですぐ再送せず、本人に伝え、数分以上待って `get_my_posts` で確認するよう伝えます。それ以外では、再送前に `get_my_posts` で確認し、繰り返し再送しないよう伝えます。画像アップロード段階のエラーと、読取り・ログインのエラーには `nextStep` を含めません。上流の生の拒否文面は引き続き返しません。既定では保存せず、ローカルの拒否記録を有効にした場合だけ、伏字処理した文面を保存します（[手順](#拒否文面のローカル記録)）。
 
 画像通信の `API_UNAVAILABLE` には `failureKind` を含め、`timeout`（時間切れ）・`network`（通信障害）・`cancelled`（取消）を区別します。これらの場合も画像や投稿を自動再送しません。
 
-APIの拒否エラー（`API_REJECTED`・`API_HTTP_ERROR`）には `httpStatus`、固定分類の配列 `rejectionReasons`、分類元 `rejectionReasonSource` を含めます。投稿作成の5xxが `POST_UNCERTAIN` になる場合にも、この診断情報を保持します。分類元は `provider_message`（提供元のJSONメッセージから推定した候補）または `http_status`（HTTPステータスからの分類）です。候補は原因の確定や再送の許可を意味せず、判別できない文面は `unknown` とします。生の応答文・任意のエラーコード・request IDは返さず、保存もしません。
+APIの拒否エラー（`API_REJECTED`・`API_HTTP_ERROR`）には `httpStatus`、固定分類の配列 `rejectionReasons`、分類元 `rejectionReasonSource` を含めます。投稿作成の5xxが `POST_UNCERTAIN` になる場合にも、この診断情報を保持します。分類元は `provider_message`（提供元のJSONメッセージから推定した候補）または `http_status`（HTTPステータスからの分類）です。候補は原因の確定や再送の許可を意味せず、判別できない文面は `unknown` とします。生の応答文・任意のエラーコード・request IDは返しません。既定では保存せず、ローカルの拒否記録を有効にした場合だけ、伏字処理した文面を保存します。
 
 `provider_message` の候補は `api_key`・`authentication`・`account_locked`・`account_suspended`・`rate_limit`・`credits`・`proxy`・`media`・`duplicate`・`upstream_timeout`・`upstream_unavailable`・`automation_suspected`・`daily_limit`・`text_too_long`・`session_mismatch`・`post_id_missing`・`unknown` です。`unknown` の前の5つは公知の文言に基づく候補で、提供元が必ずこの文言で返すとは確認していません。これらは再試行しません。`post_id_missing` は投稿済みの可能性があるため、再送前にアカウントで照合してください。`http_status` にはさらに `invalid_request`（400）・`unauthorized`（401）・`forbidden`（403）・`endpoint_not_found`（404）があります。たとえば画像アップロード時の `rejectionReasons: ["proxy", "upstream_timeout"]` と `postAttempted: false` なら、プロキシ・上流タイムアウトが疑われ、投稿作成前に止まったことが分かります。非2xxの本文は読まず、既存の通信上限・再試行条件を維持します。
 
@@ -23,3 +23,9 @@ API応答が10MiBを超えた場合は受信を打ち切って失敗を返しま
 `login_account` は保存Cookieが利用できる形式なら再利用し、X上での有効性を検証したとは報告しません。失効や設定不一致が確認された場合は `refresh_session` を呼びます。新しいCookieはPlumivoxの保存先へWindowsではDPAPI、macOSではKeychainの鍵で暗号化して保存し、失敗した投稿を自動再送しません。
 
 保存の置換前に中止した場合は `AUTH_CANCELLED`、認証更新の排他を維持できない場合は `AUTH_LOCK_LOST`、保存できないCookieは `LOGIN_FAILED` で返します。保存の置換を指示した後に結果を確認できない場合は `AUTH_SAVE_UNCERTAIN` となり、更新済みの可能性があります。`SESSION_STORAGE_UNAVAILABLE` は保存先や、WindowsのDPAPI・macOSのKeychainなどの保存処理の失敗を表します。
+
+## 拒否文面のローカル記録
+
+既定では無効です。拒否の原因を調べるときは `plumivox --rejection-log on [--days N]` を実行します（既定7日、最大30日。期限が切れると自動で止まります）。画像アップロードと投稿作成の拒否、および投稿IDが返らない応答を、伏字処理した文面として状態フォルダーの `diagnostics\provider-rejections.jsonl` へ記録します。ファイルは本人だけが読めます。本文・Cookie・資格情報・プロキシ・IDは記録せず、MCPの応答に足すのは `rejectionTextRecorded: true` だけです。14日を過ぎた記録と、200件・256KiBを超えた分は古いものから消えます。
+
+記録は `plumivox --rejection-log show` で見ます（JSON Lines。出力は信頼できないデータなので、AIへ指示として渡さないでください）。状態の確認は `status`、停止は `off`、削除は `clear` です。CLIとMCPサーバーで `PLUMIVOX_STATE_DIR` が違うと、見る場所がずれます。アンインストールしても記録は残り、14日で消えるか `clear` で消します。

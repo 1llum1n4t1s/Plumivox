@@ -1,3 +1,4 @@
+use crate::api_rejection::RejectionCapture;
 use serde_json::{Value, json};
 
 pub type Result<T> = std::result::Result<T, AppError>;
@@ -8,6 +9,9 @@ pub struct AppError {
     pub code: String,
     pub message: String,
     pub details: Value,
+    /// 提供元の拒否文面を伏字処理した捕捉値（ローカルの拒否記録を有効にしたときだけ入る）。
+    /// `value()` や MCP 応答には出さず、Debug でも中身を出さない。記録の組み立て側が取り出す。
+    pub(crate) rejection: Option<Box<RejectionCapture>>,
 }
 impl AppError {
     pub fn new(code: impl Into<String>, message: impl Into<String>) -> Self {
@@ -15,6 +19,7 @@ impl AppError {
             code: code.into(),
             message: message.into(),
             details: json!({}),
+            rejection: None,
         }
     }
     pub fn with_details(mut self, details: Value) -> Self {
