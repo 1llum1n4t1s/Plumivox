@@ -35,5 +35,6 @@ OS条件を理由に未実行の系統は明示し、全件成功へ数えない
 - アカウント選択を変えるときは [configuration.md](docs/agents/configuration.md) を読む。
 - VPSインストーラー・`setup/vps/`を変えるときは [vps-installer-constraints.md](docs/agents/vps-installer-constraints.md) を読む（[設計](DESIGN.md#初期設定と公開中継の構築)）。
 - 管理プロキシ・共有daemonを変えるときは [managed-proxy-constraints.md](docs/agents/managed-proxy-constraints.md) を読む（[設計](DESIGN.md#管理するプロキシの境界)）。
+- MCPサーバーの登録を変えるときは [mcp-registration.md](docs/agents/mcp-registration.md) を読む。
 - フィード・検索を変えるときは [api-reference.md](docs/agents/api-reference.md) を読む。
 - ローカライズ・READMEの多言語同期は [conventions.md](docs/agents/conventions.md) を読む（[設計](DESIGN.md#ローカライズ)）。

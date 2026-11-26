@@ -28,7 +28,7 @@ Windowsの既定配布。多プロセス型のため日中は適用せず、更�
 
 ## 不変条件と採用した設計判断
 
-- 資格情報と復号Cookieは外へ出さず、保存先はアカウント・APIキー・プロキシと結び付ける。通信先は固定し、応答は10MiBで打ち切る。提供元の生エラーは既定では保存せず、利用者がCLIで期限付きに有効にしたときだけ、伏字処理した拒否文面を本人限定のローカルファイルへ記録し、MCPへは出さない（[security.md](docs/design/security.md)）。
+- 資格情報と復号Cookieは外へ出さず、保存先はアカウント・APIキー・プロキシと結び付ける。通信先は固定し、応答は10MiBで打ち切る。提供元の生エラーは既定では保存せず、利用者がCLIで期限付きに有効にしたときだけ、伏字処理した拒否文面を本人限定のローカルファイルへ記録し、MCPへは出さない（[security.md](docs/design/security.md)、記録の仕様は [rejection-log.md](docs/design/rejection-log.md)）。
 - 投稿・ログインは自動再送せず、成否不明は成功・未投稿と断定しない。画像だけ限定的に再試行する。フィードは網羅を保証せず、cursorは署名で改変を検知する（[api-reference.md](docs/design/api-reference.md)）。
 - 既定アカウントは設定名を指すメタデータで、不正なら省略呼出しを拒否する（[configuration.md](docs/design/configuration.md)）。
 - ネイティブ同梱によりNode.jsを不要にし、E2Eは実Xへ副作用を出さないため実サービスの成功は証明しない（[testing.md](docs/design/testing.md)）。

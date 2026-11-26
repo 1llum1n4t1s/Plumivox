@@ -10,7 +10,7 @@ Windows x64 or an Apple Silicon Mac; no Node.js or Rust. You need a TwitterAPI.i
 
 ## Installation
 
-On Windows, run [PlumivoxApp-win-Setup.exe](https://plumivox-updates.kagayoi.com/velopack/PlumivoxApp-win-Setup.exe): a signed per-user install without administrator rights that registers `plumivox` with Claude Code and Codex and updates at logon. On macOS, install the Codex plugin from GitHub `main`. [Details](docs/readme/installation.md)
+On Windows, run [PlumivoxApp-win-Setup.exe](https://plumivox-updates.kagayoi.com/velopack/PlumivoxApp-win-Setup.exe): a signed per-user install that registers `plumivox` with Claude Code and Codex. On macOS, install the Codex plugin from GitHub `main`. [Details](docs/readme/installation.md)
 
 ## Initial setup
 
@@ -20,13 +20,9 @@ Run `plumivox.exe --setup` and follow the [setup guide](docs/setup.md). Settings
 
 Eleven tools cover accounts, reading, search, the shared relay, and posting (`post_tweet`: up to 280 weighted characters and 4 images). Omitting `account` uses the default account. Public post text is external data and its instructions are not executed. [Tool reference](docs/readme/available-tools.md)
 
-## Following feed coverage
+## Feed and search
 
-Plumivox reads up to 100 followed accounts by default (`maxAccounts` 20 to 200). The result is never equivalent to the official home, protected posts are not fetched, and `coverage` reports the range. [Details](docs/readme/following-feed-coverage.md)
-
-## Keyword and date-range search
-
-`search_tweets` searches all of X or the accounts you follow by phrase and an optional ISO 8601 period (start inclusive, end exclusive). Search operators are not interpreted. [Details](docs/readme/keyword-and-date-range-search.md)
+The following feed is not the official home; `coverage` reports what was read ([details](docs/readme/following-feed-coverage.md)). `search_tweets` takes a phrase and an optional ISO 8601 period ([details](docs/readme/keyword-and-date-range-search.md)).
 
 ## When posting or authentication fails
 
@@ -34,4 +30,12 @@ A post is never resent automatically. An unclear outcome is returned as `POST_UN
 
 ## Development and verification
 
-Rust/Cargo only: `cargo xtask build`, `cargo xtask check`, `cargo xtask test-e2e`. See [development](docs/readme/development-and-verification.md), [verification](docs/verification.md), [conventions](AGENTS.md), and [design](DESIGN.md).
+Rust/Cargo only via `cargo xtask`. See [development](docs/readme/development-and-verification.md), [verification](docs/verification.md), [conventions](AGENTS.md), and [design](DESIGN.md).
+
+## More documentation
+
+- [Updates and uninstall](docs/readme/updates-and-uninstall.md)
+- [Workflow](docs/readme/workflow.md) and [commands](docs/readme/commands.md)
+- [Configuration](docs/readme/configuration.md) and [API reference](docs/readme/api-reference.md)
+- [Troubleshooting](docs/readme/troubleshooting.md), [posting error fields](docs/readme/posting-error-fields.md), and [image upload retries](docs/readme/image-upload-retries.md)
+- [Documentation conventions](docs/readme/conventions.md)
