@@ -1821,7 +1821,7 @@ dependencies = [
 
 [[package]]
 name = "plumivox"
-version = "1.0.18"
+version = "1.0.19"
 dependencies = [
  "aes-gcm",
  "anyhow",
