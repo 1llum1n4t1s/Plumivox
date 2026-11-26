@@ -242,6 +242,11 @@ mod windows_e2e {
                     "PATH".into(),
                     format!("{};{system}\\System32;{system}", stub.display()),
                 ),
+                // Toolport の判定は隔離した registry だけを見る（本物の Toolport・Conduit の設定を読まない）。
+                (
+                    "TOOLPORT_REGISTRY".into(),
+                    path(env.join("appdata").join("Toolport").join("registry.json")),
+                ),
                 ("PLUMIVOX_SECRETS_FILE".into(), path(secrets.to_path_buf())),
                 ("PLUMIVOX_CLI_STUB_DIR".into(), path(stub.clone())),
                 ("PLUMIVOX_UPDATE_FEED_DIR".into(), path(feed.clone())),
@@ -267,6 +272,11 @@ mod windows_e2e {
                 "PLUMIVOX_UPDATE_ALLOW_UNSIGNED",
                 "PLUMIVOX_TEST_PACK_VERSION",
                 "VELOPACK_FIRSTRUN",
+                "TOOLPORT_DATA_DIR",
+                "TOOLPORT_PROFILE",
+                "CONDUIT_REGISTRY",
+                "CONDUIT_DATA_DIR",
+                "CONDUIT_PROFILE",
             ] {
                 command.env_remove(key);
             }
@@ -283,6 +293,11 @@ mod windows_e2e {
                 "PLUMIVOX_UPDATE_ALLOW_UNSIGNED",
                 "PLUMIVOX_TEST_PACK_VERSION",
                 "VELOPACK_FIRSTRUN",
+                "TOOLPORT_DATA_DIR",
+                "TOOLPORT_PROFILE",
+                "CONDUIT_REGISTRY",
+                "CONDUIT_DATA_DIR",
+                "CONDUIT_PROFILE",
             ];
             let mut map: BTreeMap<String, (String, String)> = BTreeMap::new();
             for (key, value) in std::env::vars_os() {
@@ -683,6 +698,93 @@ mod windows_e2e {
             );
         }
 
+        // ───── Toolport が既に提供している環境: 直接登録を省き、ゲートウェイが消えたら直接登録へ戻す ─────
+        let toolport_install = world.install_dir("toolport");
+        case!(
+            "(13) a Toolport-served install skips direct registration and falls back when the gateway disappears",
+            {
+                let env = world.root.join("env");
+                let fixture = world.root.join("toolport-fixture");
+                fs::create_dir_all(&fixture)?;
+                let gateway = fixture.join("toolport-gateway.exe");
+                // Setup の固定パスとは別の場所のコピー（ファイル名と --stdio で見る）。
+                let product = fixture.join("plumivox.exe");
+                fs::copy(&stub, &gateway)?;
+                fs::copy(&stub, &product)?;
+                let claude_json = env.join("claude-config").join(".claude.json");
+                let codex_toml = env.join("codex-home").join("config.toml");
+                let registry = env.join("appdata").join("Toolport").join("registry.json");
+                fs::create_dir_all(registry.parent().context("registry parent")?)?;
+                fs::write(
+                    &claude_json,
+                    serde_json::to_vec(&json!({"mcpServers": {"toolport": {
+                        "type": "stdio", "command": gateway.to_string_lossy(), "args": []
+                    }}}))?,
+                )?;
+                fs::write(
+                    &codex_toml,
+                    format!(
+                        "[mcp_servers.toolport]\ncommand = '{}'\nargs = []\n",
+                        gateway.display()
+                    ),
+                )?;
+                fs::write(
+                    &registry,
+                    serde_json::to_vec(&json!({
+                        "version": 3,
+                        "servers": [{
+                            "id": "plumivox", "transport": "stdio", "enabled": true,
+                            "command": product.to_string_lossy(), "args": ["--stdio"]
+                        }],
+                        "profiles": [{"id": "p1", "name": "main", "enabledServerIds": ["plumivox"]}],
+                        "activeProfileId": "p1"
+                    }))?,
+                )?;
+                let calls_before = world.calls()?.len();
+                world.install(&setup, &toolport_install)?;
+                let lines = world.call_lines(calls_before)?;
+                evidence.insert("toolport-install-calls".into(), json!(lines));
+                ensure!(
+                    lines.is_empty(),
+                    "a served install must not call the CLIs: {lines:?}"
+                );
+                let state = world.registration();
+                evidence.insert("toolport-state".into(), state.clone());
+                ensure!(
+                    state["done"] == json!([])
+                        && state["skipped"] == json!({"claude": "toolport", "codex": "toolport"})
+                        && state["logon"] == true,
+                    "unexpected state after a served install: {state}"
+                );
+                // Claude Code のゲートウェイが消えたら、更新の適用（ensure）で直接登録に戻す。Codex は提供中のまま。
+                fs::remove_file(&claude_json)?;
+                let (code, _) = world.update_apply(&toolport_install, false)?;
+                ensure!(code == 0, "--update-apply exited with {code}");
+                let exe = World::exe(&toolport_install);
+                ensure!(
+                    World::points_at(&world.registry("claude"), &exe),
+                    "claude was not registered after the gateway disappeared"
+                );
+                ensure!(
+                    world.registry("codex").get("plumivox").is_none(),
+                    "codex must stay unregistered while Toolport serves it"
+                );
+                let state = world.registration();
+                evidence.insert("toolport-fallback-state".into(), state.clone());
+                ensure!(
+                    state["done"] == json!(["claude"])
+                        && state["skipped"] == json!({"codex": "toolport"}),
+                    "unexpected state after the fallback: {state}"
+                );
+                world.uninstall(&toolport_install)?;
+                // 以降の導入は Toolport なしの環境で行う。
+                fs::remove_file(&codex_toml)?;
+                fs::remove_file(&registry)?;
+                world.set_registry("claude", None)?;
+                Ok(())
+            }
+        );
+
         // ───── 2回目の導入: 旧 dist の置き換え・自分の登録の保持・フックの3秒打ち切り ─────
         let calls_before_second = world.calls()?.len();
         world.set_registry("claude", Some(&world.legacy))?;
@@ -1025,7 +1127,10 @@ mod windows_e2e {
         }
 
         // ───── 後片付けと本物の環境の不変 ─────
-        let leftovers = uninstall_leftovers(&world, &[first.clone(), second.clone()]);
+        let leftovers = uninstall_leftovers(
+            &world,
+            &[first.clone(), toolport_install.clone(), second.clone()],
+        );
         evidence.insert("leftover-uninstalls".into(), json!(leftovers));
         let _ = harness.close().await;
         case!(

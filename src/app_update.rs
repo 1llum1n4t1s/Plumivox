@@ -86,6 +86,10 @@ pub struct AutoUpdateSettings {
     pub last_checked_at: Option<u64>,
     /// 前回の確認に失敗した時刻（UNIX秒）。失敗しても24時間は再試行しない（起動の多い MCP が毎回通信しないため）。
     pub last_failed_at: Option<u64>,
+    /// Claude Code・Codex への MCP の直接登録の方針。未設定・不正値は `auto`。キー名は `mcp_registration`。
+    pub mcp_registration: McpRegistration,
+    /// `mcp_registration` に不正な値があった（`auto` として扱い、登録時に診断ログへ残す）。
+    pub mcp_registration_invalid: bool,
 }
 
 impl Default for AutoUpdateSettings {
@@ -94,6 +98,34 @@ impl Default for AutoUpdateSettings {
             auto_update: true,
             last_checked_at: None,
             last_failed_at: None,
+            mcp_registration: McpRegistration::Auto,
+            mcp_registration_invalid: false,
+        }
+    }
+}
+
+/// MCP の直接登録の方針（`app-update.json` の `mcp_registration`）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum McpRegistration {
+    /// Toolport ゲートウェイが既に提供していれば直接登録を省き、そうでなければ直接登録する（既定）。
+    Auto,
+    /// 常に直接登録する。
+    Direct,
+    /// 自動の追加・修復をしない（アンインストール時の解除は続ける）。
+    Off,
+}
+
+impl McpRegistration {
+    fn parse(value: Option<&Value>) -> (Self, bool) {
+        match value {
+            None | Some(Value::Null) => (Self::Auto, false),
+            Some(Value::String(text)) => match text.as_str() {
+                "auto" => (Self::Auto, false),
+                "direct" => (Self::Direct, false),
+                "off" => (Self::Off, false),
+                _ => (Self::Auto, true),
+            },
+            Some(_) => (Self::Auto, true),
         }
     }
 }
@@ -104,6 +136,8 @@ pub fn parse_settings(bytes: &[u8]) -> AutoUpdateSettings {
     let Ok(value) = serde_json::from_slice::<Value>(bytes) else {
         return AutoUpdateSettings::default();
     };
+    let (mcp_registration, mcp_registration_invalid) =
+        McpRegistration::parse(value.get("mcp_registration"));
     AutoUpdateSettings {
         auto_update: value
             .get("auto_update")
@@ -111,6 +145,8 @@ pub fn parse_settings(bytes: &[u8]) -> AutoUpdateSettings {
             .unwrap_or(true),
         last_checked_at: value.get("last_checked_at").and_then(Value::as_u64),
         last_failed_at: value.get("last_failed_at").and_then(Value::as_u64),
+        mcp_registration,
+        mcp_registration_invalid,
     }
 }
 
@@ -744,6 +780,31 @@ mod tests {
     }
 
     #[test]
+    fn mcp_registration_is_an_exact_lowercase_match_and_null_means_unset() {
+        let parse = |text: &str| parse_settings(text.as_bytes());
+        for (text, mode) in [
+            (r#"{"mcp_registration":"direct"}"#, McpRegistration::Direct),
+            (r#"{"mcp_registration":"off"}"#, McpRegistration::Off),
+            (r#"{"mcp_registration":"auto"}"#, McpRegistration::Auto),
+            (r#"{"mcp_registration":null}"#, McpRegistration::Auto),
+            (r#"{}"#, McpRegistration::Auto),
+        ] {
+            let parsed = parse(text);
+            assert_eq!(parsed.mcp_registration, mode);
+            assert!(!parsed.mcp_registration_invalid, "{text}");
+        }
+        for text in [
+            r#"{"mcp_registration":"OFF"}"#,
+            r#"{"mcp_registration":" off"}"#,
+            r#"{"mcp_registration":1}"#,
+        ] {
+            let parsed = parse(text);
+            assert_eq!(parsed.mcp_registration, McpRegistration::Auto);
+            assert!(parsed.mcp_registration_invalid, "{text}");
+        }
+    }
+
+    #[test]
     fn recording_keeps_other_keys_and_each_time_separately() {
         let dir = scratch("settings-record");
         fs::write(
@@ -782,6 +843,7 @@ mod tests {
             auto_update: true,
             last_checked_at: Some(now - day),
             last_failed_at: Some(now - day),
+            ..AutoUpdateSettings::default()
         };
         assert!(should_check(&due, now));
         // 失敗が新しければ、成功が古くても確認しない。逆も同じ。

@@ -48,7 +48,7 @@ codex plugin list --marketplace plumivox-local --json
 - 工作目录：用户的主目录
 - 请求超时：300000 毫秒（包括登录和中继的准备时间）
 
-在 Toolport 中为 Codex 使用的配置文件启用它，并用 `toolport_search_tools` 的 `server="plumivox"` 确认 11 个工具。搜索并调用 `list_accounts`，确认设置可以读取后再禁用直接连接。Setup 版使用 `codex mcp remove plumivox` 和 `claude mcp remove plumivox --scope user` 移除直接注册（注册完成一次之后，在用 Setup 重新安装之前不会自动重新注册）。插件版请在 Codex 的用户设置 `config.toml` 中添加以下内容，插件本体保持启用，以保留用于设置的技能。
+在 Toolport 中为 Codex 使用的配置文件启用它，并用 `toolport_search_tools` 的 `server="plumivox"` 确认 11 个工具。搜索并调用 `list_accounts`，确认设置可以读取后再禁用直接连接。Setup 版在全新安装时，如果客户端已经使用 Toolport 网关，且所用配置文件中已启用 `plumivox`，会自动省略直接注册（由 `app-update.json` 的 `mcp_registration` 控制：默认 `auto`，另有 `direct`、`off`；详见 [Toolport configuration](../configuration.md)）。如果是之后才添加 Toolport，请自行用 `codex mcp remove plumivox` 和 `claude mcp remove plumivox --scope user` 移除已有的直接注册；Setup 不会自行移除（注册完成后，在你用 Setup 重新安装之前不会自动重新注册；之后只会补上 Setup 当时跳过的客户端，例如 Toolport 网关之后从客户端中消失时，会在下次启动 Plumivox 或登录时直接注册）。在非 Windows 系统上不做判定，始终直接注册。插件版请在 Codex 的用户设置 `config.toml` 中添加以下内容，插件本体保持启用，以保留用于设置的技能。
 
 ```toml
 [plugins."plumivox@plumivox-local".mcp_servers.plumivox]

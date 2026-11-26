@@ -14,6 +14,8 @@ mod proxy_ipc;
 pub mod server;
 pub mod session;
 pub mod setup;
+// Toolport ゲートウェイが既に Plumivox を提供しているかの判定（Remnifold・Edictora と同一内容）。
+mod toolport;
 #[cfg(windows)]
 mod windows_identity;
 pub use server::{Options, run_stdio};
