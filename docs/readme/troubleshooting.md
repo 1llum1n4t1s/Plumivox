@@ -14,7 +14,7 @@ The `provider_message` candidates are `api_key`, `authentication`, `account_lock
 
 ## Text length and next step
 
-`INVALID_TEXT` for text over the weighted limit of 280 includes `weightedLength`, `maxWeightedLength`, and `excessWeightedLength`. `API_REJECTED`, `API_HTTP_ERROR`, and `POST_UNCERTAIN` at the post creation stage include a fixed English `nextStep`. See [When posting or authentication fails](when-posting-or-authentication-fails.md) for details.
+Weighted length fields of `INVALID_TEXT` and the fixed `nextStep` are described in [Posting error fields](posting-error-fields.md).
 
 ## Authentication errors
 
