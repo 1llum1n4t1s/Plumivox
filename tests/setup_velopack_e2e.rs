@@ -707,10 +707,10 @@ mod windows_e2e {
                 let fixture = world.root.join("toolport-fixture");
                 fs::create_dir_all(&fixture)?;
                 let gateway = fixture.join("toolport-gateway.exe");
-                // Setup の固定パスとは別の場所のコピー（ファイル名と --stdio で見る）。
-                let product = fixture.join("plumivox.exe");
+                // Toolport が提供する command は導入先の実行ファイルそのもの（別の場所のコピーだと
+                // `toolport-foreign` になり、直接登録の省略とは別の経路になる）。
+                let product = World::exe(&toolport_install);
                 fs::copy(&stub, &gateway)?;
-                fs::copy(&stub, &product)?;
                 let claude_json = env.join("claude-config").join(".claude.json");
                 let codex_toml = env.join("codex-home").join("config.toml");
                 let registry = env.join("appdata").join("Toolport").join("registry.json");

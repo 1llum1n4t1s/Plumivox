@@ -58,6 +58,7 @@
   "welcome.configured": "X 账号已设置完毕。可以在 Claude Code 和 Codex 的新会话中使用。",
   "welcome.installed": "Plumivox 已安装。已自动在 Claude Code 和 Codex 中注册为 MCP 服务器（仅限找到的 CLI）。",
   "welcome.legacy_plugin": "警告：旧版 Plumivox 插件在 {tools} 中仍处于启用状态。插件和此 Setup 注册可能会同时启动 Plumivox。请禁用插件的 MCP 或移除该插件（参见 README）。",
+  "welcome.toolport_foreign": "警告：在 {client} 中，Toolport 使用另一个 Plumivox 可执行文件（{command}）提供服务，因此 Setup 没有直接注册 Plumivox。Setup 不会更新那个副本。请将 Toolport 服务器的 command 改为 {executable}。",
   "welcome.press_enter": "按 Enter 关闭。",
   "welcome.setup_next": "接下来，请在终端运行 \"{executable}\" --setup 设置 X 账号（步骤见 README 的“初始设置”）。",
   "welcome.updates": "更新会自动下载，并在您登录电脑时应用。如需停用，请将 {settings} 中的 auto_update 设为 false。"

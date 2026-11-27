@@ -690,6 +690,25 @@ pub fn welcome(first_run: bool) {
             )
         );
     }
+    // 状態で `toolport-foreign`（Toolport が別の実行ファイルで提供していて直接登録を省いた）のクライアントだけ、
+    // 向け直しを案内する。表示する command は判定の結果から取る。
+    let own = executable.display().to_string();
+    let foreign = state_dir()
+        .map(|dir| registration::foreign_servers(&dir, &own))
+        .unwrap_or_default();
+    for (client, command) in foreign {
+        println!(
+            "{}",
+            tr_with(
+                "welcome.toolport_foreign",
+                &[
+                    ("client", client),
+                    ("command", &command),
+                    ("executable", &own)
+                ]
+            )
+        );
+    }
     let settings_hint = state_dir()
         .map(|dir| dir.join(SETTINGS_FILE).display().to_string())
         .unwrap_or_else(|| SETTINGS_FILE.to_string());

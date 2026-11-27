@@ -10,7 +10,7 @@ Updates are applied automatically at logon when Plumivox is not running, and uni
 
 Other command-line options of `plumivox.exe`: `--setup` (initial setup), `--uninstall-setup` (remove registrations), and `--rejection-log on|off|status|show|clear` (time-limited local log of redacted rejection text, off by default; see [Local rejection log](when-posting-or-authentication-fails.md#local-rejection-log)). The log is kept after uninstalling and is removed by `--rejection-log clear`.
 
-Migrating from the plugin: Setup does not disable the old plugin or change Toolport registrations (on a new install it skips the direct registration when Toolport already serves Plumivox; see [Toolport configuration](configuration.md)). To avoid starting Plumivox through two routes, follow [Migrating from the plugin to Setup](workflow.md).
+Migrating from the plugin: Setup does not disable the old plugin or change Toolport registrations (it skips the direct registration when Toolport already serves Plumivox, and warns when Toolport serves a different executable; if you use Toolport, change its `plumivox` command to `%LOCALAPPDATA%\PlumivoxApp\current\plumivox.exe` and do not copy the executable elsewhere; see [Toolport configuration](configuration.md)). To avoid starting Plumivox through two routes, follow [Migrating from the plugin to Setup](workflow.md).
 
 ## Install as a plugin (macOS / legacy method)
 

@@ -14,7 +14,7 @@
 //! # 軽くする工夫
 //! データフォルダーの `app-update\setup-registration.json` に、登録した実行ファイルのパス・版・登録済みの
 //! CLI を覚え、次の場合だけ処理する。普段の起動では、ファイル1つの読み込みと PATH の走査、旧プラグインの検知（[`super::legacy`]。設定ファイルを読むだけ）で終わる。
-//! ただし `skipped = toolport` の CLI が `auto` で残っているあいだは、起動のたびに CLI の有無に加えて、そのクライアントの
+//! ただし `skipped = toolport` / `toolport-foreign` の CLI が `auto` で残っているあいだは、起動のたびに CLI の有無に関係なく、そのクライアントの
 //! 設定ファイルと Toolport の registry も読んで、ゲートウェイが消えていないか確かめる（読むだけで書かない）。
 //!
 //! - パスが変わった（初回・導入先の移動）: ログオン時の適用と、見つかった全ての CLI を登録する。
@@ -26,8 +26,12 @@
 //!
 //! # Toolport ゲートウェイ経由の提供
 //! Toolport（[`crate::toolport`]）が既に Plumivox を提供している環境では、新しく直接登録を足さず、状態の
-//! `skipped` に理由（`toolport` / `off`）を残す。`app-update.json` の `mcp_registration`（`auto` 既定 /
-//! `direct` / `off`）で方針を変えられる。既に済んだ直接登録（`done`）は、どの方針でも外さない。
+//! `skipped` に理由（`toolport` / `toolport-foreign` / `off`）を残す。`app-update.json` の `mcp_registration`
+//! （`auto` 既定 / `direct` / `off`）で方針を変えられる。既に済んだ直接登録（`done`）は、どの方針でも外さない。
+//! `toolport` は、Toolport が自分と同じ実体の実行ファイルで提供している場合（`Served`）。別の実行ファイルで
+//! 提供している場合（`ServedElsewhere`）も直接登録は省くが、二重起動と古い複製を警告するため `toolport-foreign`
+//! として記録する（`app-update.log` と初回の案内に出す）。両方とも `auto` では起動のたびに判定し直し、
+//! `Served` ↔ `ServedElsewhere` で理由を書き換える（同じ理由のままなら何もしない）。
 //! 省いたあとにクライアントから Toolport ゲートウェイが消えたら（`NotConnected`）、`auto` では直接登録に戻す。
 use super::{McpRegistration, SetupContext, legacy, log_line, logon};
 use crate::{
@@ -50,6 +54,7 @@ const PRODUCT: Product = Product {
 
 /// 省いた理由。
 const SKIP_TOOLPORT: &str = "toolport";
+const SKIP_TOOLPORT_FOREIGN: &str = "toolport-foreign";
 const SKIP_OFF: &str = "off";
 
 /// CLI の名前から、Toolport の判定のクライアントを引く。
@@ -62,8 +67,30 @@ fn client_for(tool: &str) -> ClientId {
 }
 
 /// 実際の環境で、その CLI のクライアントへ Toolport が Plumivox を提供しているか判定する。
-fn detect_toolport(tool: &str) -> Detection {
-    toolport::detect(&PRODUCT, client_for(tool), &Env::process())
+/// `executable` は直接登録に使うのと同じ、この実行ファイルの絶対パス。
+fn detect_toolport(tool: &str, executable: &str) -> Detection {
+    toolport::detect(&PRODUCT, client_for(tool), &Env::process(), executable)
+}
+
+/// 状態で `toolport-foreign` として直接登録を省いた CLI と、判定が返す Toolport 側の command（初回の案内用）。
+/// 状態が `toolport-foreign` でない CLI（`direct`・`off`・`done` など）は、判定が ServedElsewhere でも案内しない。
+/// 状態は、案内の直前に [`ensure`] が書いたものを読む。
+pub fn foreign_servers(state_dir: &Path, executable: &str) -> Vec<(&'static str, String)> {
+    foreign_clients(&load(state_dir), |tool| detect_toolport(tool, executable))
+}
+
+fn foreign_clients(
+    state: &State,
+    detect: impl Fn(&str) -> Detection,
+) -> Vec<(&'static str, String)> {
+    connect::SETUP_TOOLS
+        .into_iter()
+        .filter(|tool| state.skipped.get(*tool).map(String::as_str) == Some(SKIP_TOOLPORT_FOREIGN))
+        .filter_map(|tool| match detect(tool) {
+            Detection::ServedElsewhere { command, .. } => Some((tool, command)),
+            _ => None,
+        })
+        .collect()
 }
 
 /// 判定結果の診断ログ1行（種類と、Unknown の理由。秘密値は含まない）。
@@ -73,6 +100,17 @@ fn detection_line(tool: &str, detection: &Detection) -> String {
             format!("{tool}: toolport detection {} ({reason})", detection.kind())
         }
         _ => format!("{tool}: toolport detection {}", detection.kind()),
+    }
+}
+
+/// 直接登録を省いた回の診断ログ1行。`toolport-foreign` は警告として出す（Toolport 側の command は書かない）。
+fn skip_line(label: &str, tool: &str, reason: &str, own: &str) -> String {
+    if reason == SKIP_TOOLPORT_FOREIGN {
+        format!(
+            "{label}: {tool}: Toolport serves a different plumivox executable; direct registration skipped. Point the Toolport server's command to {own}"
+        )
+    } else {
+        format!("{label}: {tool}: direct registration skipped ({reason})")
     }
 }
 
@@ -147,7 +185,9 @@ pub fn parse(bytes: &[u8]) -> State {
                 items
                     .iter()
                     .filter_map(|(tool, reason)| Some((tool.clone(), reason.as_str()?.to_owned())))
-                    .filter(|(_, reason)| reason == SKIP_TOOLPORT || reason == SKIP_OFF)
+                    .filter(|(_, reason)| {
+                        [SKIP_TOOLPORT, SKIP_TOOLPORT_FOREIGN, SKIP_OFF].contains(&reason.as_str())
+                    })
                     .collect()
             })
             .unwrap_or_default(),
@@ -212,10 +252,34 @@ fn decide_new(
     if needs_cli && !available(tool) {
         return Decision::Nothing;
     }
-    if mode == McpRegistration::Auto && matches!(served(tool), Detection::Served { .. }) {
-        return Decision::Skip(SKIP_TOOLPORT);
+    if mode == McpRegistration::Auto {
+        match served(tool) {
+            Detection::Served { .. } => return Decision::Skip(SKIP_TOOLPORT),
+            Detection::ServedElsewhere { .. } => return Decision::Skip(SKIP_TOOLPORT_FOREIGN),
+            _ => {}
+        }
     }
     Decision::Register
+}
+
+/// 理由が `toolport` / `toolport-foreign` で `auto` のときの見直し。CLI の有無に関係なく毎回判定し、
+/// 提供の形が変わったときだけ理由を書き換える。ゲートウェイが消えたときだけ（CLI があれば）直接登録に戻す。
+fn recheck_toolport(
+    current: &'static str,
+    tool: &'static str,
+    available: &impl Fn(&str) -> bool,
+    served: &impl Fn(&str) -> Detection,
+) -> Decision {
+    match served(tool) {
+        Detection::Served { .. } if current == SKIP_TOOLPORT_FOREIGN => {
+            Decision::Skip(SKIP_TOOLPORT)
+        }
+        Detection::ServedElsewhere { .. } if current == SKIP_TOOLPORT => {
+            Decision::Skip(SKIP_TOOLPORT_FOREIGN)
+        }
+        Detection::NotConnected if available(tool) => Decision::Register,
+        _ => Decision::Nothing,
+    }
 }
 
 /// 導入済み（状態のパスが今と同じ）の CLI の判断。`done` は、どの方針でも外さず触れない。
@@ -246,13 +310,11 @@ fn decide_existing(
                 Decision::Nothing
             }
         }
-        // auto: Toolport のゲートウェイが消えたときだけ直接登録に戻す。提供中・無効化・不明なら何もしない。
-        Some(SKIP_TOOLPORT) => {
-            if available(tool) && served(tool) == Detection::NotConnected {
-                Decision::Register
-            } else {
-                Decision::Nothing
-            }
+        // auto: Toolport のゲートウェイが消えたときだけ直接登録に戻す。提供の形（自分と同じ実体か別か）が
+        // 変わったときは理由だけを書き換える。無効化・不明なら何もしない。
+        Some(SKIP_TOOLPORT) => recheck_toolport(SKIP_TOOLPORT, tool, available, served),
+        Some(SKIP_TOOLPORT_FOREIGN) => {
+            recheck_toolport(SKIP_TOOLPORT_FOREIGN, tool, available, served)
         }
         // auto: off だったものは新規扱いで判定し直す。
         Some(_) => decide_new(tool, mode, true, available, served),
@@ -336,7 +398,7 @@ pub fn ensure(state_dir: &Path, context: &SetupContext, label: &str) {
         &context.version,
         mode,
         connect::cli_available,
-        detect_toolport,
+        |tool| detect_toolport(tool, &executable),
     )
     .is_none()
         && early.legacy == detected
@@ -358,7 +420,7 @@ pub fn ensure(state_dir: &Path, context: &SetupContext, label: &str) {
         mode,
         connect::cli_available,
         |tool| {
-            let detection = detect_toolport(tool);
+            let detection = detect_toolport(tool, &executable);
             detections
                 .borrow_mut()
                 .insert(tool.to_string(), detection.clone());
@@ -410,9 +472,7 @@ pub fn ensure(state_dir: &Path, context: &SetupContext, label: &str) {
     }
     for (tool, reason) in &plan.skip {
         state.skipped.insert(tool.to_string(), reason.to_string());
-        log_line(&format!(
-            "{label}: {tool}: direct registration skipped ({reason})"
-        ));
+        log_line(&skip_line(label, tool, reason, &executable));
     }
     for outcome in connect::register_tools_for_setup(&context.executable, &plan.tools) {
         if outcome.done {
@@ -677,6 +737,112 @@ mod tests {
         );
     }
 
+    fn elsewhere() -> Detection {
+        Detection::ServedElsewhere {
+            server_id: "plumivox".into(),
+            command: r"D:\Other\plumivox.exe".into(),
+        }
+    }
+
+    #[test]
+    fn a_foreign_toolport_server_is_recorded_and_re_checked_every_time() {
+        let auto = McpRegistration::Auto;
+        let both = |reason| [("claude", reason), ("codex", reason)];
+        // 新規 + ServedElsewhere: foreign を記録する。
+        assert_eq!(
+            plan_with(&State::default(), "1.0.0", auto, |_| true, elsewhere()),
+            Some(plan_of(&[], &both("toolport-foreign"), true, true))
+        );
+        let with = |reason: &str| State {
+            done: BTreeSet::new(),
+            skipped: skipped(&[("claude", reason), ("codex", reason)]),
+            ..registered()
+        };
+        // toolport + ServedElsewhere: foreign へ変える。
+        assert_eq!(
+            plan_with(&with("toolport"), "1.0.0", auto, |_| true, elsewhere()),
+            Some(plan_of(&[], &both("toolport-foreign"), false, false))
+        );
+        // foreign + Served: toolport へ戻す。
+        assert_eq!(
+            plan_with(&with("toolport-foreign"), "1.0.0", auto, |_| true, served()),
+            Some(plan_of(&[], &both("toolport"), false, false))
+        );
+        // foreign + ServedElsewhere / NotServed / Unknown / 無効: 何もしない。
+        for status in [
+            elsewhere(),
+            Detection::NotServed,
+            Detection::Unknown("x".into()),
+        ] {
+            assert_eq!(
+                plan_with(&with("toolport-foreign"), "1.0.0", auto, |_| true, status),
+                None
+            );
+        }
+        // foreign + NotConnected: CLI があれば直接登録し、無ければ何もしない（CLI が無くても判定はする）。
+        assert_eq!(
+            plan_with(
+                &with("toolport-foreign"),
+                "1.0.0",
+                auto,
+                |_| true,
+                Detection::NotConnected
+            ),
+            Some(plan_of(&["claude", "codex"], &[], false, false))
+        );
+        assert_eq!(
+            plan_with(
+                &with("toolport-foreign"),
+                "1.0.0",
+                auto,
+                |_| false,
+                Detection::NotConnected
+            ),
+            None
+        );
+        let probed = std::cell::Cell::new(0);
+        let none = plan(
+            &with("toolport-foreign"),
+            EXE,
+            "1.0.0",
+            auto,
+            |_| false,
+            |_| {
+                probed.set(probed.get() + 1);
+                elsewhere()
+            },
+        );
+        assert_eq!((none, probed.get()), (None, 2));
+        // foreign + direct は直接登録、off は何もしない。
+        assert_eq!(
+            plan_with(
+                &with("toolport-foreign"),
+                "1.0.0",
+                McpRegistration::Direct,
+                |_| true,
+                elsewhere()
+            ),
+            Some(plan_of(&["claude", "codex"], &[], false, false))
+        );
+        assert_eq!(
+            plan_with(
+                &with("toolport-foreign"),
+                "1.0.0",
+                McpRegistration::Off,
+                |_| true,
+                elsewhere()
+            ),
+            None
+        );
+        // 警告は Toolport 側の command を含めず、自分のパスを示す。
+        let line = skip_line("l", "claude", "toolport-foreign", EXE);
+        assert!(line.ends_with(EXE) && !line.contains("Other"));
+        assert_eq!(
+            skip_line("l", "claude", "toolport", EXE),
+            "l: claude: direct registration skipped (toolport)"
+        );
+    }
+
     #[test]
     fn mode_changes_never_remove_done_and_recheck_off_skips() {
         // 登録済み（done）は、どの方針・判定でも触れない。
@@ -810,10 +976,13 @@ mod tests {
         assert!(load(&dir).skipped.is_empty());
         fs::write(
             dir.join(STATE_FILE),
-            br#"{"executable":"x","skipped":{"claude":"toolport","codex":"weird"}}"#,
+            br#"{"executable":"x","skipped":{"claude":"toolport","codex":"weird","x":"toolport-foreign"}}"#,
         )
         .unwrap();
-        assert_eq!(load(&dir).skipped, skipped(&[("claude", "toolport")]));
+        assert_eq!(
+            load(&dir).skipped,
+            skipped(&[("claude", "toolport"), ("x", "toolport-foreign")])
+        );
         save(&dir, &state).unwrap();
         // 機械可読な形（旧プラグインの検知）がそのまま残る。
         let json: Value = serde_json::from_slice(&fs::read(dir.join(STATE_FILE)).unwrap()).unwrap();

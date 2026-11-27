@@ -58,6 +58,7 @@
   "welcome.configured": "X 帳號已設定完成。可在 Claude Code 與 Codex 的新工作階段中使用。",
   "welcome.installed": "Plumivox 已安裝。已自動在 Claude Code 與 Codex 中註冊為 MCP 伺服器（僅限找到的 CLI）。",
   "welcome.legacy_plugin": "警告：舊版 Plumivox 外掛在 {tools} 中仍處於啟用狀態。外掛與此 Setup 註冊可能會同時啟動 Plumivox。請停用外掛的 MCP 或移除該外掛（請參閱 README）。",
+  "welcome.toolport_foreign": "警告：在 {client} 中，Toolport 使用另一個 Plumivox 可執行檔（{command}）提供服務，因此 Setup 沒有直接註冊 Plumivox。Setup 不會更新那個副本。請將 Toolport 伺服器的 command 改為 {executable}。",
   "welcome.press_enter": "按 Enter 關閉。",
   "welcome.setup_next": "接下來，請在終端機執行 \"{executable}\" --setup 設定 X 帳號（步驟見 README 的「初始設定」）。",
   "welcome.updates": "更新會自動下載，並在您登入電腦時套用。若要停用，請將 {settings} 中的 auto_update 設為 false。"

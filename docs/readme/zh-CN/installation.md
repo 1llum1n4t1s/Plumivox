@@ -8,11 +8,11 @@
 
 更新是自动进行的。MCP 运行期间会从 R2（`https://plumivox-updates.kagayoi.com/velopack/`）获取新版本，并在登录电脑时，仅当 Plumivox（MCP、共享中继）未运行时才应用。如果正在运行，则推迟到下次登录，不会强制终止。应用前会确认签名者，不一致则不应用。要停止自动更新，请将 `%LOCALAPPDATA%\Kagayoi\Plumivox\app-update\app-update.json` 设为 `{"auto_update": false}`。运行记录位于同一文件夹下的 `app-update.log`。
 
-卸载时，在“设置”→“应用”列表中选择 Plumivox。卸载只会移除指向自身的 Claude Code、Codex 的 `plumivox` 注册以及登录时更新的注册，并保留设置和会话的数据文件夹（`%LOCALAPPDATA%\Kagayoi\Plumivox`）。如果只想先移除注册，可用 `plumivox.exe --uninstall-setup` 确认计划，再用 `--uninstall-setup --apply` 执行。
+卸载时，在“设置”→“应用”列表中选择 Plumivox。卸载只会移除指向自身的 Claude Code、Codex 的 `plumivox` 注册以及登录时更新的注册，并保留设置和会话的数据文件夹（`%LOCALAPPDATA%\Kagayoi\Plumivox`）。Toolport 中的 `plumivox` 条目会保留，请自行在 Toolport 中删除。如果只想先移除注册，可用 `plumivox.exe --uninstall-setup` 确认计划，再用 `--uninstall-setup --apply` 执行。
 
 `plumivox.exe` 的其他命令行选项：`--setup`（初始设置）、`--uninstall-setup`（移除注册）、`--rejection-log on|off|status|show|clear`（经遮蔽处理的拒绝文本的限时本地记录，默认关闭；参见[本地拒绝记录](when-posting-or-authentication-fails.md#本地拒绝记录)）。卸载后记录仍会保留，用 `--rejection-log clear` 删除。
 
-从插件（见下文）迁移时：Setup 会把指向旧插件 `dist` 等位置的同名 `plumivox` 注册替换为指向安装位置的注册。插件自身携带的 MCP（`plumivox@plumivox-local`）是另一个注册，为避免 Plumivox 通过两条途径启动，请将其禁用或移除该插件。在 Codex 中，添加与[Toolport 一节](#通过-toolport-使用)相同的 `enabled = false`（或移除插件）；在 Claude Code 中，通过 `/plugin` 禁用或卸载该插件。Codex 会优先使用同名注册而不是插件的 MCP，因此只要 Setup 的注册存在，通常只会启动一个，但 Claude Code 可能会同时启动两个。Setup 不会修改 Codex 或 Claude Code 的设置；如果插件仍处于启用状态，它只会发出警告（启动 Plumivox 时显示的指引、`app-update.log`，以及 `app-update\setup-registration.json` 中的 `legacyPlugins`）。Toolport 的注册同样不会被自动改写；如果使用 Toolport，请按照[Toolport 一节](#通过-toolport-使用)自行检查。
+从插件（见下文）迁移时：Setup 会把指向旧插件 `dist` 等位置的同名 `plumivox` 注册替换为指向安装位置的注册。插件自身携带的 MCP（`plumivox@plumivox-local`）是另一个注册，为避免 Plumivox 通过两条途径启动，请将其禁用或移除该插件。在 Codex 中，添加与[Toolport 一节](#通过-toolport-使用)相同的 `enabled = false`（或移除插件）；在 Claude Code 中，通过 `/plugin` 禁用或卸载该插件。Codex 会优先使用同名注册而不是插件的 MCP，因此只要 Setup 的注册存在，通常只会启动一个，但 Claude Code 可能会同时启动两个。Setup 不会修改 Codex 或 Claude Code 的设置；如果插件仍处于启用状态，它只会发出警告（启动 Plumivox 时显示的指引、`app-update.log`，以及 `app-update\setup-registration.json` 中的 `legacyPlugins`）。Toolport 的注册同样不会被自动改写；如果使用 Toolport，请按照[Toolport 一节](#通过-toolport-使用)自行检查。迁移到 Setup 时，请把 Toolport 中 `plumivox` 的命令改为 `%LOCALAPPDATA%\PlumivoxApp\current\plumivox.exe`（展开为实际路径）。不要把可执行文件复制到其他位置，副本不会被更新。即使 Toolport 以另一个可执行文件提供 `plumivox`，Setup 也会省略直接注册并发出警告（指引和 `app-update.log`，不记录 Toolport 一侧的命令）。把命令改指向上述路径后，每次启动时的判定会使警告消失。
 
 ## 通过插件安装（macOS、传统方式）
 
@@ -50,7 +50,7 @@ codex plugin list --marketplace plumivox-local --json
 - 工作目录：用户的主目录
 - 请求超时：300000 毫秒（包括登录和中继的准备时间）
 
-在 Toolport 中为 Codex 使用的配置文件启用它，并用 `toolport_search_tools` 的 `server="plumivox"` 确认 11 个工具。搜索并调用 `list_accounts`，确认设置可以读取后再禁用直接连接。Setup 版在全新安装时，如果客户端已经使用 Toolport 网关，且所用配置文件中已启用 `plumivox`，会自动省略直接注册（由 `app-update.json` 的 `mcp_registration` 控制：默认 `auto`，另有 `direct`、`off`；详见 [Toolport configuration](../configuration.md)）。如果是之后才添加 Toolport，请自行用 `codex mcp remove plumivox` 和 `claude mcp remove plumivox --scope user` 移除已有的直接注册；Setup 不会自行移除（注册完成后，在你用 Setup 重新安装之前不会自动重新注册；之后只会补上 Setup 当时跳过的客户端，例如 Toolport 网关之后从客户端中消失时，会在下次启动 Plumivox 或登录时直接注册）。判定在 Windows、macOS 和 Linux 上进行，其他操作系统不做判定，始终直接注册。插件版请在 Codex 的用户设置 `config.toml` 中添加以下内容，插件本体保持启用，以保留用于设置的技能。
+在 Toolport 中为 Codex 使用的配置文件启用它，并用 `toolport_search_tools` 的 `server="plumivox"` 确认 11 个工具。搜索并调用 `list_accounts`，确认设置可以读取后再禁用直接连接。Setup 版如果客户端已经使用 Toolport 网关，且所用配置文件中已启用 `plumivox`，会自动省略直接注册（由 `app-update.json` 的 `mcp_registration` 控制：默认 `auto`，另有 `direct`、`off`；详见 [Toolport configuration](../configuration.md)）。如果是之后才添加 Toolport，请自行用 `codex mcp remove plumivox` 和 `claude mcp remove plumivox --scope user` 移除已有的直接注册；Setup 不会自行移除（注册完成后，在你用 Setup 重新安装之前不会自动重新注册；之后只会补上 Setup 当时跳过的客户端，例如 Toolport 网关之后从客户端中消失时，会在下次启动 Plumivox 或登录时直接注册）。判定与操作系统无关，在 Windows、macOS 和 Linux 上按相同规则进行，其他操作系统不做判定，始终直接注册（Setup 本身目前只在 Windows 上分发）。如果 Toolport 以另一个可执行文件（旧插件的 `dist` 或副本等）提供 `plumivox`，同样会省略直接注册，记录为 `toolport-foreign` 并发出警告。请把 Toolport 中 `plumivox` 的命令改指向 `%LOCALAPPDATA%\PlumivoxApp\current\plumivox.exe`。每次启动时都会重新判定。插件版请在 Codex 的用户设置 `config.toml` 中添加以下内容，插件本体保持启用，以保留用于设置的技能。
 
 ```toml
 [plugins."plumivox@plumivox-local".mcp_servers.plumivox]
@@ -59,4 +59,4 @@ enabled = false
 
 重启 Codex 后直接连接即被禁用。此后的操作是在 Toolport 中搜索工具，并把返回的实际工具名传给 `toolport_call_tool`。API 密钥、Cookie 和 SSH 密钥从 Plumivox 的现有设置中读取，不会移到 Toolport 的参数中。
 
-插件版的更新通过上述 `codex plugin marketplace upgrade plumivox-local` 进行。Toolport 正在运行的服务器使用已加载的代码，因此更新后请在 Toolport 中禁用并重新启用 `plumivox`，以加载新的可执行文件。如果已获取根目录发生变化，也请修改已注册的命令。启动时不会进行 Git 获取或依赖安装。
+更新插件版时，为避免可执行文件被锁定而无法替换，请先在 Toolport 中禁用 `plumivox`，然后运行上述 `codex plugin marketplace upgrade plumivox-local`，最后重新启用，以加载新的可执行文件。如果已获取根目录发生变化，也请修改已注册的命令。启动时不会进行 Git 获取或依赖安装。

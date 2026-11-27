@@ -58,6 +58,7 @@
   "welcome.configured": "X 계정 설정이 이미 끝났습니다. Claude Code와 Codex의 새 세션에서 사용할 수 있습니다.",
   "welcome.installed": "Plumivox를 설치했습니다. Claude Code와 Codex에 MCP 서버로 자동 등록했습니다 (CLI를 찾은 것만).",
   "welcome.legacy_plugin": "경고: 이전 Plumivox 플러그인이 {tools}에서 계속 활성화되어 있습니다. 플러그인과 이 Setup 등록 양쪽에서 Plumivox가 시작될 수 있습니다. 플러그인의 MCP를 비활성화하거나 플러그인을 제거하세요(README 참조).",
+  "welcome.toolport_foreign": "경고: {client}에서 Toolport가 다른 Plumivox 실행 파일({command})로 제공하고 있어 Setup이 Plumivox를 직접 등록하지 않았습니다. 그 실행 파일은 Setup이 업데이트하지 않습니다. Toolport 서버의 command를 {executable}(으)로 바꾸세요.",
   "welcome.press_enter": "Enter를 누르면 닫힙니다.",
   "welcome.setup_next": "다음으로, 터미널에서 \"{executable}\" --setup 을 실행해 X 계정을 설정하세요 (절차는 README의 \"초기 설정\").",
   "welcome.updates": "업데이트는 자동으로 다운로드되고 컴퓨터에 로그온할 때 적용됩니다. 끄려면 {settings}의 auto_update를 false로 설정하세요."

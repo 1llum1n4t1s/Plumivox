@@ -58,6 +58,7 @@
   "welcome.configured": "Votre compte X est déjà configuré. Vous pouvez l'utiliser dans de nouvelles sessions Claude Code et Codex.",
   "welcome.installed": "Plumivox est installé. Il a été enregistré automatiquement comme serveur MCP dans Claude Code et Codex (pour chaque CLI trouvé).",
   "welcome.legacy_plugin": "Avertissement : l'ancien plugin Plumivox est toujours activé dans {tools}. Plumivox peut alors être lancé à la fois par le plugin et par cet enregistrement Setup. Désactivez le MCP du plugin ou supprimez le plugin (voir le README).",
+  "welcome.toolport_foreign": "Avertissement : Toolport fournit dans {client} un autre exécutable Plumivox ({command}), donc Setup n'a pas enregistré Plumivox directement. Setup ne met pas cette copie à jour. Faites pointer la commande (command) du serveur Toolport vers {executable}.",
   "welcome.press_enter": "Appuyez sur Entrée pour fermer.",
   "welcome.setup_next": "Ensuite, exécutez \"{executable}\" --setup dans un terminal pour configurer votre compte X (voir « Configuration initiale » dans le README).",
   "welcome.updates": "Les mises à jour sont téléchargées automatiquement et appliquées à l'ouverture de session sur votre ordinateur. Pour désactiver cela, définissez auto_update sur false dans {settings}."

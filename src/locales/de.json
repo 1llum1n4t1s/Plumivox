@@ -58,6 +58,7 @@
   "welcome.configured": "Ihr X-Konto ist bereits eingerichtet. Sie können es in neuen Sitzungen von Claude Code und Codex verwenden.",
   "welcome.installed": "Plumivox ist installiert. Es wurde automatisch als MCP-Server in Claude Code und Codex registriert (für jede gefundene CLI).",
   "welcome.legacy_plugin": "Warnung: Das alte Plumivox-Plugin ist in {tools} noch aktiviert. Plumivox kann dann sowohl vom Plugin als auch von dieser Setup-Registrierung gestartet werden. Deaktivieren Sie das MCP des Plugins oder entfernen Sie das Plugin (siehe README).",
+  "welcome.toolport_foreign": "Warnung: Toolport stellt in {client} eine andere Plumivox-Programmdatei bereit ({command}), daher hat Setup Plumivox nicht direkt registriert. Diese Kopie wird von Setup nicht aktualisiert. Richten Sie den Befehl (command) des Toolport-Servers auf {executable}.",
   "welcome.press_enter": "Drücken Sie die Eingabetaste, um zu schließen.",
   "welcome.setup_next": "Führen Sie als Nächstes \"{executable}\" --setup in einem Terminal aus, um Ihr X-Konto einzurichten (siehe „Ersteinrichtung“ in der README).",
   "welcome.updates": "Updates werden automatisch heruntergeladen und bei der Anmeldung am Computer angewendet. Um dies abzuschalten, setzen Sie auto_update in {settings} auf false."

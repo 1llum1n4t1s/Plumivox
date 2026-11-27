@@ -58,6 +58,7 @@
   "welcome.configured": "X のアカウント設定は済んでいます。Claude Code・Codex の新しいセッションで使えます。",
   "welcome.installed": "Plumivox を導入しました。Claude Code と Codex への MCP 登録は自動で済んでいます（CLI が見つかったものだけ）。",
   "welcome.legacy_plugin": "警告: 旧 Plumivox プラグインが {tools} で有効なままです。プラグインとこの Setup 登録の両方から Plumivox が起動する場合があります。プラグインの MCP を無効にするか、プラグインを外してください（README を参照）。",
+  "welcome.toolport_foreign": "警告: {client} では Toolport が別の Plumivox 実行ファイル（{command}）で提供しているため、Setup は Plumivox を直接登録しませんでした。その実行ファイルは Setup では更新されません。Toolport のサーバーの command を {executable} へ向け直してください。",
   "welcome.press_enter": "Enter で閉じます。",
   "welcome.setup_next": "次に、ターミナルで \"{executable}\" --setup を実行して X のアカウントを設定してください（手順は README の「初期設定」）。",
   "welcome.updates": "更新は自動で取得し、パソコンへのログオン時に適用します。止めるには {settings} の auto_update を false にしてください。"
