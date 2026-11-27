@@ -35,6 +35,7 @@ Rust/Cargo only via `cargo xtask`. See [development](docs/readme/development-and
 ## More documentation
 
 - [Updates and uninstall](docs/readme/updates-and-uninstall.md)
+- [Skipping direct registration when Toolport serves Plumivox](docs/readme/toolport-registration-skip.md)
 - [Workflow](docs/readme/workflow.md) and [commands](docs/readme/commands.md)
 - [Configuration](docs/readme/configuration.md) and [API reference](docs/readme/api-reference.md)
 - [Troubleshooting](docs/readme/troubleshooting.md), [posting error fields](docs/readme/posting-error-fields.md), and [image upload retries](docs/readme/image-upload-retries.md)
