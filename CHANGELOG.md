@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### 変更
+
+- Setup の MCP 登録での Toolport の判定を、Windows に加えて macOS・Linux でも行うようにしました。Toolport のゲートウェイが既に Plumivox を提供している環境では、macOS・Linux でも新しく直接登録を足しません。判定できない場合とその他の OS は従来どおり直接登録します。
+
 ## 1.0.19 - 2026-11-27
 
 ### 追加

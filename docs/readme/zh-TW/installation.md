@@ -50,7 +50,7 @@ codex plugin list --marketplace plumivox-local --json
 - 工作目錄：使用者的主目錄
 - 要求逾時：300000 毫秒（包含登入與中繼的準備時間）
 
-在 Toolport 中為 Codex 使用的設定檔啟用，並以 `toolport_search_tools` 的 `server="plumivox"` 確認 11 個工具。搜尋並呼叫 `list_accounts`，確認設定能讀取後，再停用直接連線。Setup 版在全新安裝時，若用戶端已使用 Toolport 閘道，且所用設定檔中已啟用 `plumivox`，會自動略過直接註冊（由 `app-update.json` 的 `mcp_registration` 控制：預設 `auto`，另有 `direct`、`off`；詳見 [Toolport configuration](../configuration.md)）。若是之後才加入 Toolport，請自行以 `codex mcp remove plumivox` 與 `claude mcp remove plumivox --scope user` 移除既有的直接註冊；Setup 不會自行移除（註冊完成後，在你以 Setup 重新安裝之前不會自動重新註冊；之後只會補上 Setup 當時略過的用戶端，例如 Toolport 閘道之後從用戶端中消失時，會在下次啟動 Plumivox 或登入時直接註冊）。在非 Windows 系統上不做判定，一律直接註冊。外掛程式版請在 Codex 的使用者設定 `config.toml` 中加入下列內容，並讓外掛程式本體保持啟用，以保留設定用技能。
+在 Toolport 中為 Codex 使用的設定檔啟用，並以 `toolport_search_tools` 的 `server="plumivox"` 確認 11 個工具。搜尋並呼叫 `list_accounts`，確認設定能讀取後，再停用直接連線。Setup 版在全新安裝時，若用戶端已使用 Toolport 閘道，且所用設定檔中已啟用 `plumivox`，會自動略過直接註冊（由 `app-update.json` 的 `mcp_registration` 控制：預設 `auto`，另有 `direct`、`off`；詳見 [Toolport configuration](../configuration.md)）。若是之後才加入 Toolport，請自行以 `codex mcp remove plumivox` 與 `claude mcp remove plumivox --scope user` 移除既有的直接註冊；Setup 不會自行移除（註冊完成後，在你以 Setup 重新安裝之前不會自動重新註冊；之後只會補上 Setup 當時略過的用戶端，例如 Toolport 閘道之後從用戶端中消失時，會在下次啟動 Plumivox 或登入時直接註冊）。判定在 Windows、macOS 與 Linux 上進行，其他作業系統不做判定，一律直接註冊。外掛程式版請在 Codex 的使用者設定 `config.toml` 中加入下列內容，並讓外掛程式本體保持啟用，以保留設定用技能。
 
 ```toml
 [plugins."plumivox@plumivox-local".mcp_servers.plumivox]

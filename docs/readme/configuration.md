@@ -22,7 +22,7 @@ Then search for tools in Toolport and pass the returned name to `toolport_call_t
 
 ## Skipping the direct registration (Setup version, Windows)
 
-Per client (Claude Code `~/.claude.json`, Codex `~/.codex/config.toml`), Setup skips the direct registration only when the Toolport gateway is registered and exists, and the Toolport registry has an enabled server launching `plumivox.exe --stdio` in that gateway's profiles. If this cannot be determined, or on other OSes, it registers directly. If the gateway or server executable later disappears, Setup registers directly at the next start or sign-in; it does not re-add clients you removed or servers you disabled in Toolport. Results are logged in `app-update.log`.
+Per client (Claude Code `~/.claude.json`, Codex `~/.codex/config.toml`), Setup skips the direct registration only when the Toolport gateway is registered and exists, and the Toolport registry has an enabled server in that gateway's profiles whose `command` file name (case-insensitive, with any `.exe` removed) is `plumivox` and which launches with `--stdio`. This check runs on Windows, macOS and Linux with the same rule; if it cannot be determined, or on any other OS, it registers directly. If the gateway or server executable later disappears, Setup registers directly at the next start or sign-in; it does not re-add clients you removed or servers you disabled in Toolport. Results are logged in `app-update.log`.
 
 Set `mcp_registration` in `app-update\app-update.json` in the data folder:
 

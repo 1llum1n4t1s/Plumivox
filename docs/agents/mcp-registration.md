@@ -11,7 +11,7 @@ Setup（Velopack）が Claude Code・Codex へ`plumivox`を登録する処理（
 
 ## Toolport 判定
 
-- Toolport の設定は書き換えない。クライアントごとに、ゲートウェイがあり（実行ファイルが実在し）、registry に`plumivox.exe`を`--stdio`で起動する有効なサーバーがあり、ゲートウェイのプロファイルで有効なら、`src/toolport.rs`が読み取りだけで「提供中」と判定し、直接登録を省いて状態の`skipped`に理由を残す。判定できなければ直接登録する。Windows以外は判定しない。quarantine は判定しない。
+- Toolport の設定は書き換えない。クライアントごとに、ゲートウェイがあり（実行ファイルが実在し）、registry に`command`のファイル名（大文字小文字を区別せず、`.exe`があれば除く）が`plumivox`で`--stdio`を付けて起動する有効なサーバーがあり、ゲートウェイのプロファイルで有効なら、`src/toolport.rs`が読み取りだけで「提供中」と判定し、直接登録を省いて状態の`skipped`に理由を残す。判定できなければ直接登録する。判定は Windows・macOS・Linux で行い（OS に依存せず、上のファイル名の規則で一致させる）、その他の OS は判定せず直接登録する。quarantine は判定しない。
 - `app-update.json`の`mcp_registration`: `auto`（既定）・`direct`・`off`。不正値は`auto`扱い。判定結果の種類・`Unknown`の理由・不正値は登録処理の前に1回`app-update.log`へ残す（秘密値は入れない）。
 - 既存の直接登録は外さない。一度直接登録したクライアントは外されても足し直さず、戻すのは省いたクライアントと前回未完了のクライアントだけ。省いた後にゲートウェイが消えた（サーバーが一致しても実行ファイルが無い場合を含む）ら、次の`ensure_registered`（引数なしの起動・stdio MCP・ログオン時の`--update-apply`）で直接登録し、Toolport側で無効化・削除した場合は足さない。
 - 状態の作り直し時に提供中なら CLI を呼ばないため、移動前の exe を指す直接登録は残る。

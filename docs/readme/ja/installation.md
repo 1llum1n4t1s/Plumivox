@@ -50,7 +50,7 @@ MCPだけをToolportへ登録できます。PlumivoxはToolportの登録を自�
 - 作業ディレクトリ: 利用者のホームディレクトリ
 - 要求タイムアウト: 300000ミリ秒（ログインや中継の準備時間を含む）
 
-ToolportでCodexが利用するプロファイルに有効化し、`toolport_search_tools`の`server="plumivox"`で11ツールを確認します。`list_accounts`を検索・呼出しし、設定が読み込めてから直接接続を無効にします。Setup版は、新規導入時にクライアントが既にToolportゲートウェイを使い、そのプロファイルで`plumivox`が有効なら、直接の登録を自動で省きます（`app-update.json`の`mcp_registration`で制御します。既定は`auto`、ほかに`direct`・`off`。詳細は[Toolport configuration](../configuration.md)）。Toolportを後から足した場合は、既存の直接登録を`codex mcp remove plumivox`と`claude mcp remove plumivox --scope user`で自分で外します。Setupが直接登録を外すことはありません（一度登録を済ませた後は、Setupで入れ直すまで自動では登録し直しません。後から戻すのはSetupが省いたクライアントだけで、たとえばToolportゲートウェイがクライアントから消えた場合に、次にPlumivoxが起動したときかサインイン時に直接登録します）。Windows以外では判定せず、常に直接登録します。プラグイン版はCodexのユーザー設定`config.toml`へ次を追加し、プラグイン本体は有効なままにして設定用スキルを残します。
+ToolportでCodexが利用するプロファイルに有効化し、`toolport_search_tools`の`server="plumivox"`で11ツールを確認します。`list_accounts`を検索・呼出しし、設定が読み込めてから直接接続を無効にします。Setup版は、新規導入時にクライアントが既にToolportゲートウェイを使い、そのプロファイルで`plumivox`が有効なら、直接の登録を自動で省きます（`app-update.json`の`mcp_registration`で制御します。既定は`auto`、ほかに`direct`・`off`。詳細は[Toolport configuration](../configuration.md)）。Toolportを後から足した場合は、既存の直接登録を`codex mcp remove plumivox`と`claude mcp remove plumivox --scope user`で自分で外します。Setupが直接登録を外すことはありません（一度登録を済ませた後は、Setupで入れ直すまで自動では登録し直しません。後から戻すのはSetupが省いたクライアントだけで、たとえばToolportゲートウェイがクライアントから消えた場合に、次にPlumivoxが起動したときかサインイン時に直接登録します）。判定はWindows・macOS・Linuxで行い、それ以外のOSでは判定せず、常に直接登録します。プラグイン版はCodexのユーザー設定`config.toml`へ次を追加し、プラグイン本体は有効なままにして設定用スキルを残します。
 
 ```toml
 [plugins."plumivox@plumivox-local".mcp_servers.plumivox]
