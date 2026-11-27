@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 1.0.21 - 2026-11-27
+
 ### 変更
 
 - Toolport が別の実行ファイルで Plumivox を提供している場合も、Setup は直接登録を省いたまま警告するようにしました。理由として `toolport-foreign` を記録し、起動のたびに判定し直します。警告は Plumivox を起動したときの案内と `app-update.log` に出し（`app-update.log` には Toolport 側の command を書きません。起動時の案内には表示します）、Toolport の `plumivox` の command を `%LOCALAPPDATA%\PlumivoxApp\current\plumivox.exe` へ向け直すよう案内します。実行ファイルを別の場所へコピーしないでください（コピーは更新されません）。
