@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 1.0.22 - 2026-11-29
+
 ### 追加
 
 - 連投や拒否直後の再送で X に自動化と判定されるのを防ぐため、X のアカウントごとに全セッション共通の投稿の冷却を足しました。前回の投稿の試みから5分以内、別の投稿を送信中、X に制限された後（15分から数時間）、成否不明・中断の後（15分）は、`post_tweet` は何も送らず `POST_COOLDOWN` と `cooldownReason`・`retryAfter`・`retryAfterSeconds` を返します。同じ本文でも重複としては止めません。冷却は MCP からは解除できず、`plumivox --post-guard status` で確認、`plumivox --post-guard clear [--account 設定名 | --user Xユーザー名]` で端末から確認入力して解除します。
