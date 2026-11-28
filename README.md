@@ -10,11 +10,11 @@ Windows x64 or an Apple Silicon Mac; no Node.js or Rust. You need a TwitterAPI.i
 
 ## Installation
 
-On Windows, run [PlumivoxApp-win-Setup.exe](https://plumivox-updates.kagayoi.com/velopack/PlumivoxApp-win-Setup.exe): a signed per-user install that registers `plumivox` with Claude Code and Codex. On macOS, install the Codex plugin from GitHub `main`. [Details](docs/readme/installation.md)
+On Windows, run [PlumivoxApp-win-Setup.exe](https://plumivox-updates.kagayoi.com/velopack/PlumivoxApp-win-Setup.exe) (signed, per-user). On macOS, install the Codex plugin from GitHub `main`. [Details](docs/readme/installation.md)
 
 ## Initial setup
 
-Run `plumivox.exe --setup` and follow the [setup guide](docs/setup.md). Settings stay outside the repository, secrets never go through the conversation, and existing settings are never overwritten. [Details](docs/readme/initial-setup.md)
+Run `plumivox.exe --setup` and follow the [setup guide](docs/setup.md). Secrets never go through the conversation. [Details](docs/readme/initial-setup.md)
 
 ## Available tools
 
