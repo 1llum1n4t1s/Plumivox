@@ -117,6 +117,8 @@ impl McpClient {
             "PLUMIVOX_DEFAULT_ACCOUNT",
             "PLUMIVOX_STATE_DIR",
             "PLUMIVOX_TEST_HOOKS",
+            // 冷却ガードの上書きは、必要なケースが環境で明示したときだけ有効にする（未設定は無効）。
+            "PLUMIVOX_POST_GUARD_TEST",
         ] {
             command.env_remove(key);
         }
@@ -274,6 +276,12 @@ impl McpClient {
 
     pub fn process_id(&self) -> Option<u32> {
         self.child.as_ref().and_then(Child::id)
+    }
+
+    /// 子プロセスを強制終了して終了を待つ（送信中の異常終了を再現する）。
+    pub async fn kill(&mut self) -> Result<()> {
+        let child = self.child.as_mut().context("MCP process already closed")?;
+        child.kill().await.context("Cannot kill MCP process")
     }
 
     pub fn stderr(&self) -> String {

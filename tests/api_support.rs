@@ -173,6 +173,10 @@ pub struct Mock {
     pub peak_logins: usize,
     pub body_stats: Arc<BodyStats>,
     pub login_held: bool,
+    /// `upload-hold` の画像アップロードを保留している間は真。偽にすると続きを返す。
+    pub hold: bool,
+    /// `upload-hold` が受け付けたアップロードの累計。
+    pub held: usize,
 }
 pub struct State {
     pub mock: Mutex<Mock>,
@@ -202,6 +206,23 @@ impl State {
         m.scenario = name.into();
         m.uploads = 0;
         m.login_held = false;
+        m.hold = false;
+    }
+    /// `upload-hold` の保留を始める（`false` で解除）。場面の指定より後に呼ぶ。
+    pub fn hold_uploads(&self, hold: bool) {
+        self.mock.lock().unwrap().hold = hold;
+    }
+    pub fn held_count(&self) -> usize {
+        self.mock.lock().unwrap().held
+    }
+    /// 保留中のアップロードが `before` 件より増えるまで待つ（期限は10秒）。
+    pub async fn wait_held(&self, before: usize) -> Result<()> {
+        let end = Instant::now() + Duration::from_secs(10);
+        while self.held_count() <= before {
+            ensure!(Instant::now() < end, "Mock did not hold an upload");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        Ok(())
     }
     pub fn trace(&self) -> Vec<Value> {
         self.mock.lock().unwrap().trace.clone()
@@ -294,6 +315,40 @@ pub async fn handle(state: Arc<State>, req: HttpRequest) -> io::Result<HttpRespo
     state.mock.lock().unwrap().trace.push(trace);
     let send = |v| Ok(support::json_response(200, v));
     if let Some(kind) = scenario.strip_prefix("rejection-") {
+        // 文面なしで数字のコードだけを返す場面、およびHTTP 400の `{error:int}`。
+        // 後者は提供元自身のコードかもしれないので、Xのコードとして扱われないことを確かめる。
+        match kind {
+            "code226" => return send(json!({"status":"error","code":226})),
+            "code344" => return send(json!({"status":"error","code":344})),
+            "code344s" => return send(json!({"status":"error","code":"344"})),
+            "code88" => return send(json!({"status":"error","code":88})),
+            "codeunknown" => return send(json!({"status":"error","code":999001})),
+            "xstatus" => return send(json!({"status":"error","x_status":"429"})),
+            "http400" => {
+                return Ok(support::json_response(
+                    400,
+                    json!({"error":226,"message":format!("Bad request {COOKIE}")}),
+                ));
+            }
+            // HTTP 400 の `detail` 欄へ、投稿本文・Cookie・利用者名・プロキシ・鍵などを混ぜる場面。
+            "http400detail" => {
+                return Ok(support::json_response(
+                    400,
+                    json!({"detail":format!(
+                        "Rejected: {}; again leak body sentence; cookie={COOKIE}; user Poster; via {PROXY}; {KEY} {PASSWORD} {SEED}",
+                        payload["tweet_text"].as_str().unwrap_or_default()
+                    )}),
+                ));
+            }
+            // 64KiB を超える2xx以外の本文（途中で切られるので JSON として読めず、文面なしの1件になる）。
+            "http400big" => {
+                return Ok(support::json_response(
+                    400,
+                    json!({"detail":"a".repeat(100_000)}),
+                ));
+            }
+            _ => {}
+        }
         // 提供元が応答文面へ投稿本文・Cookie・利用者名・プロキシを混ぜる場面。
         let leak = format!(
             "Rejected: {}; again leak body sentence; cookie={COOKIE}; user Poster; via {PROXY}",
@@ -308,6 +363,7 @@ pub async fn handle(state: Arc<State>, req: HttpRequest) -> io::Result<HttpRespo
             "automated" => (200, "Oops, your request looks like it might be automated."),
             "mixed" => (200, "ProxyError: read timed out"),
             "http402" => (402, "Credits is not enough.Please recharge"),
+            "http429" => (429, "Too Many Requests"),
             "http502" => (502, "Bad gateway"),
             _ => (200, "Unrecognized private refusal"),
         };
@@ -327,6 +383,16 @@ pub async fn handle(state: Arc<State>, req: HttpRequest) -> io::Result<HttpRespo
         && req.path.ends_with("/create_tweet_v2")
     {
         return Ok(support::json_response(502, json!({"message":COOKIE})));
+    }
+    // 投稿作成が502で、本文が終わらずにゆっくり届き続ける場面（記録有効時の本文の読み込み上限の確認）。
+    if scenario == "create502-stream" && req.path.ends_with("/create_tweet_v2") {
+        return Ok(stream(
+            502,
+            vec![Bytes::from_static(COOKIE.as_bytes())],
+            20,
+            true,
+            Arc::new(BodyStats::default()),
+        ));
     }
     if scenario.starts_with("upload-") && req.path.ends_with("/upload_media_v2") {
         let attempt = {
@@ -381,6 +447,14 @@ pub async fn handle(state: Arc<State>, req: HttpRequest) -> io::Result<HttpRespo
                 return send(
                     json!({"status":"error","message":"ProxyError: failed to connect to proxy"}),
                 );
+            }
+            // 解除されるか10秒たつまで応答を保留する。その後は通常の成功を返す。
+            "upload-hold" => {
+                state.mock.lock().unwrap().held += 1;
+                let end = Instant::now() + Duration::from_secs(10);
+                while state.mock.lock().unwrap().hold && Instant::now() < end {
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
             }
             "upload-authreject-always" => {
                 return send(json!({"status":"error","message":"Invalid login cookies"}));

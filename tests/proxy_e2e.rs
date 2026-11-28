@@ -4,8 +4,8 @@ mod support;
 use anyhow::{Context, ensure};
 use base64::{Engine, engine::general_purpose::STANDARD_NO_PAD};
 use proxy_support::{
-    Harness, Mode, active_is, gate_count, rejected_tunnel, rejected_tunnel_parts, release_gate,
-    state,
+    Harness, Mode, active_is, gate_count, rejected_tunnel, rejected_tunnel_parts, relay_cli,
+    release_gate, state,
 };
 use serde_json::{Value, json};
 use std::{fs, io::Write, sync::atomic::Ordering, time::Duration};
@@ -645,6 +645,113 @@ async fn native_shared_proxy_e2e() -> Result<()> {
             Ok(())
         });
     }
+    case!(
+        "relay log records daemon and relay transitions with fixed codes only",
+        {
+            let config = h.settings("relay-log", json!({})).await?;
+            let client = h.client_for(&config, &[]).await?;
+            h.success(client, "start_proxy", json!({"account":"managed"}))
+                .await?;
+            let before = h.ssh.attempts();
+            h.ssh.disconnect_all().await;
+            wait_until(Duration::from_secs(8), || async {
+                let ready = h
+                    .relay_events(client)?
+                    .iter()
+                    .filter(|event| event["event"] == "ready")
+                    .count();
+                Ok(h.ssh.attempts() > before && ready >= 2)
+            })
+            .await?;
+            h.success(client, "stop_proxy", json!({})).await?;
+            wait_until(Duration::from_secs(8), || async {
+                Ok(h.relay_events(client)?
+                    .iter()
+                    .any(|event| event["event"] == "daemon_stopped"))
+            })
+            .await?;
+            let events = h.relay_events(client)?;
+            let names: Vec<&str> = events
+                .iter()
+                .filter_map(|event| event["event"].as_str())
+                .collect();
+            ensure!(
+                names
+                    == [
+                        "daemon_started",
+                        "starting",
+                        "ready",
+                        "reconnecting",
+                        "ready",
+                        "stopped",
+                        "daemon_stopped"
+                    ],
+                "Unexpected relay events: {names:?}"
+            );
+            ensure!(
+                events[3]["code"] == "PROXY_CONNECT_FAILED" && events[3]["retry"] == 1,
+                "Reconnecting did not keep its fixed code and retry count"
+            );
+            ensure!(
+                events[6]["code"] == "shutdown",
+                "Daemon stop did not keep its reason"
+            );
+            // 記録に出せるのは固定の欄だけ。ホスト・ポート・ユーザー名・鍵・IP・指紋は含まない。
+            let allowed = ["schema", "at", "event", "config", "code", "retry"];
+            let text = fs::read_to_string(h.state_dir(client).join("relay").join("events.jsonl"))?;
+            for event in &events {
+                let object = event.as_object().context("Relay event is not an object")?;
+                ensure!(
+                    object.keys().all(|key| allowed.contains(&key.as_str())),
+                    "Relay event has an unexpected field"
+                );
+                ensure!(
+                    object["config"] == events[0]["config"]
+                        && object["config"].as_str().is_some_and(|id| {
+                            id.len() == 12 && id.bytes().all(|byte| byte.is_ascii_hexdigit())
+                        }),
+                    "Relay event does not carry one 12-digit configuration id"
+                );
+            }
+            let lower = text.to_ascii_lowercase();
+            ensure!(
+                !text.contains("127.0.0.1")
+                    && !lower.contains("fixture")
+                    && !text.contains(&h.ssh.pin)
+                    && !text.contains(h.ssh.pem.trim())
+                    && !text.contains(&config.local.to_string())
+                    && !text.contains(&config.remote.to_string())
+                    && h.secrets.iter().all(|secret| !text.contains(secret)),
+                "Relay log exposed an endpoint, user, key or credential"
+            );
+            // CLI は隔離した状態ルートの記録を表示する。記録が無いフォルダーでは「記録なし」を出す。
+            let (code, out, err) = relay_cli(&h.state_dir(client)).await?;
+            ensure!(code == 0, "relay-log show failed: {code}: {err}");
+            for expected in [
+                "event=daemon_started",
+                "event=reconnecting  code=PROXY_CONNECT_FAILED  retry=1",
+                "event=daemon_stopped  code=shutdown",
+            ] {
+                ensure!(
+                    out.contains(expected),
+                    "relay-log show lacks {expected}: {out}"
+                );
+            }
+            let empty = h.output.join("relay-empty-state");
+            fs::create_dir(&empty)?;
+            let (code, out, _) = relay_cli(&empty).await?;
+            ensure!(
+                code == 0 && out.contains("No relay events are recorded."),
+                "relay-log show without records: {code}: {out}"
+            );
+            ensure!(
+                !empty.join("relay").exists(),
+                "relay-log show created the relay folder"
+            );
+            h.close_client(client).await?;
+            Ok(())
+        }
+    );
     case!(
         "final MCP departure stops native daemon after idle period",
         {

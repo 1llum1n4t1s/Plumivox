@@ -446,13 +446,20 @@ impl Harness {
             ),
             ("PLUMIVOX_PROXY_TEST_IDLE_MS".into(), "2000".into()),
             ("PLUMIVOX_PROXY_TEST_STARTUP_MS".into(), "5000".into()),
+            // 共有daemonの中継の診断記録（`relay\events.jsonl`）を隔離した状態ルートへ書かせる。
+            // 試験用ビルドはこの変数が無いと記録を書かない（本物の保存先へ書かないため）。
+            (
+                "PLUMIVOX_STATE_DIR".into(),
+                self.state_dir(self.clients.len())
+                    .to_string_lossy()
+                    .into_owned(),
+            ),
         ];
         env.extend_from_slice(extra);
         let args = vec![
             self.api.base_url.clone(),
             config.file.to_string_lossy().into_owned(),
-            self.output
-                .join(format!("state-{}", self.clients.len()))
+            self.state_dir(self.clients.len())
                 .to_string_lossy()
                 .into_owned(),
             "15000".into(),
@@ -461,6 +468,21 @@ impl Harness {
         let id = self.clients.len();
         self.clients.push(client);
         Ok(id)
+    }
+    /// MCPクライアント `client`（番号）の隔離した状態ルート。
+    pub fn state_dir(&self, client: usize) -> PathBuf {
+        self.output.join(format!("state-{client}"))
+    }
+    /// そのクライアントが起動したdaemonの中継の診断記録。未作成なら空。
+    pub fn relay_events(&self, client: usize) -> Result<Vec<Value>> {
+        let path = self.state_dir(client).join("relay").join("events.jsonl");
+        if !path.exists() {
+            return Ok(Vec::new());
+        }
+        fs::read_to_string(&path)?
+            .lines()
+            .map(|line| Ok(serde_json::from_str(line)?))
+            .collect()
     }
     pub fn business(&self, raw: &Value) -> Result<Value> {
         let serialized = serde_json::to_string(raw)?;
@@ -535,6 +557,27 @@ impl Harness {
         );
         Ok(json!(diagnostics))
     }
+}
+
+/// `plumivox --relay-log show` を、隔離した状態ルートで実行する。(終了コード, 標準出力, 標準エラー)
+pub async fn relay_cli(root: &Path) -> Result<(i32, String, String)> {
+    let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_plumivox"));
+    #[cfg(windows)]
+    command.creation_flags(0x0800_0000);
+    let output = command
+        .args(["--relay-log", "show"])
+        .env("PLUMIVOX_STATE_DIR", root)
+        .env("PLUMIVOX_LANGUAGE", "en")
+        .stdin(std::process::Stdio::null())
+        .kill_on_drop(true)
+        .output()
+        .await
+        .context("Cannot run plumivox --relay-log show")?;
+    Ok((
+        output.status.code().unwrap_or(-1),
+        String::from_utf8_lossy(&output.stdout).into_owned(),
+        String::from_utf8_lossy(&output.stderr).into_owned(),
+    ))
 }
 
 pub fn state(value: &Value) -> &str {

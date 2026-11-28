@@ -25,6 +25,10 @@ enum Mode {
     UninstallSetup(Vec<String>),
     /// `--rejection-log <on [--days N]|off|status|show|clear>`。拒否文面のローカル記録の操作。
     RejectionLog(Vec<String>),
+    /// `--post-guard <status|clear [--account 設定名 | --user Xユーザー名]>`。投稿の冷却の確認と解除。
+    PostGuard(Vec<String>),
+    /// `--relay-log show`。管理プロキシの中継の出来事の記録の表示。
+    RelayLog(Vec<String>),
     /// `--help` / `-h`。使い方の表示（利用者の言語）。
     Help,
     /// 不明な引数。
@@ -37,6 +41,8 @@ fn parse(args: &[String]) -> Mode {
         [arg, rest @ ..] if arg == "--setup" => Mode::Setup(rest.to_vec()),
         [arg, rest @ ..] if arg == "--uninstall-setup" => Mode::UninstallSetup(rest.to_vec()),
         [arg, rest @ ..] if arg == "--rejection-log" => Mode::RejectionLog(rest.to_vec()),
+        [arg, rest @ ..] if arg == "--post-guard" => Mode::PostGuard(rest.to_vec()),
+        [arg, rest @ ..] if arg == "--relay-log" => Mode::RelayLog(rest.to_vec()),
         [arg] if arg == "--stdio" => Mode::Stdio,
         [arg] if arg == "--version" => Mode::Version,
         [arg] if arg == "--proxy-daemon" => Mode::ProxyDaemon,
@@ -84,8 +90,11 @@ fn main() {
     let startup = plumivox::app_update::startup();
     let args: Vec<String> = std::env::args().skip(1).collect();
     // 終了コードは、成功 0、保存先の異常 1、引数の誤り 2（他のサブコマンドは失敗を 1 にする）。
-    if let Mode::RejectionLog(rest) = parse(&args) {
-        std::process::exit(plumivox::rejection_log::run_cli(&rest));
+    match parse(&args) {
+        Mode::RejectionLog(rest) => std::process::exit(plumivox::rejection_log::run_cli(&rest)),
+        Mode::PostGuard(rest) => std::process::exit(plumivox::post_guard_cli::run_cli(&rest)),
+        Mode::RelayLog(rest) => std::process::exit(plumivox::relay_log::run_cli(&rest)),
+        _ => {}
     }
     let success = match parse(&args) {
         Mode::Default => {
@@ -172,7 +181,7 @@ fn main() {
             true
         }
         // 上で処理して終了済み。
-        Mode::RejectionLog(_) => true,
+        Mode::RejectionLog(_) | Mode::PostGuard(_) | Mode::RelayLog(_) => true,
         Mode::Usage => {
             eprintln!("{}", plumivox::locale::tr("cli.usage"));
             false
@@ -199,6 +208,14 @@ mod tests {
         assert_eq!(parse(&args(&["--proxy-daemon"])), Mode::ProxyDaemon);
         assert_eq!(parse(&args(&["--update-apply"])), Mode::UpdateApply);
         assert_eq!(parse(&args(&["--help"])), Mode::Help);
+        assert_eq!(
+            parse(&args(&["--post-guard", "status"])),
+            Mode::PostGuard(args(&["status"]))
+        );
+        assert_eq!(
+            parse(&args(&["--relay-log", "show"])),
+            Mode::RelayLog(args(&["show"]))
+        );
         assert_eq!(parse(&args(&["-h"])), Mode::Help);
         assert_eq!(
             parse(&args(&["--setup", "--check"])),

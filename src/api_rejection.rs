@@ -130,62 +130,157 @@ const MESSAGE_RULES: &[(&str, &[&str])] = &[
     ("post_id_missing", &["could not extract tweet_id"]),
 ];
 
-pub(crate) fn details(http_status: u16, body: Option<&Value>) -> Value {
-    let mut reasons = Vec::new();
-    if let Some(body) = body {
-        // 応答全体や資格情報フィールドを走査しない。対象フィールドも件数と
-        // UTF-8バイト数を制限し、巨大な生エラーの複製・解析を避ける。
-        let messages = [
-            &body["message"],
-            &body["msg"],
-            &body["error"],
-            &body["error"]["message"],
-        ]
-        .into_iter()
-        .chain(
-            body["errors"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .take(8)
-                .map(|e| &e["message"]),
-        )
-        .filter_map(Value::as_str)
-        .filter(|s| s.len() <= 4096)
-        .map(str::to_ascii_lowercase)
-        .collect::<Vec<_>>();
-        for (reason, patterns) in MESSAGE_RULES {
-            if messages
-                .iter()
-                .any(|message| patterns.iter().any(|pattern| message.contains(*pattern)))
-            {
-                reasons.push(*reason);
-            }
-        }
-    } else {
-        // 非2xxの本文はこれまでどおり読まずに破棄する。固定分類は公開された
-        // HTTPステータスの意味だけから付け、ストリーム停止・再試行条件を保つ。
-        reasons.push(match http_status {
-            400 => "invalid_request",
-            401 => "unauthorized",
-            402 => "credits",
-            403 => "forbidden",
-            404 => "endpoint_not_found",
-            429 => "rate_limit",
-            504 => "upstream_timeout",
-            500 | 502 | 503 => "upstream_unavailable",
-            _ => "unknown",
-        });
-    }
-    if reasons.is_empty() {
-        reasons.push("unknown");
-    }
-    json!({"httpStatus":http_status,"rejectionReasons":reasons,
-        "rejectionReasonSource":if body.is_some(){"provider_message"}else{"http_status"}})
+/// 数字のコードと、それが示す固定の分類。
+/// 提供元（TwitterAPI.io）のブログが明記しているのは 226（自動化の疑い）だけで、
+/// 他は X の v1.1／GraphQL の慣例に基づく。提供元経由で実際に出るかは未確認。
+/// 表にないコードは分類に使わず、MCP応答にも出さない（拒否記録の `provider_codes` にだけ残す）。
+const CODE_REASONS: &[(u32, &str)] = &[
+    (226, "automation_suspected"),
+    (344, "daily_limit"),
+    (185, "daily_limit"),
+    (187, "duplicate"),
+    (186, "text_too_long"),
+    (326, "account_locked"),
+    (64, "account_suspended"),
+    (88, "rate_limit"),
+    (32, "authentication"),
+    (215, "authentication"),
+    (89, "session_mismatch"),
+    (353, "session_mismatch"),
+    (324, "media"),
+];
+
+fn code_reason(code: u32) -> Option<&'static str> {
+    CODE_REASONS
+        .iter()
+        .find_map(|(c, reason)| (*c == code).then_some(*reason))
 }
 
-const NEXT_STEP_UNCERTAIN: &str = "The post may have been created. Do not call post_tweet again yet. Wait several minutes, then call get_my_posts for this account and look for this text. Resend only if it is still absent and the user still wants it; immediate resends have been rejected again.";
-const NEXT_STEP_THROTTLED: &str = "X appears to be limiting posts from this account. Do not resend right away. Tell the user, wait several minutes or longer, and call get_my_posts to check whether the post exists before any resend.";
+/// 整数、または6桁以下の数字だけの文字列を数として読む（型が未確認のため両方を受ける）。
+fn parse_number(v: &Value) -> Option<u32> {
+    let number = match v {
+        Value::Number(n) => n.as_u64().and_then(|c| u32::try_from(c).ok()),
+        Value::String(s)
+            if !s.is_empty() && s.len() <= 6 && s.bytes().all(|b| b.is_ascii_digit()) =>
+        {
+            s.parse().ok()
+        }
+        _ => None,
+    };
+    number.filter(|c| *c <= 999_999)
+}
+
+/// 提供元が本文で返す、X 由来のHTTPステータス（`x_status`）。100〜599だけ受ける。
+fn read_x_status(body: &Value) -> Option<u16> {
+    parse_number(&body["x_status"])
+        .filter(|s| (100..=599).contains(s))
+        .and_then(|s| u16::try_from(s).ok())
+}
+
+/// 本文の文面から、固定の分類候補を付ける。
+fn message_reasons(body: &Value) -> Vec<&'static str> {
+    // 応答全体や資格情報フィールドを走査しない。対象フィールドも件数と
+    // UTF-8バイト数を制限し、巨大な生エラーの複製・解析を避ける。
+    let messages = [
+        &body["message"],
+        &body["msg"],
+        &body["error"],
+        &body["error"]["message"],
+    ]
+    .into_iter()
+    .chain(
+        body["errors"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .take(8)
+            .map(|e| &e["message"]),
+    )
+    .filter_map(Value::as_str)
+    .filter(|s| s.len() <= 4096)
+    .map(str::to_ascii_lowercase)
+    .collect::<Vec<_>>();
+    MESSAGE_RULES
+        .iter()
+        .filter(|(_, patterns)| {
+            messages
+                .iter()
+                .any(|message| patterns.iter().any(|pattern| message.contains(*pattern)))
+        })
+        .map(|(reason, _)| *reason)
+        .collect()
+}
+
+/// 非2xxの本文はここでは読まない。固定分類は公開されたHTTPステータスの意味だけから付け、
+/// ストリーム停止・再試行条件を保つ（本文の文面は記録有効時にだけ別に読む）。
+fn status_reason(http_status: u16) -> &'static str {
+    match http_status {
+        400 => "invalid_request",
+        401 => "unauthorized",
+        402 => "credits",
+        403 => "forbidden",
+        404 => "endpoint_not_found",
+        429 => "rate_limit",
+        504 => "upstream_timeout",
+        500 | 502 | 503 => "upstream_unavailable",
+        _ => "unknown",
+    }
+}
+
+/// 拒否の分類を返す。`body` は2xxで拒否を示した本文だけ（非2xxは None）。
+///
+/// 本文があるときは、文面の部分一致の分類と、数字のコード（最上位の `code`・`errors[].code`）・
+/// `x_status` 由来の分類の和集合を返す。コードか `x_status` 由来の分類が1つでもあれば
+/// `rejectionReasonSource` は `provider_code`。MCP応答に出すのは、表にあるコードの `xErrorCode`
+/// （最初の1つ）と `x_status` の `xHttpStatus` だけで、表にない生のコードは出さない。
+/// `xRejected: true` は、`x_status` か数字のコード（表にないものを含む）があり、
+/// 分類できなくても X 側の拒否と分かることを示す（冷却の判定用。`is_x_rejected` で読む）。
+pub(crate) fn details(http_status: u16, body: Option<&Value>) -> Value {
+    let Some(body) = body else {
+        return json!({"httpStatus":http_status,"rejectionReasons":[status_reason(http_status)],
+            "rejectionReasonSource":"http_status"});
+    };
+    let mut reasons = message_reasons(body);
+    let codes = read_codes(body);
+    let x_status = read_x_status(body);
+    let mut from_code = false;
+    for reason in codes.iter().filter_map(|c| code_reason(*c)) {
+        from_code = true;
+        if !reasons.contains(&reason) {
+            reasons.push(reason);
+        }
+    }
+    if reasons.is_empty() {
+        let fallback = match x_status {
+            Some(429) => Some("rate_limit"),
+            Some(401) => Some("authentication"),
+            _ => None,
+        };
+        from_code |= fallback.is_some();
+        reasons.push(fallback.unwrap_or("unknown"));
+    }
+    let mut out = json!({"httpStatus":http_status,"rejectionReasons":reasons,
+        "rejectionReasonSource":if from_code{"provider_code"}else{"provider_message"}});
+    if let Some(code) = codes.iter().find(|c| code_reason(**c).is_some()) {
+        out["xErrorCode"] = json!(code);
+    }
+    if let Some(status) = x_status {
+        out["xHttpStatus"] = json!(status);
+    }
+    if x_status.is_some() || !codes.is_empty() {
+        out["xRejected"] = json!(true);
+    }
+    out
+}
+
+/// 分類はできなくても、X が拒否したと分かる応答か（`details` の `xRejected`）。
+/// 分類（`rejectionReasons`）で足りない冷却の判定に使う。
+pub(crate) fn is_x_rejected(details: &Value) -> bool {
+    details["xRejected"] == true
+}
+
+const NEXT_STEP_UNCERTAIN: &str = "The post may have been created. Do not call post_tweet again yet. Wait several minutes, then call get_my_posts for this account and look for this text. Resend only if it is still absent and the user still wants it, and if the response has retryAfter, only after that time (you may call get_my_posts before it); immediate resends have been rejected again.";
+const NEXT_STEP_THROTTLED: &str = "X appears to be limiting posts from this account. Do not resend right away. If the response has retryAfter, do not call post_tweet again until that time and tell the user. Tell the user, wait several minutes or longer, and call get_my_posts to check whether the post exists before any resend.";
 const NEXT_STEP_OTHER: &str = "Call get_my_posts for this account to check whether the post exists before calling post_tweet again. Do not resend repeatedly.";
 
 /// 投稿作成段階の失敗に付ける、AI向けの固定の次の手順。対象外のコードはNone。
@@ -200,7 +295,12 @@ pub(crate) fn post_creation_next_step(code: &str, details: &Value) -> Option<&'s
     };
     Some(if code == "POST_UNCERTAIN" || has("post_id_missing") {
         NEXT_STEP_UNCERTAIN
-    } else if has("automation_suspected") || has("rate_limit") || has("daily_limit") {
+    } else if has("automation_suspected")
+        || has("rate_limit")
+        || has("daily_limit")
+        || has("account_locked")
+        || has("account_suspended")
+    {
         NEXT_STEP_THROTTLED
     } else {
         NEXT_STEP_OTHER
@@ -497,6 +597,7 @@ fn read_fields(body: &Value) -> Vec<(String, &str)> {
     push(&mut out, "msg".into(), &body["msg"]);
     push(&mut out, "error".into(), &body["error"]);
     push(&mut out, "error.message".into(), &body["error"]["message"]);
+    push(&mut out, "detail".into(), &body["detail"]);
     let errors = body["errors"].as_array().into_iter().flatten().take(8);
     for (i, e) in errors.enumerate() {
         push(&mut out, format!("errors[{i}].message"), &e["message"]);
@@ -513,9 +614,7 @@ fn read_codes(body: &Value) -> Vec<u32> {
         .map(|e| &e["code"]);
     std::iter::once(&body["code"])
         .chain(errors)
-        .filter_map(Value::as_u64)
-        .filter(|c| *c <= 999_999)
-        .filter_map(|c| u32::try_from(c).ok())
+        .filter_map(parse_number)
         .collect()
 }
 
@@ -591,9 +690,16 @@ mod tests {
             step("API_REJECTED", &["automation_suspected", "post_id_missing"]),
             NEXT_STEP_UNCERTAIN
         );
-        for reason in ["automation_suspected", "rate_limit", "daily_limit"] {
+        for reason in [
+            "automation_suspected",
+            "rate_limit",
+            "daily_limit",
+            "account_locked",
+            "account_suspended",
+        ] {
             assert_eq!(step("API_HTTP_ERROR", &[reason]), NEXT_STEP_THROTTLED);
         }
+        assert!(NEXT_STEP_THROTTLED.contains("retryAfter"));
         assert_eq!(step("API_REJECTED", &["proxy"]), NEXT_STEP_OTHER);
         assert_eq!(
             post_creation_next_step("API_REJECTED", &json!({})),
@@ -699,6 +805,88 @@ mod tests {
                 json!({"httpStatus":status,"rejectionReasons":[reason],"rejectionReasonSource":"http_status"})
             );
         }
+    }
+
+    #[test]
+    fn numeric_codes_and_x_status_classify_without_exposing_unknown_codes() {
+        let d = |body: Value| details(200, Some(&body));
+        // 表のコード（整数でも6桁以下の数字文字列でも）。文面なしでも分類できる。
+        for (code, reason) in [
+            (json!(226), "automation_suspected"),
+            (json!("344"), "daily_limit"),
+            (json!(185), "daily_limit"),
+            (json!(187), "duplicate"),
+            (json!(186), "text_too_long"),
+            (json!(326), "account_locked"),
+            (json!(64), "account_suspended"),
+            (json!(88), "rate_limit"),
+            (json!(32), "authentication"),
+            (json!(215), "authentication"),
+            (json!(89), "session_mismatch"),
+            (json!(353), "session_mismatch"),
+            (json!(324), "media"),
+        ] {
+            let v = d(json!({"status":"error","code":code}));
+            assert_eq!(v["rejectionReasons"], json!([reason]));
+            assert_eq!(v["rejectionReasonSource"], "provider_code");
+            let n = code
+                .as_u64()
+                .or_else(|| code.as_str().and_then(|s| s.parse().ok()))
+                .unwrap();
+            assert_eq!(v["xErrorCode"], json!(n));
+            assert!(is_x_rejected(&v));
+        }
+        // errors[].code も読む。文面の分類とは和集合（重複なし）。
+        let v = d(
+            json!({"message":"Oops, it might be automated.","errors":[{"code":226},{"code":"88"}]}),
+        );
+        assert_eq!(
+            v["rejectionReasons"],
+            json!(["automation_suspected", "rate_limit"])
+        );
+        assert_eq!(v["rejectionReasonSource"], "provider_code");
+        assert_eq!(v["xErrorCode"], 226);
+        // 表にないコードは分類・応答に出さず、X の拒否と分かる事実だけを残す。
+        let v = d(json!({"status":"error","code":999001}));
+        assert_eq!(
+            v,
+            json!({"httpStatus":200,"rejectionReasons":["unknown"],"rejectionReasonSource":"provider_message","xRejected":true})
+        );
+        assert!(!v.to_string().contains("999001"));
+        // 数でないもの・範囲外・7桁以上の文字列は読まない。
+        for code in [
+            json!("ProxyError"),
+            json!(1_000_000),
+            json!("1234567"),
+            json!(""),
+            json!(-1),
+        ] {
+            let v = d(json!({"code":code}));
+            assert!(!is_x_rejected(&v), "{code}");
+        }
+        // x_status は100〜599だけ受け、理由が無いときだけ 429・401 から分類する。
+        let v = d(json!({"x_status":"429"}));
+        assert_eq!(v["rejectionReasons"], json!(["rate_limit"]));
+        assert_eq!(v["rejectionReasonSource"], "provider_code");
+        assert_eq!(v["xHttpStatus"], 429);
+        assert!(v.get("xErrorCode").is_none());
+        assert_eq!(
+            d(json!({"x_status":401}))["rejectionReasons"],
+            json!(["authentication"])
+        );
+        let v = d(json!({"x_status":500}));
+        assert_eq!(v["rejectionReasons"], json!(["unknown"]));
+        assert_eq!(v["rejectionReasonSource"], "provider_message");
+        assert!(is_x_rejected(&v));
+        let v = d(json!({"message":"Too Many Requests","x_status":401}));
+        assert_eq!(v["rejectionReasons"], json!(["rate_limit"]));
+        assert_eq!(v["rejectionReasonSource"], "provider_message");
+        for status in [json!(99), json!(600), json!("abc")] {
+            assert!(d(json!({"x_status":status})).get("xHttpStatus").is_none());
+        }
+        // 非2xxは本文を読まないので、コードも X のものとして扱わない。
+        let v = details(400, None);
+        assert!(v.get("xRejected").is_none() && v.get("xErrorCode").is_none());
     }
 
     fn first_text(body: &Value, known: &[&str], post: Option<&str>) -> String {

@@ -11,11 +11,16 @@ mod connect;
 pub mod error;
 // 人が読む文言（CLI・セットアップ・Setup 版の案内）の9言語辞書と言語判定。MCP の経路からは使わない。
 pub mod locale;
+// X のユーザー名ごとの投稿の一時停止（冷却）。全プロセス共通の状態ファイルで管理する。
+mod post_guard;
+pub mod post_guard_cli;
 pub mod proxy;
 mod proxy_egress;
 mod proxy_ipc;
 // 提供元の拒否文面のローカル記録（既定は無効。`--rejection-log` で期限付きに有効化）。
 pub mod rejection_log;
+// 管理プロキシの中継の出来事の診断記録（常に記録。`--relay-log show` で閲覧）。
+pub mod relay_log;
 pub mod server;
 pub mod session;
 pub mod setup;

@@ -60,6 +60,12 @@ VPSの専用SSHユーザーには`ClientAliveInterval 15`・`ClientAliveCountMax
 
 以前の構築にはこの生存確認設定がない場合があります。VPSで`sudo sshd -T -C user=plumivox,host=localhost,addr=127.0.0.1`を実行し、実際の専用ユーザーに対する`clientaliveinterval 15`・`clientalivecountmax 3`を確認します（`plumivox`は自分のSSHユーザー名に置換）。SSHのreloadだけでは既存セッションへ適用されません。応答しない旧接続と確認できた場合だけ所有者が終了し、新しい接続で確認します。初期インストーラーは変更済み・旧版の管理対象を自動で上書きしません。
 
+## 中継の出来事の記録
+
+共有daemonと中継の出来事を、固定のコードと時刻だけで常に記録します（有効化の操作はありません）。記録するのは、daemonの起動・終了（`daemon_started`・`daemon_stopped`）と、中継の状態の移り変わり（starting・ready・reconnecting・failed・stopped）です。ホスト・ポート・鍵・ユーザー名・IP、提供元やSSHの生のエラー文は残しません。設定の違いは、設定のSHA-256の先頭12桁で見分けます。古さ14日・500件・128KiBを超えたら古いものから消します。書き込みの失敗は無視し、中継の処理を止めたり遅らせたりしません。
+
+保存先は状態ルート（[設定](configuration.md#投稿の一時停止と中継の記録の設定)を参照）の`relay\events.jsonl`で、閲覧は`plumivox --relay-log show`だけです（MCPツールはありません。記録が無ければその旨を表示し、フォルダーも作りません）。投稿の拒否が増えた時期に、経路の再接続があったかを後から確かめるための記録です。CLIとMCPサーバーで`PLUMIVOX_STATE_DIR`が違うと、見る場所がずれます。
+
 ## 旧タスクから切り替える
 
 旧JavaScript版から更新する場合も、更新前のチャットで`stop_proxy`を実行して中継を停止し、Codex／Toolportを再起動してください。旧daemonのIPCはネイティブ版とは別で、旧プロセスがポートを保持したままだと新しい中継は起動できません。公開proxy URLとSSH鍵・中継設定は維持できます。旧Nodeランチャーは廃止しました。`node .../dist/plumivox.mjs`を使う登録は、[READMEのToolport設定](readme/ja/installation.md#toolport経由で使う場合)に従い、Windowsは`dist/plumivox.exe`、macOSは`dist/plumivox`をコマンド、`--stdio`を引数として指定してください。プラグイン経由の現在の登録はネイティブ実行ファイルを直接起動します。

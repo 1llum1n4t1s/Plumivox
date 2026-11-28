@@ -2,6 +2,7 @@ use crate::{
     client::{PostRejection, PreparedPost, Recorder, TwitterApiClient},
     config::AccountStore,
     error::{AppError, Result},
+    post_guard,
     proxy::SharedProxyManager,
     rejection_log,
 };
@@ -366,8 +367,22 @@ impl Server {
                     .api
                     .prepare_post(&selected, input, cancel.clone())
                     .await?;
-                self.ensure_proxy(&selected, cancel.clone()).await?;
-                self.send_recorded(&selected, prepared, cancel).await
+                // 冷却中・別の投稿が送信中なら、ここで断る（何も送らず、課金も発生させない）。
+                let user_name = selected["userName"].as_str().unwrap_or_default();
+                // 状態ファイルにはユーザー名を残さない（設定名がユーザー名を含むだけでも `<user>` にする）。
+                let label = recorded_account(
+                    selected["account"].as_str().unwrap_or_default(),
+                    Some(user_name),
+                    &[user_name.to_owned()],
+                );
+                let guard =
+                    post_guard::acquire(self.accounts.sessions.root(), user_name, &label).await?;
+                if let Err(error) = self.ensure_proxy(&selected, cancel.clone()).await {
+                    post_guard::release(guard).await;
+                    return Err(error);
+                }
+                let result = self.send_recorded(&selected, prepared, cancel).await;
+                post_guard::finish(guard, result).await
             }
             _ => {
                 let selected = self.accounts.get_read_account(account).await?;

@@ -10,7 +10,7 @@
 
 卸载时，在“设置”→“应用”列表中选择 Plumivox。卸载只会移除指向自身的 Claude Code、Codex 的 `plumivox` 注册以及登录时更新的注册，并保留设置和会话的数据文件夹（`%LOCALAPPDATA%\Kagayoi\Plumivox`）。Toolport 中的 `plumivox` 条目会保留，请自行在 Toolport 中删除。如果只想先移除注册，可用 `plumivox.exe --uninstall-setup` 确认计划，再用 `--uninstall-setup --apply` 执行。
 
-`plumivox.exe` 的其他命令行选项：`--setup`（初始设置）、`--uninstall-setup`（移除注册）、`--rejection-log on|off|status|show|clear`（经遮蔽处理的拒绝文本的限时本地记录，默认关闭；参见[本地拒绝记录](when-posting-or-authentication-fails.md#本地拒绝记录)）。卸载后记录仍会保留，用 `--rejection-log clear` 删除。
+`plumivox.exe` 的其他命令行选项：`--setup`（初始设置）、`--uninstall-setup`（移除注册）、`--rejection-log on|off|status|show|clear`（经遮蔽处理的拒绝文本的限时本地记录，默认关闭；参见[本地拒绝记录](when-posting-or-authentication-fails.md#本地拒绝记录)）。卸载后记录仍会保留，用 `--rejection-log clear` 删除。`--post-guard status|clear [--account NAME | --user NAME]` 用于查看和解除发帖暂停（参见[发帖暂停](when-posting-or-authentication-fails.md#发帖暂停)），`--relay-log show` 用于显示托管代理中继的事件记录。
 
 从插件（见下文）迁移时：Setup 会把指向旧插件 `dist` 等位置的同名 `plumivox` 注册替换为指向安装位置的注册。插件自身携带的 MCP（`plumivox@plumivox-local`）是另一个注册，为避免 Plumivox 通过两条途径启动，请将其禁用或移除该插件。在 Codex 中，添加与[Toolport 一节](#通过-toolport-使用)相同的 `enabled = false`（或移除插件）；在 Claude Code 中，通过 `/plugin` 禁用或卸载该插件。Codex 会优先使用同名注册而不是插件的 MCP，因此只要 Setup 的注册存在，通常只会启动一个，但 Claude Code 可能会同时启动两个。Setup 不会修改 Codex 或 Claude Code 的设置；如果插件仍处于启用状态，它只会发出警告（启动 Plumivox 时显示的指引、`app-update.log`，以及 `app-update\setup-registration.json` 中的 `legacyPlugins`）。Toolport 的注册同样不会被自动改写；如果使用 Toolport，请按照[Toolport 一节](#通过-toolport-使用)自行检查。迁移到 Setup 时，请把 Toolport 中 `plumivox` 的命令改为 `%LOCALAPPDATA%\PlumivoxApp\current\plumivox.exe`（展开为实际路径）。不要把可执行文件复制到其他位置，副本不会被更新。即使 Toolport 以另一个可执行文件提供 `plumivox`，Setup 也会省略直接注册并发出警告（指引和 `app-update.log`，不记录 Toolport 一侧的命令）。把命令改指向上述路径后，每次启动时的判定会使警告消失。
 

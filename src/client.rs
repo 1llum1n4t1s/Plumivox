@@ -37,6 +37,10 @@ use unicode_normalization::UnicodeNormalization;
 
 const MAX_IMAGE: usize = 5 * 1024 * 1024;
 const MAX_RESPONSE: usize = 10 * 1024 * 1024;
+/// 非2xx応答の本文を記録のために読む上限。
+const MAX_ERROR_BODY: usize = 64 * 1024;
+/// 非2xxの本文を読む時間の上限（残り時間がこれより短ければ残り時間）。
+const ERROR_BODY_READ_CAP: Duration = Duration::from_secs(1);
 const FEED_PREFIX: &str = "plumivox-feed.";
 const SEARCH_PREFIX: &str = "plumivox-search.";
 const MAX_FEED: usize = 100_000;
@@ -147,6 +151,20 @@ fn capture_known(
     }
     known.extend(recorder.values.iter().map(String::as_str));
     crate::api_rejection::capture(response, &known, Some(&recorder.post_text))
+}
+/// 非2xx応答の本文を64KiBまで読み、JSONオブジェクトなら返す（それ以外・読取り失敗は None）。
+async fn read_error_body(mut response: reqwest::Response) -> Option<Value> {
+    let mut bytes = Vec::new();
+    while let Ok(Some(chunk)) = response.chunk().await {
+        let room = MAX_ERROR_BODY - bytes.len();
+        bytes.extend_from_slice(&chunk[..chunk.len().min(room)]);
+        if bytes.len() >= MAX_ERROR_BODY {
+            break;
+        }
+    }
+    serde_json::from_slice::<Value>(&bytes)
+        .ok()
+        .filter(Value::is_object)
 }
 fn string(v: &Value) -> &str {
     v.as_str().unwrap_or("")
@@ -459,6 +477,8 @@ impl TwitterApiClient {
         timeout: Duration,
         recorder: Option<&Recorder>,
     ) -> Result<(Value, u16)> {
+        let started = Instant::now();
+        let mut failed_response: Option<reqwest::Response> = None;
         let operation = async {
             // 通信先の解析失敗は upload でも failureKind を付けない（従来どおり）。
             let base = url::Url::parse(&self.base).map_err(|_| unavailable(endpoint, None))?;
@@ -521,11 +541,16 @@ impl TwitterApiClient {
                 return Err(network());
             }
             if !response.status().is_success() {
-                return Err(err("API_HTTP_ERROR", "The API did not accept the request.")
-                    .with_details(crate::api_rejection::details(
-                        response.status().as_u16(),
-                        None,
-                    )));
+                let rejected =
+                    err("API_HTTP_ERROR", "The API did not accept the request.").with_details(
+                        crate::api_rejection::details(response.status().as_u16(), None),
+                    );
+                // 分類は上の HTTP ステータスだけで付いている。本文は、拒否記録が有効なときだけ、
+                // 下の記録の節で読む（読んでも分類は変わらない）。
+                if recorder.is_some() {
+                    failed_response = Some(response);
+                }
+                return Err(rejected);
             }
             let mut bytes = Vec::new();
             while let Some(chunk) = response.chunk().await.map_err(|_| network())? {
@@ -561,22 +586,43 @@ impl TwitterApiClient {
             }
             Ok((v, response.status().as_u16()))
         };
-        let result = tokio::select! { biased;
+        let mut result = tokio::select! { biased;
             _=cancel.cancelled()=>Err(unavailable(endpoint,Some("cancelled"))),
             r=tokio::time::timeout(timeout,operation)=>r.unwrap_or_else(|_|Err(unavailable(endpoint,Some("timeout"))))
         };
-        result.map_err(|e| {
+        // 非2xxの本文は、分類が決まった後（分類は HTTP ステータスだけで付いており、本文では変わらない）に、
+        // 同じ時間制限の残りと `ERROR_BODY_READ_CAP` の小さい方までだけ読む。この読み込みは呼び出し元の
+        // 再試行の判断（画像アップロードの `upload_retry_delay`）より前に行われるので、上限が無いと、本文が
+        // ゆっくり届くとき画像ごとの期限の残りを使い切り、記録の有無で再試行の挙動が変わってしまう。
+        // 読めなくても分類は変えず、文面なしの1件として記録する。
+        if let (Err(e), Some(response), Some(recorder)) = (&mut result, failed_response, recorder)
+            && e.code == "API_HTTP_ERROR"
+        {
+            let left = timeout
+                .saturating_sub(started.elapsed())
+                .min(ERROR_BODY_READ_CAP);
+            let parsed = tokio::select! { biased;
+                _=cancel.cancelled()=>None,
+                r=tokio::time::timeout(left,read_error_body(response))=>r.ok().flatten()
+            };
+            let parsed = parsed.unwrap_or_else(|| json!({}));
+            e.rejection = Some(Box::new(capture_known(&parsed, a, body, recorder)));
+        }
+        result.map_err(|mut e| {
             if endpoint == "create_tweet_v2"
                 && (e.code == "INVALID_RESPONSE"
                     || e.code == "API_UNAVAILABLE"
                     || (e.code == "API_HTTP_ERROR"
                         && e.details["httpStatus"].as_u64().unwrap_or(0) >= 500))
             {
-                err(
+                let rejection = e.rejection.take();
+                let mut uncertain = err(
                     "POST_UNCERTAIN",
                     "Whether the post succeeded is unknown. It may have been posted. It was not resent automatically.",
                 )
-                .with_details(e.details)
+                .with_details(e.details);
+                uncertain.rejection = rejection;
+                uncertain
             } else {
                 e
             }
@@ -1116,7 +1162,8 @@ impl TwitterApiClient {
                         return Err(cancelled());
                     }
                     // 再試行可否と待機時間は upload_retry_delay が決める。1回だけ、
-                    // かつ画像ごとの期限に待機分が残る場合に限る。
+                    // かつ画像ごとの期限に待機分が残る場合に限る（記録有効時の本文の読み込みは
+                    // `request_status` が上限付きで済ませているので、この残りを使い切らない）。
                     let delay = match upload_retry_delay(&e) {
                         Some(d) if attempt == 0 => d,
                         _ => return Err(e),
@@ -1151,6 +1198,12 @@ impl TwitterApiClient {
 ///   通信切断（network）: 1秒。プロキシ経路の切替わりを待つため長めにする。
 /// 認証・残高・メディア不正・重複・レート制限など、再送しても直らない拒否は対象外。
 /// タイムアウトは期限を使い切っているため対象外。
+///
+/// 数字のコード（`code`・`errors[].code`。226・88・344・324 など）や `x_status`（429 など）から
+/// 分類が付いた拒否は、`rejectionReasons` に proxy・upstream 系・unknown 以外が入るので再試行しない。
+/// 以前は文面で分類できない拒否が unknown になり、1秒後に1回再送されていた。いまは X が拒否した
+/// と分かるものを再送しない（X への負荷とアカウントへの疑いを増やさない）安全側の仕様で、意図した変更。
+/// E2E（`Image upload is not retried when a numeric code classifies the refusal`）で固定している。
 fn upload_retry_delay(e: &AppError) -> Option<Duration> {
     match e.code.as_str() {
         "API_HTTP_ERROR" => matches!(e.details["httpStatus"].as_u64(), Some(502 | 503 | 504))

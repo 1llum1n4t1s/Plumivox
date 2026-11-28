@@ -3,6 +3,7 @@ use crate::{
     error::{AppError, Result},
     proxy_egress,
     proxy_ipc::{self, Secret, Session},
+    relay_log::{self, RelayLog},
 };
 use base64::{Engine, engine::general_purpose::STANDARD_NO_PAD};
 use russh::{
@@ -759,15 +760,18 @@ struct Core {
     status: watch::Sender<Value>,
     active: Arc<AtomicUsize>,
     running: Mutex<Option<(CancellationToken, JoinHandle<()>)>>,
+    /// 中継の出来事の診断記録（daemon だけが渡す。単体テストは None）。
+    relay: Option<RelayLog>,
 }
 impl Core {
-    fn new(config: Value) -> Arc<Self> {
+    fn new(config: Value, relay: Option<RelayLog>) -> Arc<Self> {
         let (status, _) = watch::channel(stopped());
         Arc::new(Self {
             config,
             status,
             active: Arc::new(AtomicUsize::new(0)),
             running: Mutex::new(None),
+            relay,
         })
     }
     fn status(&self) -> Value {
@@ -775,14 +779,21 @@ impl Core {
         v["activeConnections"] = json!(self.active.load(Ordering::Relaxed).min(16));
         v
     }
-    fn publish(&self, state: &str, code: Option<&str>) {
+    /// 状態を公開する。`retry` は再接続の何回目か（reconnecting は次の再試行の番号、failed は済んだ回数）。
+    /// 診断記録には移り変わりだけを残す（停止中の重ねての停止は残さない）。
+    fn publish(&self, state: &str, code: Option<&str>, retry: Option<u32>) {
+        if let Some(relay) = &self.relay
+            && !(state == "stopped" && self.status.borrow()["state"] == "stopped")
+        {
+            relay.record(state, code, retry);
+        }
         self.status.send_replace(json!({"state":state,"managed":state!="stopped","activeConnections":0,"lastErrorCode":code}));
     }
     async fn ensure(self: &Arc<Self>) -> Result<Value> {
         {
             let mut running = self.running.lock().await;
             if running.is_none() {
-                self.publish("starting", None);
+                self.publish("starting", None, None);
                 let cancel = CancellationToken::new();
                 let core = self.clone();
                 let token = cancel.clone();
@@ -821,7 +832,7 @@ impl Core {
                 let _ = task.await;
             }
         }
-        self.publish("stopped", None);
+        self.publish("stopped", None, None);
         Ok(stopped())
     }
     async fn run(self: Arc<Self>, cancel: CancellationToken) {
@@ -852,10 +863,10 @@ impl Core {
                 ]
                 .contains(&code.as_str())
             {
-                self.publish("failed", Some(&code));
+                self.publish("failed", Some(&code), Some(retry));
                 return;
             }
-            self.publish("reconnecting", Some(&code));
+            self.publish("reconnecting", Some(&code), Some(retry + 1));
             tokio::select! {_=cancel.cancelled()=>return,_=tokio::time::sleep(Duration::from_secs((1u64<<retry).min(30)))=>{}}
             retry += 1;
         }
@@ -955,7 +966,7 @@ impl Core {
         let result = match result {
             Ok(mut ssh) => {
                 ready.store(true, Ordering::SeqCst);
-                self.publish("ready", None);
+                self.publish("ready", None, None);
                 let ended = tokio::select! {_=cancel.cancelled()=>false,_= &mut ssh=>true};
                 ready.store(false, Ordering::SeqCst);
                 if !ended {
@@ -1017,7 +1028,12 @@ pub async fn run_daemon(bootstrap: Value) -> Result<()> {
         }
     }
     let mut listener = proxy_ipc::Listener::bind(&path)?;
-    let core = Core::new(config);
+    // 中継の出来事の診断記録。daemon は環境変数を引き継ぐので `PLUMIVOX_STATE_DIR` が効く。
+    let relay = relay_log::daemon_root().map(|root| RelayLog::start(root, &binding));
+    if let Some(relay) = &relay {
+        relay.record("daemon_started", None, None);
+    }
+    let core = Core::new(config, relay.clone());
     let shutdown = CancellationToken::new();
     let stopping = Arc::new(AtomicBool::new(false));
     let authenticated = Arc::new(AtomicUsize::new(0));
@@ -1037,14 +1053,14 @@ pub async fn run_daemon(bootstrap: Value) -> Result<()> {
         departure,
         stopping,
     };
-    loop {
+    let reason = loop {
         tokio::select! {
-            _=shutdown.cancelled()=>break,
-            _=tokio::time::sleep_until(idle),if authenticated.load(Ordering::SeqCst)==0=>break,
+            _=shutdown.cancelled()=>break "shutdown",
+            _=tokio::time::sleep_until(idle),if authenticated.load(Ordering::SeqCst)==0=>break "idle",
             Some(())=departures.recv()=>{if authenticated.load(Ordering::SeqCst)==0{idle=Instant::now()+idle_duration;}},
             Some(_)=tasks.join_next(),if !tasks.is_empty()=>{},
             accepted=listener.accept()=>{
-                let pipe=match accepted{Ok(p)=>p,Err(e) if e.code=="PROXY_IPC_AUTH_FAILED"=>continue,Err(e)=>{core.stop().await?;return Err(e);}};
+                let pipe=match accepted{Ok(p)=>p,Err(e) if e.code=="PROXY_IPC_AUTH_FAILED"=>continue,Err(e)=>{core.stop().await?;drop(listener);finish_relay(&relay,&e.code).await;return Err(e);}};
                 let Ok(permit)=clients.clone().try_acquire_owned() else{continue};
                 let shared=shared.clone();
                 tasks.spawn(async move{
@@ -1054,12 +1070,23 @@ pub async fn run_daemon(bootstrap: Value) -> Result<()> {
                 });
             }
         }
-    }
+    };
     shutdown.cancel();
     core.stop().await?;
     tasks.abort_all();
     while tasks.join_next().await.is_some() {}
+    // 診断記録の書き込みを待つ間も受付口を残すと、停止直後の接続が応答なしになる。先に閉じる。
+    drop(listener);
+    finish_relay(&relay, reason).await;
     Ok(())
+}
+
+/// daemon の終了を診断記録へ残し、書き込みを待つ（最大2秒）。`reason` は `idle`・`shutdown`・固定のエラーコード。
+async fn finish_relay(relay: &Option<RelayLog>, reason: &str) {
+    if let Some(relay) = relay {
+        relay.record("daemon_stopped", Some(reason), None);
+        relay.flush().await;
+    }
 }
 
 /// 共有daemonの各クライアント処理が参照する状態。
@@ -1302,6 +1329,7 @@ mod tests {
         });
         let core = Core::new(
             json!({"sshHost":"127.0.0.1","sshPort":ssh_port,"sshUser":"fixture","localPort":local,"remotePort":43128,"hostKeySha256":pin}),
+            None,
         );
         let cancel = CancellationToken::new();
         let token = cancel.clone();

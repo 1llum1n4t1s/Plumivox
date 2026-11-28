@@ -52,7 +52,7 @@ PCセットアップはWindows・macOSともネイティブの`--setup`を対象
 | URL、日本語、複合絵文字が含まれる投稿 | twitter-textの加重文字数とUnicode 17の複合絵文字の重み2で判定。280は送信し282は通信前に拒否 |
 | 画像の形式不正、サイズ超過、相対パス、5枚以上 | 送信前に拒否 |
 | 4画像のアップロード、途中の画像で失敗 | 事前検証した画像の順序・内容を維持し、途中失敗では投稿を送信しない |
-| 画像アップロードのHTTP 502・503・504、プロキシ・上流・原因不明のJSON拒否、通信切断 | 同じ画像だけ待機（502系250ms、他は1秒）後に最大1回再試行し。認証・残高等の拒否は再試行しない。、成功済みの前画像は再送しない。全画像の成功後に投稿を1回だけ送信する |
+| 画像アップロードのHTTP 502・503・504、プロキシ・上流・原因不明のJSON拒否、通信切断 | 同じ画像だけ待機（502系250ms、他は1秒）後に最大1回再試行する。認証・残高等の拒否と、数字のコード（226・88・344・324など）や`x_status`から分類が付いた拒否は再試行しない（意図した仕様。表にないコードで`unknown`のままの拒否は1回再試行する）。成功済みの前画像は再送しない。全画像の成功後に投稿を1回だけ送信する |
 | 画像アップロードの再度の一時失敗、401・429・500、認証・残高等のJSON拒否・不正応答・タイムアウト | 一時失敗は2要求で打ち切り、再試行対象外は1要求で停止。投稿は送信しない |
 | 通常要求の時間枠を超える画像アップロード | 画像専用の時間枠内なら完了を待ち、成功後に投稿を1回だけ送信する。通常45秒、画像は1枚120秒が既定 |
 | 画像再試行の待機中・2要求目に取消、1画像の時間枠が不足 | 取消後の追加upload・投稿を送信しない。待機と再試行を合わせて1画像あたり`image_timeout`以内に収める |
@@ -61,13 +61,19 @@ PCセットアップはWindows・macOSともネイティブの`--setup`を対象
 | 画像拒否・投稿拒否・投稿応答のID欠落 | 既存のエラーコードに安全なstage・postAttempted・uploadAttemptsを追加し、失敗段階と投稿要求の有無を区別する |
 | Cookie不足・中継準備後の設定再確認失敗 | 既存のcode・messageを維持し、pre_send・postAttempted:false・uploadAttempts:0を返す。APIを呼ばず、未知の内部エラーへ未送信の断定を加えない。他ツールのエラー形式も広げない |
 | APIの401/429/5xx、非JSON、HTTP 200内のerror | 秘密や提供元の生エラーを返さず失敗として返す |
-| APIの拒否JSONが認証・プロキシ・残高・未知の理由や秘密値を含む | `httpStatus`・固定分類 `rejectionReasons`・分類元 `rejectionReasonSource` だけを追加し、任意コード・request ID・秘密値を応答と診断へ出さない。読取り・ログイン・画像・投稿で確認し、要求回数とstage・成否不明の契約を保つ。`automation_suspected`・`daily_limit`・`text_too_long`・`session_mismatch`・`post_id_missing` は公知の文言に基づく候補で、提供元が必ずその文面で返す保証は未確認。画像アップロードの再試行は proxy・upstream_*・unknown のみで、これらは再試行しない。`post_id_missing` は投稿済みの可能性があり、再送せず照合を促す。Xの326（スパム保護のロック）は `account_locked` のみに分類する |
+| APIの拒否JSONが認証・プロキシ・残高・未知の理由や秘密値を含む | `httpStatus`・固定分類 `rejectionReasons`・分類元 `rejectionReasonSource`（数字のコード由来は `provider_code`）と、表にあるコードの `xErrorCode`・X由来のHTTPステータス `xHttpStatus` だけを追加し、表にない任意コード・request ID・秘密値を応答と診断へ出さない。読取り・ログイン・画像・投稿で確認し、要求回数とstage・成否不明の契約を保つ。`automation_suspected`・`daily_limit`・`text_too_long`・`session_mismatch`・`post_id_missing` は公知の文言に基づく候補で、提供元が必ずその文面で返す保証は未確認。画像アップロードの再試行は proxy・upstream_*・unknown のみで、これらは再試行しない。`post_id_missing` は投稿済みの可能性があり、再送せず照合を促す。Xの326（スパム保護のロック）は `account_locked` のみに分類する |
 | 拒否メッセージが非文字列・4096 UTF-8バイト超、`errors`が多数、診断用でないフィールドに理由がある | 指定フィールドと先頭8件のerrorsだけを上限付きで分類し、未認識はunknownとする。生応答全体や任意フィールドを診断へ転載しない |
 | 10MiBを超えるAPI応答、UTF-8文字途中の通信分割 | 上限超過で受信を打ち切る。上限内の分割文字は正しく復号する。投稿の超過応答は成否未確定として再送しない |
 | 投稿成功に見えるが投稿IDがない、通信の成否が不明 | 成功扱いせず、自動再送しない |
-| 投稿作成段階（postAttempted true）の`API_REJECTED`・`API_HTTP_ERROR`・`POST_UNCERTAIN` | 英語の固定文`nextStep`を付ける。post_id_missing・`POST_UNCERTAIN`は再送せず数分待ってからget_my_postsで確認する、automation_suspected・rate_limit・daily_limitは再送せず本人に伝え数分以上待つ、それ以外は再送前にget_my_postsで確認する。画像アップロード段階・読取り・ログインのエラーには付けない。クールダウンは強制せず、上流の生の拒否文面は返さない・保存しない |
+| 投稿作成段階（postAttempted true）の`API_REJECTED`・`API_HTTP_ERROR`・`POST_UNCERTAIN` | 英語の固定文`nextStep`を付ける。post_id_missing・`POST_UNCERTAIN`は再送せず数分待ってからget_my_postsで確認する、automation_suspected・rate_limit・daily_limit・account_locked・account_suspendedは再送せず本人に伝え数分以上待つ、それ以外は再送前にget_my_postsで確認する。画像アップロード段階・読取り・ログインのエラーには付けない。上流の生の拒否文面は返さない・保存しない。連投・拒否直後の再送は下の「投稿の一時停止（冷却ガード）」で止める |
+| Xの数字のエラーコード（本文の`code`・`errors[].code`、`x_status`） | 表にあるコードは固定の分類（226は`automation_suspected`、344・185は`daily_limit`など）へ分け、`rejectionReasonSource`を`provider_code`にして`xErrorCode`・`xHttpStatus`を付ける。数字や文字列の型の違いを受け、表にないコードは分類・応答へ出さずX側の拒否としてだけ扱う。非2xxの本文は分類に使わない |
+| 投稿の一時停止（冷却ガード）: 前回の投稿から5分以内、別プロセスの送信中、プロセスを送信中に強制終了 | 別のMCPプロセスでも画像・投稿とも送らず`POST_COOLDOWN`（`min_interval`・`post_in_progress`・`interrupted`）と`retryAfter`を返し、期限が過ぎれば送れる。画像・投稿のHTTP要求を数えて送信なしを確かめる |
+| 投稿がXに制限された（自動化の疑い・1日の上限・レート制限・ロック・凍結） | 拒否した投稿のエラーに`cooldownReason`・`retryAfter`を付け、次の`post_tweet`は送らず同じ`retryAfter`の`POST_COOLDOWN`を返す。連続で倍に延び上限24時間、48時間で数が戻る。倍に延びる（strike）のはXの拒否と分かるとき（`xRejected`。コード88、`x_status`の429など）だけで、`xRejected`の無いHTTP 429は固定15分でstrikeを数えない。キー・残高・画像アップロード段階のプロキシ・HTTP 401・402など提供元で止まった失敗は止めない（投稿作成段階の`proxy`を含む拒否は最小間隔の5分）。成否不明は15分 |
+| 冷却状態・`--post-guard status`・`clear`の出力 | 本文・ユーザー名・資格情報・提供元の文面を含めない。`clear`は端末でなければ終了コード2、送信中は解除せず1、MCPからは解除できない。保存先がリンク・不正なら書かず消さず、送信せず`POST_GUARD_UNAVAILABLE`を返す。設定名がユーザー名を含むだけでも状態の`account`は`<user>`になり（4文字未満は完全一致だけ）、`clear --account 設定名`では選べず0件のとき`--user`の案内を1行出す（終了コード0） |
+| この版より新しいschemaの状態ファイル | 上書きせず（ファイルは変わらない）、送信せず`guard_state_reset`の拒否だけ返す。それ以外の破損は従来どおり作り直して15分の冷却をかける。一時ファイル`.post-guard-<hash>-<乱数>.tmp`は、ロック取得後に自分の分の残骸を片付ける |
 | 拒否文面のローカル記録（`--rejection-log`）の有無 | 既定（無効）・期限切れ・`off`では`diagnostics\provider-rejections.jsonl`へ書かず、`rejectionTextRecorded`も付けない。`on`の期間中だけ記録し、MCP応答へは`rejectionTextRecorded: true`だけを足して文面を出さない。`PLUMIVOX_STATE_DIR`の配下に作る |
-| 記録する段階 | `post_tweet`の画像アップロード（`image_upload`、再試行は1回ごとに1件）・投稿作成（`post_creation`）の`API_REJECTED`と、投稿IDが返らない`POST_UNCERTAIN`だけを記録する。読取り・ログイン・2xx以外の応答本文は記録しない |
+| 記録する段階 | `post_tweet`の画像アップロード（`image_upload`、再試行は1回ごとに1件）・投稿作成（`post_creation`）の`API_REJECTED`・`API_HTTP_ERROR`と、投稿IDが返らない`POST_UNCERTAIN`だけを記録する。読取り・ログインは記録しない。記録が有効なときは、HTTP 2xx以外の失敗の本文も、分類が決まった後に64KiBまで・残りの時間枠と1秒の小さい方まで読んで伏字にして残し（読めなければ文面なしの1件）、無効なときは本文を読まない。分類・要求回数・画像の再試行は記録の有無で変わらない |
+| 中継の出来事の記録（`relay\events.jsonl`、`--relay-log show`） | 共有daemonの起動・終了と中継の状態の移り変わり（starting・ready・reconnecting・failed・stopped）を、設定の有無によらず固定のコードと時刻だけで記録する。ホスト・ポート・鍵・ユーザー名・IP・生のエラー文を含めない。14日・500件・128KiBで古い順に消す。記録が無いときは`show`が「記録なし」を表示しフォルダーを作らない。書き込みの失敗・遅延で中継を止めない。書込みの途中で残った`.relay-*.tmp`は片付ける |
 | 記録の伏字・保持 | 本文・Cookie・資格情報・プロキシ・ID・URL・メールを残さず、伏字後に既知の値が残る欄は`text`をnullにする。14日・200件・256KiBを超えたら古いものから消す。`show`はJSON Lines、`clear`で消え、通常ファイルでない・リンクの保存先は書かず消さない |
 | 同じ投稿を明示的に二度呼び出す | 各呼び出しで一回ずつ送信する。ローカル履歴で停止しない |
 | フォロー先が空、保護アカウントを含む、一覧が複数ページ | 公開投稿の取得範囲・未取得範囲を明示 |
@@ -108,7 +114,7 @@ PCセットアップはWindows・macOSともネイティブの`--setup`を対象
 | ログイン応答・標準エラー・証拠ファイル | APIキー・Cookie・パスワード・2FA秘密鍵・プロキシ資格情報を含めない |
 | vava／blblの投稿手順が旧スクリプトを参照 | 全呼び出し元をPlumivoxのMCPツールへ統一し、旧専用ファイルの撤去を確認 |
 
-E2Eでは外部サービスの代わりにlocalhostのHTTPサーバーを使い、HTTPメソッド・認証ヘッダー・本文・要求回数を記録する。検証結果は利用者の一時ディレクトリにある作業別フォルダーへ書き、終了後に必要な証拠だけ保持する。接続先の差し替えと失敗注入は`test-fixture`ビルドに限定し、配布実行ファイルへ環境変数などの迂回経路を設けない。実際のXへの投稿はこの検証に含めない。
+E2Eでは外部サービスの代わりにlocalhostのHTTPサーバーを使い、HTTPメソッド・認証ヘッダー・本文・要求回数を記録する。検証結果は利用者の一時ディレクトリにある作業別フォルダーへ書き、終了後に必要な証拠だけ保持する。接続先の差し替えと失敗注入は`test-fixture`ビルドに限定し、配布実行ファイルへ環境変数などの迂回経路を設けない。投稿の冷却ガードの時間も同じで、本番ビルドは常に有効かつ固定（5分・15分・3時間など）とし、`test-fixture`ビルドだけが環境変数`PLUMIVOX_POST_GUARD_TEST`（1分の長さをミリ秒で指定。未設定・`off`・不正な値はガード無効）で短縮できる。冷却ガードのE2E（`tests/api_post_cases.rs`）は、隔離した状態ルートで、複数MCPプロセス間の共有・送信中の別プロセス・送信中の強制終了・拒否後の再送停止・状態とCLI出力に秘密や提供元の文面が無いことを検証する。実際のXへの投稿はこの検証に含めない。
 
 ## 既定アカウントの失敗条件
 
