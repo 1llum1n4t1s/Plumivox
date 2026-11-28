@@ -39,4 +39,5 @@ Rust/Cargo only via `cargo xtask`. See [development](docs/readme/development-and
 - [Workflow](docs/readme/workflow.md) and [commands](docs/readme/commands.md)
 - [Configuration](docs/readme/configuration.md) and [API reference](docs/readme/api-reference.md)
 - [Troubleshooting](docs/readme/troubleshooting.md), [posting error fields](docs/readme/posting-error-fields.md), and [image upload retries](docs/readme/image-upload-retries.md)
+- [Posting pause](docs/readme/posting-pause.md) and [rejection reasons](docs/readme/rejection-reasons.md)
 - [Documentation conventions](docs/readme/conventions.md)

@@ -29,6 +29,7 @@ OS条件を理由に未実行の系統は明示し、全件成功へ数えない
 
 - 文書の置き場所・ソース構成・配布物・プラグイン登録を変えるときは [architecture.md](docs/agents/architecture.md) を読む。設計は [DESIGN.md](DESIGN.md) を参照する。
 - 検証・E2E・出力先・OS別の確認は [testing.md](docs/agents/testing.md) を読む。
+- E2Eの出力先・試験用環境変数を変えるときは [e2e-environment.md](docs/agents/e2e-environment.md) を読む。
 - リリース・配布・R2・CIは [release-process.md](docs/agents/release-process.md) を読む。
 - Setup（Velopack）の起動時処理・更新・登録・梱包を変えるときは [setup-velopack.md](docs/agents/setup-velopack.md) を読む（[設計](DESIGN.md#setupvelopack)）。
 - 資格情報・保存先・Cookie・投稿の再試行・冷却ガードを変えるときは [security.md](docs/agents/security.md) を読む（[データフロー](DESIGN.md#データフロー)、[不変条件](DESIGN.md#不変条件と採用した設計判断)）。
